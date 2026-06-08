@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>PowerShell.Wasm</PackageId>
+    <Description>Small browser-safe PowerShell runtime prototype for WebAssembly.</Description>
+  </PropertyGroup>
+</Project>

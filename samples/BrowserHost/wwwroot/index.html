@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PSWasm Browser Host</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 2rem; }
+    pre { border: 1px solid CanvasText; padding: 1rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>PSWasm Browser Host</h1>
+  <pre id="output">Starting...</pre>
+
+  <script type="pwsh">
+Write-Output 'Hello PowerShell'
+  </script>
+
+  <script>
+    window.pswasmEnvironment = {};
+  </script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
