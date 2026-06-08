@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using PSWasm.Commands;
@@ -29,7 +30,12 @@ public sealed class PowerShellWasmRuntime
                 continue;
             }
 
-            await ExecuteCommandAsync(statement, cancellationToken);
+            if (await TryExecuteCommandAsync(statement, cancellationToken))
+            {
+                continue;
+            }
+
+            _executionContext.WriteOutput(EvaluateExpression(statement));
         }
 
         return new PowerShellWasmResult([.. _executionContext.Output]);
@@ -58,18 +64,18 @@ public sealed class PowerShellWasmRuntime
         return true;
     }
 
-    private async ValueTask ExecuteCommandAsync(string statement, CancellationToken cancellationToken)
+    private async ValueTask<bool> TryExecuteCommandAsync(string statement, CancellationToken cancellationToken)
     {
         var tokens = Tokenize(statement);
         if (tokens.Count == 0)
         {
-            return;
+            return true;
         }
 
         var commandName = tokens[0];
         if (!_commands.TryGetValue(commandName, out var command))
         {
-            throw new NotSupportedException($"Command '{commandName}' is not registered in this PSWasm runtime.");
+            return false;
         }
 
         var parameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
@@ -101,6 +107,7 @@ public sealed class PowerShellWasmRuntime
 
         var context = new PowerShellWasmCommandContext(_executionContext, parameters, arguments);
         await command.InvokeAsync(context, cancellationToken);
+        return true;
     }
 
     private bool TryExpandSplat(string token, Dictionary<string, object?> parameters)
@@ -153,7 +160,12 @@ public sealed class PowerShellWasmRuntime
             return _executionContext.GetVariable(expression[1..]);
         }
 
-        return int.TryParse(expression, out var number) ? number : expression;
+        if (int.TryParse(expression, out var number))
+        {
+            return number;
+        }
+
+        return ArithmeticExpression.TryEvaluate(expression, ResolveArithmeticVariable, out var value) ? value : expression;
     }
 
     private Dictionary<string, object?> ParseHashtable(string body)
@@ -187,6 +199,22 @@ public sealed class PowerShellWasmRuntime
 
             return _executionContext.GetVariable(name)?.ToString() ?? string.Empty;
         });
+    }
+
+    private double? ResolveArithmeticVariable(string name)
+    {
+        var value = name.StartsWith("env:", StringComparison.OrdinalIgnoreCase)
+            ? _executionContext.GetEnvironmentVariable(name[4..])
+            : _executionContext.GetVariable(name);
+
+        return value switch
+        {
+            int intValue => intValue,
+            double doubleValue => doubleValue,
+            decimal decimalValue => (double)decimalValue,
+            string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => null
+        };
     }
 
     private static IEnumerable<string> SplitStatements(string script)
@@ -234,10 +262,11 @@ public sealed class PowerShellWasmRuntime
         var tokens = new List<string>();
         var current = new StringBuilder();
         var quote = '\0';
+        var depth = 0;
 
         foreach (var ch in statement)
         {
-            if (quote == '\0' && char.IsWhiteSpace(ch))
+            if (quote == '\0' && depth == 0 && char.IsWhiteSpace(ch))
             {
                 Flush();
                 continue;
@@ -255,6 +284,11 @@ public sealed class PowerShellWasmRuntime
                 quote = '\0';
                 current.Append(ch);
                 continue;
+            }
+
+            if (quote == '\0')
+            {
+                depth += ch switch { '(' or '{' => 1, ')' or '}' => -1, _ => 0 };
             }
 
             current.Append(ch);
@@ -348,5 +382,191 @@ public sealed class PowerShellWasmRuntime
         }
 
         return -1;
+    }
+
+    private sealed class ArithmeticExpression
+    {
+        private readonly string _expression;
+        private readonly Func<string, double?> _resolveVariable;
+        private int _position;
+
+        private ArithmeticExpression(string expression, Func<string, double?> resolveVariable)
+        {
+            _expression = expression;
+            _resolveVariable = resolveVariable;
+        }
+
+        public static bool TryEvaluate(string expression, Func<string, double?> resolveVariable, out object value)
+        {
+            value = 0;
+
+            if (!MayBeArithmetic(expression))
+            {
+                return false;
+            }
+
+            try
+            {
+                var parser = new ArithmeticExpression(expression, resolveVariable);
+                var result = parser.ParseExpression();
+                parser.SkipWhitespace();
+
+                if (parser._position != parser._expression.Length)
+                {
+                    return false;
+                }
+
+                value = Math.Abs(result - Math.Round(result)) < 0.0000000001 &&
+                    result >= int.MinValue && result <= int.MaxValue
+                        ? Convert.ToInt32(result, CultureInfo.InvariantCulture)
+                        : result;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool MayBeArithmetic(string expression) =>
+            expression.Any(ch => ch is '+' or '-' or '*' or '/' or '(' or ')');
+
+        private double ParseExpression()
+        {
+            var value = ParseTerm();
+
+            while (true)
+            {
+                SkipWhitespace();
+                if (Match('+'))
+                {
+                    value += ParseTerm();
+                    continue;
+                }
+
+                if (Match('-'))
+                {
+                    value -= ParseTerm();
+                    continue;
+                }
+
+                return value;
+            }
+        }
+
+        private double ParseTerm()
+        {
+            var value = ParseFactor();
+
+            while (true)
+            {
+                SkipWhitespace();
+                if (Match('*'))
+                {
+                    value *= ParseFactor();
+                    continue;
+                }
+
+                if (Match('/'))
+                {
+                    value /= ParseFactor();
+                    continue;
+                }
+
+                return value;
+            }
+        }
+
+        private double ParseFactor()
+        {
+            SkipWhitespace();
+
+            if (Match('+'))
+            {
+                return ParseFactor();
+            }
+
+            if (Match('-'))
+            {
+                return -ParseFactor();
+            }
+
+            if (Match('('))
+            {
+                var value = ParseExpression();
+                SkipWhitespace();
+
+                if (!Match(')'))
+                {
+                    throw new FormatException("Missing closing parenthesis.");
+                }
+
+                return value;
+            }
+
+            if (Peek() == '$')
+            {
+                return ParseVariable();
+            }
+
+            return ParseNumber();
+        }
+
+        private double ParseVariable()
+        {
+            _position++;
+            var start = _position;
+
+            while (_position < _expression.Length && IsVariableCharacter(_expression[_position]))
+            {
+                _position++;
+            }
+
+            var name = _expression[start.._position];
+            var value = _resolveVariable(name);
+            return value ?? throw new FormatException($"Variable '${name}' is not numeric.");
+        }
+
+        private double ParseNumber()
+        {
+            var start = _position;
+
+            while (_position < _expression.Length && (char.IsDigit(_expression[_position]) || _expression[_position] == '.'))
+            {
+                _position++;
+            }
+
+            if (start == _position ||
+                !double.TryParse(_expression[start.._position], NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            {
+                throw new FormatException("Expected a number.");
+            }
+
+            return value;
+        }
+
+        private void SkipWhitespace()
+        {
+            while (_position < _expression.Length && char.IsWhiteSpace(_expression[_position]))
+            {
+                _position++;
+            }
+        }
+
+        private bool Match(char expected)
+        {
+            if (Peek() != expected)
+            {
+                return false;
+            }
+
+            _position++;
+            return true;
+        }
+
+        private char Peek() => _position < _expression.Length ? _expression[_position] : '\0';
+
+        private static bool IsVariableCharacter(char ch) =>
+            char.IsLetterOrDigit(ch) || ch is '_' or ':';
     }
 }

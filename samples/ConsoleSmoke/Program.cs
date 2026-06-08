@@ -18,6 +18,8 @@ runtime.RegisterCommand("Read-ClientItems", new DelegatePowerShellWasmCommand((c
 
 var script = """
 Write-Output 'Hello PowerShell'
+Write-Output (2+2)
+2 + 2
 $ReadParams = @{Endpoint= 'https://example.invalid/items'; Token= $env:DemoToken}
 Read-ClientItems @ReadParams -PartitionKey 'demo-partition'
 """;
