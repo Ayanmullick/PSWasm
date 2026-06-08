@@ -86,7 +86,37 @@ public static class PowerShellWasmTokenizer
                 case '/':
                     Add(PowerShellWasmTokenKind.Slash, "/", 1);
                     break;
+                case '%':
+                    Add(PowerShellWasmTokenKind.Remainder, "%", 1);
+                    break;
+                case '.':
+                    if (position + 1 < script.Length && script[position + 1] == '.')
+                    {
+                        Add(PowerShellWasmTokenKind.DotDot, "..", 2);
+                    }
+                    else
+                    {
+                        ReadIdentifier();
+                    }
+
+                    break;
+                case '?':
+                    if (position + 1 < script.Length && script[position + 1] == '?')
+                    {
+                        Add(PowerShellWasmTokenKind.QuestionQuestion, "??", 2);
+                    }
+                    else
+                    {
+                        ReadIdentifier();
+                    }
+
+                    break;
                 case '-':
+                    if (TryReadOperator())
+                    {
+                        break;
+                    }
+
                     if (position + 1 < script.Length && IsIdentifierStart(script[position + 1]))
                     {
                         ReadParameter();
@@ -144,6 +174,27 @@ public static class PowerShellWasmTokenizer
             tokens.Add(new(kind, text, start, length, leadingWhitespace));
             position += length;
             leadingWhitespace = false;
+        }
+
+        bool TryReadOperator()
+        {
+            var tokenStart = position;
+            var end = position + 1;
+            while (end < script.Length && IsBareWordCharacter(script[end]))
+            {
+                end++;
+            }
+
+            var text = script[tokenStart..end];
+            if (!PowerShellWasmTokenTraits.TryGetOperator(text, out var kind))
+            {
+                return false;
+            }
+
+            tokens.Add(new(kind, text, tokenStart, end - tokenStart, leadingWhitespace));
+            position = end;
+            leadingWhitespace = false;
+            return true;
         }
 
         void ReadParameter()
@@ -210,9 +261,29 @@ public static class PowerShellWasmTokenizer
         void ReadNumber()
         {
             var tokenStart = position;
-            while (position < script.Length && (char.IsDigit(script[position]) || script[position] == '.'))
+            var sawDecimalPoint = false;
+            while (position < script.Length)
             {
-                position++;
+                if (char.IsDigit(script[position]))
+                {
+                    position++;
+                    continue;
+                }
+
+                if (script[position] == '.' && !sawDecimalPoint &&
+                    !(position + 1 < script.Length && script[position + 1] == '.'))
+                {
+                    sawDecimalPoint = true;
+                    position++;
+                    continue;
+                }
+
+                break;
+            }
+
+            if (position > tokenStart && script[position - 1] == '.')
+            {
+                position--;
             }
 
             tokens.Add(new(PowerShellWasmTokenKind.Number, script[tokenStart..position], tokenStart, position - tokenStart, leadingWhitespace));

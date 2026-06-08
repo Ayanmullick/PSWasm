@@ -55,12 +55,15 @@ public sealed record UnaryExpressionAst(PowerShellWasmUnaryOperator Operator, Ex
 
 public sealed record BinaryExpressionAst(ExpressionAst Left, PowerShellWasmBinaryOperator Operator, ExpressionAst Right) : ExpressionAst;
 
-public sealed record ComparisonExpressionAst(ExpressionAst Left, PowerShellWasmComparisonOperator Operator, ExpressionAst Right) : ExpressionAst;
-
 public enum PowerShellWasmUnaryOperator
 {
     Plus,
-    Minus
+    Minus,
+    Not,
+    BitwiseNot,
+    Join,
+    Split,
+    CaseSensitiveSplit
 }
 
 public enum PowerShellWasmBinaryOperator
@@ -68,15 +71,50 @@ public enum PowerShellWasmBinaryOperator
     Add,
     Subtract,
     Multiply,
-    Divide
-}
-
-public enum PowerShellWasmComparisonOperator
-{
+    Divide,
+    Remainder,
+    Range,
+    Format,
+    LogicalAnd,
+    LogicalOr,
+    LogicalXor,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    Join,
+    Split,
+    CaseSensitiveSplit,
+    ShiftLeft,
+    ShiftRight,
+    NullCoalesce,
     Equal,
     NotEqual,
     GreaterThan,
     GreaterThanOrEqual,
     LessThan,
-    LessThanOrEqual
+    LessThanOrEqual,
+    Like,
+    NotLike,
+    Match,
+    NotMatch,
+    Replace,
+    Contains,
+    NotContains,
+    In,
+    NotIn,
+    CaseSensitiveEqual,
+    CaseSensitiveNotEqual,
+    CaseSensitiveGreaterThan,
+    CaseSensitiveGreaterThanOrEqual,
+    CaseSensitiveLessThan,
+    CaseSensitiveLessThanOrEqual,
+    CaseSensitiveLike,
+    CaseSensitiveNotLike,
+    CaseSensitiveMatch,
+    CaseSensitiveNotMatch,
+    CaseSensitiveReplace,
+    CaseSensitiveContains,
+    CaseSensitiveNotContains,
+    CaseSensitiveIn,
+    CaseSensitiveNotIn
 }

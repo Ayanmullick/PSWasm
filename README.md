@@ -18,13 +18,22 @@ The first runtime supports:
 * expandable strings such as `"Hello $Name"`
 * `$env:Name` lookup through a browser-provided environment map
 * simple named parameters
-* arithmetic expressions with precedence and parentheses
+* arithmetic expressions with PowerShell-style precedence and parentheses
 * grouped assignment expressions such as `($var = 1 + 2)`
-* basic comparison operators: `-eq`, `-ne`, `-gt`, `-ge`, `-lt`, `-le`
+* browser-safe operators adapted from PowerShell `TokenTraits`
 * a basic command pipeline for registered browser commands
 * a pluggable command registry
 
-The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs. It also does not yet implement every operator in `about_Operators`; each operator has to be mapped to browser-safe AST and executor behavior.
+The browser-safe operator set currently includes:
+
+* arithmetic/range: `+`, `-`, `*`, `/`, `%`, `..`
+* grouped assignment and null coalescing: `($var = value)`, `??`
+* logical and bitwise: `-not`, `-and`, `-or`, `-xor`, `-bnot`, `-band`, `-bor`, `-bxor`, `-shl`, `-shr`
+* comparisons: `-eq`, `-ne`, `-gt`, `-ge`, `-lt`, `-le` and case-sensitive `-c*` variants
+* wildcard/regex/string: `-like`, `-notlike`, `-match`, `-notmatch`, `-replace` and case-sensitive `-c*` variants
+* collection/string helpers: `-contains`, `-notcontains`, `-in`, `-notin`, `-join`, `-split`, `-f`
+
+The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs. It also does not reproduce the full `System.Management.Automation` parse-mode split between command mode and expression mode; the browser profile flattens those modes and maps each useful operator to browser-safe AST and executor behavior.
 
 ## Layout
 
@@ -128,4 +137,4 @@ The implementation keeps source-reference comments in the new language/runtime f
 * `src/System.Management.Automation/engine/CommandProcessor*.cs`
 * `src/System.Management.Automation/engine/ParameterBinder*.cs`
 
-This repo should continue copying or adapting those designs only where they can stay browser-safe. Full `System.Management.Automation` parity still requires explicitly excluding desktop/server features such as providers, native process execution, remoting, jobs, module autoloading, and host UI APIs.
+This repo should continue copying or adapting those designs only where they can stay browser-safe. The operator vocabulary and precedence are adapted from `TokenTraits`; execution semantics live in the PSWasm browser executor. Full `System.Management.Automation` parity still requires explicitly excluding desktop/server features such as providers, native process execution, remoting, jobs, module autoloading, and host UI APIs.

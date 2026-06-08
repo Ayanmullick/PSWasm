@@ -125,7 +125,7 @@ public sealed class PowerShellWasmParser
         }
 
         position++;
-        if (position < tokens.Count && IsBinaryOperator(tokens[position].Kind))
+        if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator())
         {
             while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.Parameter && !IsSplatStart(tokens, position))
             {
@@ -234,9 +234,6 @@ public sealed class PowerShellWasmParser
         };
     }
 
-    private static bool IsBinaryOperator(PowerShellWasmTokenKind kind) =>
-        kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus or PowerShellWasmTokenKind.Star or PowerShellWasmTokenKind.Slash;
-
     private sealed class ExpressionParser(IReadOnlyList<PowerShellWasmToken> tokens)
     {
         private int _position;
@@ -260,41 +257,23 @@ public sealed class PowerShellWasmParser
                 return new AssignmentExpressionAst(variable, ParseAssignment());
             }
 
-            return ParseComparison();
+            return ParseBinaryExpression(1);
         }
 
-        private ExpressionAst ParseComparison()
-        {
-            var expression = ParseAdditive();
-            while (TryReadComparisonOperator(out var op))
-            {
-                expression = new ComparisonExpressionAst(expression, op, ParseAdditive());
-            }
-
-            return expression;
-        }
-
-        private ExpressionAst ParseAdditive()
-        {
-            var expression = ParseMultiplicative();
-            while (Current.Kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus)
-            {
-                var op = Current.Kind == PowerShellWasmTokenKind.Plus ? PowerShellWasmBinaryOperator.Add : PowerShellWasmBinaryOperator.Subtract;
-                _position++;
-                expression = new BinaryExpressionAst(expression, op, ParseMultiplicative());
-            }
-
-            return expression;
-        }
-
-        private ExpressionAst ParseMultiplicative()
+        private ExpressionAst ParseBinaryExpression(int minimumPrecedence)
         {
             var expression = ParseUnary();
-            while (Current.Kind is PowerShellWasmTokenKind.Star or PowerShellWasmTokenKind.Slash)
+            while (Current.Kind.IsBinaryOperator())
             {
-                var op = Current.Kind == PowerShellWasmTokenKind.Star ? PowerShellWasmBinaryOperator.Multiply : PowerShellWasmBinaryOperator.Divide;
+                var precedence = Current.Kind.GetBinaryPrecedence();
+                if (precedence < minimumPrecedence)
+                {
+                    break;
+                }
+
                 _position++;
-                expression = new BinaryExpressionAst(expression, op, ParseUnary());
+                var op = MapBinaryOperator(tokens[_position - 1].Kind);
+                expression = new BinaryExpressionAst(expression, op, ParseBinaryExpression(precedence + 1));
             }
 
             return expression;
@@ -302,9 +281,9 @@ public sealed class PowerShellWasmParser
 
         private ExpressionAst ParseUnary()
         {
-            if (Current.Kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus)
+            if (Current.Kind.IsUnaryOperator())
             {
-                var op = Current.Kind == PowerShellWasmTokenKind.Plus ? PowerShellWasmUnaryOperator.Plus : PowerShellWasmUnaryOperator.Minus;
+                var op = MapUnaryOperator(Current.Kind);
                 _position++;
                 return new UnaryExpressionAst(op, ParseUnary());
             }
@@ -414,35 +393,6 @@ public sealed class PowerShellWasmParser
             return position < tokens.Count ? tokens[position] : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
         }
 
-        private bool TryReadComparisonOperator(out PowerShellWasmComparisonOperator op)
-        {
-            op = default;
-            if (Current.Kind != PowerShellWasmTokenKind.Parameter)
-            {
-                return false;
-            }
-
-            var found = Current.Text.ToLowerInvariant() switch
-            {
-                "eq" => PowerShellWasmComparisonOperator.Equal,
-                "ne" => PowerShellWasmComparisonOperator.NotEqual,
-                "gt" => PowerShellWasmComparisonOperator.GreaterThan,
-                "ge" => PowerShellWasmComparisonOperator.GreaterThanOrEqual,
-                "lt" => PowerShellWasmComparisonOperator.LessThan,
-                "le" => PowerShellWasmComparisonOperator.LessThanOrEqual,
-                _ => (PowerShellWasmComparisonOperator?)null
-            };
-
-            if (found is null)
-            {
-                return false;
-            }
-
-            op = found.Value;
-            _position++;
-            return true;
-        }
-
         private static ExpressionAst ParseNumber(string text) =>
             int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intValue)
                 ? new NumberExpressionAst(intValue)
@@ -457,5 +407,73 @@ public sealed class PowerShellWasmParser
 
             return new VariableExpressionAst(text, IsEnvironment: false);
         }
+
+        private static PowerShellWasmUnaryOperator MapUnaryOperator(PowerShellWasmTokenKind kind) =>
+            kind switch
+            {
+                PowerShellWasmTokenKind.Plus => PowerShellWasmUnaryOperator.Plus,
+                PowerShellWasmTokenKind.Minus => PowerShellWasmUnaryOperator.Minus,
+                PowerShellWasmTokenKind.Not => PowerShellWasmUnaryOperator.Not,
+                PowerShellWasmTokenKind.Bnot => PowerShellWasmUnaryOperator.BitwiseNot,
+                PowerShellWasmTokenKind.Join => PowerShellWasmUnaryOperator.Join,
+                PowerShellWasmTokenKind.Isplit => PowerShellWasmUnaryOperator.Split,
+                PowerShellWasmTokenKind.Csplit => PowerShellWasmUnaryOperator.CaseSensitiveSplit,
+                _ => throw new InvalidOperationException($"Token {kind} is not a unary operator.")
+            };
+
+        private static PowerShellWasmBinaryOperator MapBinaryOperator(PowerShellWasmTokenKind kind) =>
+            kind switch
+            {
+                PowerShellWasmTokenKind.Plus => PowerShellWasmBinaryOperator.Add,
+                PowerShellWasmTokenKind.Minus => PowerShellWasmBinaryOperator.Subtract,
+                PowerShellWasmTokenKind.Star => PowerShellWasmBinaryOperator.Multiply,
+                PowerShellWasmTokenKind.Slash => PowerShellWasmBinaryOperator.Divide,
+                PowerShellWasmTokenKind.Remainder => PowerShellWasmBinaryOperator.Remainder,
+                PowerShellWasmTokenKind.DotDot => PowerShellWasmBinaryOperator.Range,
+                PowerShellWasmTokenKind.Format => PowerShellWasmBinaryOperator.Format,
+                PowerShellWasmTokenKind.And => PowerShellWasmBinaryOperator.LogicalAnd,
+                PowerShellWasmTokenKind.Or => PowerShellWasmBinaryOperator.LogicalOr,
+                PowerShellWasmTokenKind.Xor => PowerShellWasmBinaryOperator.LogicalXor,
+                PowerShellWasmTokenKind.Band => PowerShellWasmBinaryOperator.BitwiseAnd,
+                PowerShellWasmTokenKind.Bor => PowerShellWasmBinaryOperator.BitwiseOr,
+                PowerShellWasmTokenKind.Bxor => PowerShellWasmBinaryOperator.BitwiseXor,
+                PowerShellWasmTokenKind.Join => PowerShellWasmBinaryOperator.Join,
+                PowerShellWasmTokenKind.Isplit => PowerShellWasmBinaryOperator.Split,
+                PowerShellWasmTokenKind.Csplit => PowerShellWasmBinaryOperator.CaseSensitiveSplit,
+                PowerShellWasmTokenKind.Shl => PowerShellWasmBinaryOperator.ShiftLeft,
+                PowerShellWasmTokenKind.Shr => PowerShellWasmBinaryOperator.ShiftRight,
+                PowerShellWasmTokenKind.QuestionQuestion => PowerShellWasmBinaryOperator.NullCoalesce,
+                PowerShellWasmTokenKind.Ieq => PowerShellWasmBinaryOperator.Equal,
+                PowerShellWasmTokenKind.Ine => PowerShellWasmBinaryOperator.NotEqual,
+                PowerShellWasmTokenKind.Ige => PowerShellWasmBinaryOperator.GreaterThanOrEqual,
+                PowerShellWasmTokenKind.Igt => PowerShellWasmBinaryOperator.GreaterThan,
+                PowerShellWasmTokenKind.Ilt => PowerShellWasmBinaryOperator.LessThan,
+                PowerShellWasmTokenKind.Ile => PowerShellWasmBinaryOperator.LessThanOrEqual,
+                PowerShellWasmTokenKind.Ilike => PowerShellWasmBinaryOperator.Like,
+                PowerShellWasmTokenKind.Inotlike => PowerShellWasmBinaryOperator.NotLike,
+                PowerShellWasmTokenKind.Imatch => PowerShellWasmBinaryOperator.Match,
+                PowerShellWasmTokenKind.Inotmatch => PowerShellWasmBinaryOperator.NotMatch,
+                PowerShellWasmTokenKind.Ireplace => PowerShellWasmBinaryOperator.Replace,
+                PowerShellWasmTokenKind.Icontains => PowerShellWasmBinaryOperator.Contains,
+                PowerShellWasmTokenKind.Inotcontains => PowerShellWasmBinaryOperator.NotContains,
+                PowerShellWasmTokenKind.Iin => PowerShellWasmBinaryOperator.In,
+                PowerShellWasmTokenKind.Inotin => PowerShellWasmBinaryOperator.NotIn,
+                PowerShellWasmTokenKind.Ceq => PowerShellWasmBinaryOperator.CaseSensitiveEqual,
+                PowerShellWasmTokenKind.Cne => PowerShellWasmBinaryOperator.CaseSensitiveNotEqual,
+                PowerShellWasmTokenKind.Cge => PowerShellWasmBinaryOperator.CaseSensitiveGreaterThanOrEqual,
+                PowerShellWasmTokenKind.Cgt => PowerShellWasmBinaryOperator.CaseSensitiveGreaterThan,
+                PowerShellWasmTokenKind.Clt => PowerShellWasmBinaryOperator.CaseSensitiveLessThan,
+                PowerShellWasmTokenKind.Cle => PowerShellWasmBinaryOperator.CaseSensitiveLessThanOrEqual,
+                PowerShellWasmTokenKind.Clike => PowerShellWasmBinaryOperator.CaseSensitiveLike,
+                PowerShellWasmTokenKind.Cnotlike => PowerShellWasmBinaryOperator.CaseSensitiveNotLike,
+                PowerShellWasmTokenKind.Cmatch => PowerShellWasmBinaryOperator.CaseSensitiveMatch,
+                PowerShellWasmTokenKind.Cnotmatch => PowerShellWasmBinaryOperator.CaseSensitiveNotMatch,
+                PowerShellWasmTokenKind.Creplace => PowerShellWasmBinaryOperator.CaseSensitiveReplace,
+                PowerShellWasmTokenKind.Ccontains => PowerShellWasmBinaryOperator.CaseSensitiveContains,
+                PowerShellWasmTokenKind.Cnotcontains => PowerShellWasmBinaryOperator.CaseSensitiveNotContains,
+                PowerShellWasmTokenKind.Cin => PowerShellWasmBinaryOperator.CaseSensitiveIn,
+                PowerShellWasmTokenKind.Cnotin => PowerShellWasmBinaryOperator.CaseSensitiveNotIn,
+                _ => throw new InvalidOperationException($"Token {kind} is not a binary operator.")
+            };
     }
 }

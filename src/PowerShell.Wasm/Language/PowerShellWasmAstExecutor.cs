@@ -127,15 +127,23 @@ internal sealed class PowerShellWasmAstExecutor(
             StringExpressionAst text => text.IsExpandable ? ExpandString(text.Value) : text.Value,
             VariableExpressionAst variable => variable.IsEnvironment
                 ? executionContext.GetEnvironmentVariable(variable.Name) ?? string.Empty
-                : executionContext.GetVariable(variable.Name),
+                : EvaluateVariable(variable.Name),
             AssignmentExpressionAst assignment => EvaluateAssignment(assignment),
             HashtableExpressionAst hashtable => EvaluateHashtable(hashtable),
             ArrayExpressionAst array => array.Items.Select(EvaluateExpression).ToArray(),
             ParenthesizedExpressionAst parenthesized => EvaluateExpression(parenthesized.Expression),
             UnaryExpressionAst unary => EvaluateUnary(unary),
             BinaryExpressionAst binary => EvaluateBinary(binary),
-            ComparisonExpressionAst comparison => EvaluateComparison(comparison),
             _ => null
+        };
+
+    private object? EvaluateVariable(string name) =>
+        name.ToLowerInvariant() switch
+        {
+            "true" => true,
+            "false" => false,
+            "null" => null,
+            _ => executionContext.GetVariable(name)
         };
 
     private object? EvaluateAssignment(AssignmentExpressionAst assignment)
@@ -158,51 +166,195 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private object EvaluateUnary(UnaryExpressionAst unary)
     {
-        var value = ToNumber(EvaluateExpression(unary.Operand));
-        return NormalizeNumber(unary.Operator == PowerShellWasmUnaryOperator.Minus ? -value : value);
+        var value = EvaluateExpression(unary.Operand);
+        return unary.Operator switch
+        {
+            PowerShellWasmUnaryOperator.Plus => NormalizeNumber(ToNumber(value)),
+            PowerShellWasmUnaryOperator.Minus => NormalizeNumber(-ToNumber(value)),
+            PowerShellWasmUnaryOperator.Not => !ToBoolean(value),
+            PowerShellWasmUnaryOperator.BitwiseNot => ~ToInt64(value),
+            PowerShellWasmUnaryOperator.Join => string.Concat(Enumerate(value).Select(ToInvariantString)),
+            PowerShellWasmUnaryOperator.Split => SplitString(ToInvariantString(value), @"\s+", ignoreCase: true),
+            PowerShellWasmUnaryOperator.CaseSensitiveSplit => SplitString(ToInvariantString(value), @"\s+", ignoreCase: false),
+            _ => value ?? string.Empty
+        };
     }
 
     private object? EvaluateBinary(BinaryExpressionAst binary)
     {
         var left = EvaluateExpression(binary.Left);
-        var right = EvaluateExpression(binary.Right);
-
-        if (binary.Operator == PowerShellWasmBinaryOperator.Add && (left is string || right is string))
+        if (binary.Operator == PowerShellWasmBinaryOperator.NullCoalesce)
         {
-            return Convert.ToString(left, CultureInfo.InvariantCulture) + Convert.ToString(right, CultureInfo.InvariantCulture);
+            return left ?? EvaluateExpression(binary.Right);
         }
 
-        var leftNumber = ToNumber(left);
-        var rightNumber = ToNumber(right);
-        var result = binary.Operator switch
+        if (binary.Operator == PowerShellWasmBinaryOperator.LogicalAnd)
         {
-            PowerShellWasmBinaryOperator.Add => leftNumber + rightNumber,
-            PowerShellWasmBinaryOperator.Subtract => leftNumber - rightNumber,
-            PowerShellWasmBinaryOperator.Multiply => leftNumber * rightNumber,
-            PowerShellWasmBinaryOperator.Divide => leftNumber / rightNumber,
-            _ => leftNumber
-        };
+            return ToBoolean(left) && ToBoolean(EvaluateExpression(binary.Right));
+        }
 
-        return NormalizeNumber(result);
+        if (binary.Operator == PowerShellWasmBinaryOperator.LogicalOr)
+        {
+            return ToBoolean(left) || ToBoolean(EvaluateExpression(binary.Right));
+        }
+
+        var right = EvaluateExpression(binary.Right);
+        return binary.Operator switch
+        {
+            PowerShellWasmBinaryOperator.Add => Add(left, right),
+            PowerShellWasmBinaryOperator.Subtract => NormalizeNumber(ToNumber(left) - ToNumber(right)),
+            PowerShellWasmBinaryOperator.Multiply => NormalizeNumber(ToNumber(left) * ToNumber(right)),
+            PowerShellWasmBinaryOperator.Divide => NormalizeNumber(ToNumber(left) / ToNumber(right)),
+            PowerShellWasmBinaryOperator.Remainder => NormalizeNumber(ToNumber(left) % ToNumber(right)),
+            PowerShellWasmBinaryOperator.Range => Range(left, right),
+            PowerShellWasmBinaryOperator.Format => Format(left, right),
+            PowerShellWasmBinaryOperator.LogicalXor => ToBoolean(left) ^ ToBoolean(right),
+            PowerShellWasmBinaryOperator.BitwiseAnd => ToInt64(left) & ToInt64(right),
+            PowerShellWasmBinaryOperator.BitwiseOr => ToInt64(left) | ToInt64(right),
+            PowerShellWasmBinaryOperator.BitwiseXor => ToInt64(left) ^ ToInt64(right),
+            PowerShellWasmBinaryOperator.Join => Join(left, right),
+            PowerShellWasmBinaryOperator.Split => SplitString(ToInvariantString(left), ToInvariantString(right), ignoreCase: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveSplit => SplitString(ToInvariantString(left), ToInvariantString(right), ignoreCase: false),
+            PowerShellWasmBinaryOperator.ShiftLeft => ToInt64(left) << Convert.ToInt32(ToInt64(right), CultureInfo.InvariantCulture),
+            PowerShellWasmBinaryOperator.ShiftRight => ToInt64(left) >> Convert.ToInt32(ToInt64(right), CultureInfo.InvariantCulture),
+            PowerShellWasmBinaryOperator.Equal => CompareValues(left, right, caseSensitive: false) == 0,
+            PowerShellWasmBinaryOperator.NotEqual => CompareValues(left, right, caseSensitive: false) != 0,
+            PowerShellWasmBinaryOperator.GreaterThan => CompareValues(left, right, caseSensitive: false) > 0,
+            PowerShellWasmBinaryOperator.GreaterThanOrEqual => CompareValues(left, right, caseSensitive: false) >= 0,
+            PowerShellWasmBinaryOperator.LessThan => CompareValues(left, right, caseSensitive: false) < 0,
+            PowerShellWasmBinaryOperator.LessThanOrEqual => CompareValues(left, right, caseSensitive: false) <= 0,
+            PowerShellWasmBinaryOperator.Like => WildcardMatch(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotLike => !WildcardMatch(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.Match => RegexMatch(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotMatch => !RegexMatch(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.Replace => ReplaceString(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.Contains => Contains(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotContains => !Contains(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.In => Contains(right, left, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotIn => !Contains(right, left, caseSensitive: false),
+            PowerShellWasmBinaryOperator.CaseSensitiveEqual => CompareValues(left, right, caseSensitive: true) == 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveNotEqual => CompareValues(left, right, caseSensitive: true) != 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveGreaterThan => CompareValues(left, right, caseSensitive: true) > 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveGreaterThanOrEqual => CompareValues(left, right, caseSensitive: true) >= 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveLessThan => CompareValues(left, right, caseSensitive: true) < 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveLessThanOrEqual => CompareValues(left, right, caseSensitive: true) <= 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveLike => WildcardMatch(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotLike => !WildcardMatch(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveMatch => RegexMatch(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotMatch => !RegexMatch(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveReplace => ReplaceString(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveContains => Contains(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotContains => !Contains(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveIn => Contains(right, left, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotIn => !Contains(right, left, caseSensitive: true),
+            _ => left
+        };
     }
 
-    private bool EvaluateComparison(ComparisonExpressionAst comparison)
+    private static object Add(object? left, object? right)
     {
-        var left = EvaluateExpression(comparison.Left);
-        var right = EvaluateExpression(comparison.Right);
-
-        if (TryToNumber(left, out var leftNumber) && TryToNumber(right, out var rightNumber))
+        if (left is string || right is string)
         {
-            var numericComparison = leftNumber.CompareTo(rightNumber);
-            return Compare(numericComparison, comparison.Operator);
+            return ToInvariantString(left) + ToInvariantString(right);
         }
 
-        var stringComparison = string.Compare(
-            Convert.ToString(left, CultureInfo.InvariantCulture),
-            Convert.ToString(right, CultureInfo.InvariantCulture),
-            StringComparison.OrdinalIgnoreCase);
+        if (left is object?[] leftArray)
+        {
+            return leftArray.Concat(Enumerate(right)).ToArray();
+        }
 
-        return Compare(stringComparison, comparison.Operator);
+        return NormalizeNumber(ToNumber(left) + ToNumber(right));
+    }
+
+    private static object?[] Range(object? left, object? right)
+    {
+        var start = Convert.ToInt32(ToNumber(left), CultureInfo.InvariantCulture);
+        var end = Convert.ToInt32(ToNumber(right), CultureInfo.InvariantCulture);
+        var count = Math.Abs(end - start) + 1;
+        var step = start <= end ? 1 : -1;
+        var result = new object?[count];
+
+        for (var i = 0; i < count; i++)
+        {
+            result[i] = start + (i * step);
+        }
+
+        return result;
+    }
+
+    private static string Format(object? left, object? right)
+    {
+        var args = Enumerate(right).ToArray();
+        return string.Format(CultureInfo.InvariantCulture, ToInvariantString(left), args);
+    }
+
+    private static string Join(object? left, object? right) =>
+        string.Join(ToInvariantString(right), Enumerate(left).Select(ToInvariantString));
+
+    private static int CompareValues(object? left, object? right, bool caseSensitive)
+    {
+        if (TryToNumber(left, out var leftNumber) && TryToNumber(right, out var rightNumber))
+        {
+            return leftNumber.CompareTo(rightNumber);
+        }
+
+        return string.Compare(ToInvariantString(left), ToInvariantString(right),
+            caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool WildcardMatch(object? left, object? right, bool caseSensitive)
+    {
+        var pattern = "^" + Regex.Escape(ToInvariantString(right)).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
+        return Regex.IsMatch(ToInvariantString(left), pattern, RegexOptionsFor(caseSensitive));
+    }
+
+    private static bool RegexMatch(object? left, object? right, bool caseSensitive) =>
+        Regex.IsMatch(ToInvariantString(left), ToInvariantString(right), RegexOptionsFor(caseSensitive));
+
+    private static string ReplaceString(object? left, object? right, bool caseSensitive)
+    {
+        var args = Enumerate(right).Select(ToInvariantString).ToArray();
+        var pattern = args.Length > 0 ? args[0] : string.Empty;
+        var replacement = args.Length > 1 ? args[1] : string.Empty;
+        return Regex.Replace(ToInvariantString(left), pattern, replacement, RegexOptionsFor(caseSensitive));
+    }
+
+    private static object?[] SplitString(string value, string pattern, bool ignoreCase)
+    {
+        var options = ignoreCase ? RegexOptions.CultureInvariant | RegexOptions.IgnoreCase : RegexOptions.CultureInvariant;
+        return Regex.Split(value, pattern, options).Where(static item => item.Length > 0).Cast<object?>().ToArray();
+    }
+
+    private static bool Contains(object? collection, object? value, bool caseSensitive) =>
+        Enumerate(collection).Any(item => CompareValues(item, value, caseSensitive) == 0);
+
+    private static RegexOptions RegexOptionsFor(bool caseSensitive) =>
+        caseSensitive ? RegexOptions.CultureInvariant : RegexOptions.CultureInvariant | RegexOptions.IgnoreCase;
+
+    private static IEnumerable<object?> Enumerate(object? value)
+    {
+        if (value is null)
+        {
+            yield break;
+        }
+
+        if (value is string)
+        {
+            yield return value;
+            yield break;
+        }
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                yield return item;
+            }
+
+            yield break;
+        }
+
+        yield return value;
     }
 
     private string ExpandString(string value) =>
@@ -220,19 +372,44 @@ internal sealed class PowerShellWasmAstExecutor(
     private static double ToNumber(object? value) =>
         value switch
         {
+            bool boolValue => boolValue ? 1 : 0,
             int intValue => intValue,
+            long longValue => longValue,
             double doubleValue => doubleValue,
             decimal decimalValue => (double)decimalValue,
             string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
             _ => throw new InvalidOperationException($"Value '{value}' is not numeric.")
         };
 
+    private static long ToInt64(object? value) =>
+        Convert.ToInt64(ToNumber(value), CultureInfo.InvariantCulture);
+
+    private static bool ToBoolean(object? value) =>
+        value switch
+        {
+            null => false,
+            bool boolValue => boolValue,
+            int intValue => intValue != 0,
+            long longValue => longValue != 0,
+            double doubleValue => Math.Abs(doubleValue) > 0.0000000001,
+            decimal decimalValue => decimalValue != 0,
+            string stringValue => stringValue.Length > 0,
+            object?[] arrayValue => arrayValue.Length > 0,
+            _ => true
+        };
+
     private static bool TryToNumber(object? value, out double number)
     {
         switch (value)
         {
+            case bool boolValue:
+                number = boolValue ? 1 : 0;
+                return true;
             case int intValue:
                 number = intValue;
+                return true;
+            case long longValue:
+                number = longValue;
                 return true;
             case double doubleValue:
                 number = doubleValue;
@@ -249,17 +426,8 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    private static bool Compare(int comparison, PowerShellWasmComparisonOperator op) =>
-        op switch
-        {
-            PowerShellWasmComparisonOperator.Equal => comparison == 0,
-            PowerShellWasmComparisonOperator.NotEqual => comparison != 0,
-            PowerShellWasmComparisonOperator.GreaterThan => comparison > 0,
-            PowerShellWasmComparisonOperator.GreaterThanOrEqual => comparison >= 0,
-            PowerShellWasmComparisonOperator.LessThan => comparison < 0,
-            PowerShellWasmComparisonOperator.LessThanOrEqual => comparison <= 0,
-            _ => false
-        };
+    private static string ToInvariantString(object? value) =>
+        Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
 
     private static object NormalizeNumber(double value) =>
         Math.Abs(value - Math.Round(value)) < 0.0000000001 && value >= int.MinValue && value <= int.MaxValue
