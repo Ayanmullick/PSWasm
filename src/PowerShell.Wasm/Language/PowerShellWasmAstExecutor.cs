@@ -128,13 +128,22 @@ internal sealed class PowerShellWasmAstExecutor(
             VariableExpressionAst variable => variable.IsEnvironment
                 ? executionContext.GetEnvironmentVariable(variable.Name) ?? string.Empty
                 : executionContext.GetVariable(variable.Name),
+            AssignmentExpressionAst assignment => EvaluateAssignment(assignment),
             HashtableExpressionAst hashtable => EvaluateHashtable(hashtable),
             ArrayExpressionAst array => array.Items.Select(EvaluateExpression).ToArray(),
             ParenthesizedExpressionAst parenthesized => EvaluateExpression(parenthesized.Expression),
             UnaryExpressionAst unary => EvaluateUnary(unary),
             BinaryExpressionAst binary => EvaluateBinary(binary),
+            ComparisonExpressionAst comparison => EvaluateComparison(comparison),
             _ => null
         };
+
+    private object? EvaluateAssignment(AssignmentExpressionAst assignment)
+    {
+        var value = EvaluateExpression(assignment.Value);
+        executionContext.SetVariable(assignment.VariableName, value);
+        return value;
+    }
 
     private Dictionary<string, object?> EvaluateHashtable(HashtableExpressionAst hashtable)
     {
@@ -177,6 +186,25 @@ internal sealed class PowerShellWasmAstExecutor(
         return NormalizeNumber(result);
     }
 
+    private bool EvaluateComparison(ComparisonExpressionAst comparison)
+    {
+        var left = EvaluateExpression(comparison.Left);
+        var right = EvaluateExpression(comparison.Right);
+
+        if (TryToNumber(left, out var leftNumber) && TryToNumber(right, out var rightNumber))
+        {
+            var numericComparison = leftNumber.CompareTo(rightNumber);
+            return Compare(numericComparison, comparison.Operator);
+        }
+
+        var stringComparison = string.Compare(
+            Convert.ToString(left, CultureInfo.InvariantCulture),
+            Convert.ToString(right, CultureInfo.InvariantCulture),
+            StringComparison.OrdinalIgnoreCase);
+
+        return Compare(stringComparison, comparison.Operator);
+    }
+
     private string ExpandString(string value) =>
         Regex.Replace(value, @"\$(env:)?([A-Za-z_][A-Za-z0-9_]*)", match =>
         {
@@ -197,6 +225,40 @@ internal sealed class PowerShellWasmAstExecutor(
             decimal decimalValue => (double)decimalValue,
             string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
             _ => throw new InvalidOperationException($"Value '{value}' is not numeric.")
+        };
+
+    private static bool TryToNumber(object? value, out double number)
+    {
+        switch (value)
+        {
+            case int intValue:
+                number = intValue;
+                return true;
+            case double doubleValue:
+                number = doubleValue;
+                return true;
+            case decimal decimalValue:
+                number = (double)decimalValue;
+                return true;
+            case string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed):
+                number = parsed;
+                return true;
+            default:
+                number = 0;
+                return false;
+        }
+    }
+
+    private static bool Compare(int comparison, PowerShellWasmComparisonOperator op) =>
+        op switch
+        {
+            PowerShellWasmComparisonOperator.Equal => comparison == 0,
+            PowerShellWasmComparisonOperator.NotEqual => comparison != 0,
+            PowerShellWasmComparisonOperator.GreaterThan => comparison > 0,
+            PowerShellWasmComparisonOperator.GreaterThanOrEqual => comparison >= 0,
+            PowerShellWasmComparisonOperator.LessThan => comparison < 0,
+            PowerShellWasmComparisonOperator.LessThanOrEqual => comparison <= 0,
+            _ => false
         };
 
     private static object NormalizeNumber(double value) =>

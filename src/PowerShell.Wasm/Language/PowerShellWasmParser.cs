@@ -248,7 +248,30 @@ public sealed class PowerShellWasmParser
                 return new StringExpressionAst(string.Empty, IsExpandable: false);
             }
 
-            return ParseAdditive();
+            return ParseAssignment();
+        }
+
+        private ExpressionAst ParseAssignment()
+        {
+            if (Current.Kind == PowerShellWasmTokenKind.Variable && Peek(1).Kind == PowerShellWasmTokenKind.Equals)
+            {
+                var variable = Current.Text;
+                _position += 2;
+                return new AssignmentExpressionAst(variable, ParseAssignment());
+            }
+
+            return ParseComparison();
+        }
+
+        private ExpressionAst ParseComparison()
+        {
+            var expression = ParseAdditive();
+            while (TryReadComparisonOperator(out var op))
+            {
+                expression = new ComparisonExpressionAst(expression, op, ParseAdditive());
+            }
+
+            return expression;
         }
 
         private ExpressionAst ParseAdditive()
@@ -311,7 +334,7 @@ public sealed class PowerShellWasmParser
 
         private ExpressionAst ParseParenthesized()
         {
-            var expression = ParseAdditive();
+            var expression = ParseAssignment();
             Consume(PowerShellWasmTokenKind.RParen);
             return new ParenthesizedExpressionAst(expression);
         }
@@ -329,7 +352,7 @@ public sealed class PowerShellWasmParser
 
                 var key = ReadHashtableKey();
                 Consume(PowerShellWasmTokenKind.Equals);
-                entries.Add(new(key, ParseAdditive()));
+                entries.Add(new(key, ParseAssignment()));
                 SkipExpressionSeparators();
             }
 
@@ -348,7 +371,7 @@ public sealed class PowerShellWasmParser
                     break;
                 }
 
-                items.Add(ParseAdditive());
+                items.Add(ParseAssignment());
                 SkipExpressionSeparators();
             }
 
@@ -384,6 +407,41 @@ public sealed class PowerShellWasmParser
 
         private PowerShellWasmToken Current =>
             _position < tokens.Count ? tokens[_position] : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
+
+        private PowerShellWasmToken Peek(int offset)
+        {
+            var position = _position + offset;
+            return position < tokens.Count ? tokens[position] : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
+        }
+
+        private bool TryReadComparisonOperator(out PowerShellWasmComparisonOperator op)
+        {
+            op = default;
+            if (Current.Kind != PowerShellWasmTokenKind.Parameter)
+            {
+                return false;
+            }
+
+            var found = Current.Text.ToLowerInvariant() switch
+            {
+                "eq" => PowerShellWasmComparisonOperator.Equal,
+                "ne" => PowerShellWasmComparisonOperator.NotEqual,
+                "gt" => PowerShellWasmComparisonOperator.GreaterThan,
+                "ge" => PowerShellWasmComparisonOperator.GreaterThanOrEqual,
+                "lt" => PowerShellWasmComparisonOperator.LessThan,
+                "le" => PowerShellWasmComparisonOperator.LessThanOrEqual,
+                _ => (PowerShellWasmComparisonOperator?)null
+            };
+
+            if (found is null)
+            {
+                return false;
+            }
+
+            op = found.Value;
+            _position++;
+            return true;
+        }
 
         private static ExpressionAst ParseNumber(string text) =>
             int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intValue)

@@ -22,6 +22,8 @@ $name = 'PowerShell'
 Write-Output "Hello $name"
 Write-Output (2+2)
 2 + 2
+($var = 1 + 2) -eq 3
+$var
 $count = 2 * (3 + 4)
 Write-Output $count
 $Out = @{InputObject= 'Splat works'}

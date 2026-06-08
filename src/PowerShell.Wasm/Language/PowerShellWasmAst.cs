@@ -41,6 +41,8 @@ public sealed record StringExpressionAst(string Value, bool IsExpandable) : Expr
 
 public sealed record VariableExpressionAst(string Name, bool IsEnvironment) : ExpressionAst;
 
+public sealed record AssignmentExpressionAst(string VariableName, ExpressionAst Value) : ExpressionAst;
+
 public sealed record HashtableExpressionAst(IReadOnlyList<HashtableEntryAst> Entries) : ExpressionAst;
 
 public sealed record HashtableEntryAst(string Key, ExpressionAst Value) : PowerShellWasmAst;
@@ -52,6 +54,8 @@ public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : Expr
 public sealed record UnaryExpressionAst(PowerShellWasmUnaryOperator Operator, ExpressionAst Operand) : ExpressionAst;
 
 public sealed record BinaryExpressionAst(ExpressionAst Left, PowerShellWasmBinaryOperator Operator, ExpressionAst Right) : ExpressionAst;
+
+public sealed record ComparisonExpressionAst(ExpressionAst Left, PowerShellWasmComparisonOperator Operator, ExpressionAst Right) : ExpressionAst;
 
 public enum PowerShellWasmUnaryOperator
 {
@@ -65,4 +69,14 @@ public enum PowerShellWasmBinaryOperator
     Subtract,
     Multiply,
     Divide
+}
+
+public enum PowerShellWasmComparisonOperator
+{
+    Equal,
+    NotEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual
 }

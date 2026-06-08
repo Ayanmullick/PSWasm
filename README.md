@@ -19,10 +19,12 @@ The first runtime supports:
 * `$env:Name` lookup through a browser-provided environment map
 * simple named parameters
 * arithmetic expressions with precedence and parentheses
+* grouped assignment expressions such as `($var = 1 + 2)`
+* basic comparison operators: `-eq`, `-ne`, `-gt`, `-ge`, `-lt`, `-le`
 * a basic command pipeline for registered browser commands
 * a pluggable command registry
 
-The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs.
+The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs. It also does not yet implement every operator in `about_Operators`; each operator has to be mapped to browser-safe AST and executor behavior.
 
 ## Layout
 
