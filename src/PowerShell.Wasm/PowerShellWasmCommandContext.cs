@@ -2,14 +2,24 @@ using System.Globalization;
 
 namespace PSWasm;
 
-public sealed class PowerShellWasmCommandContext(
-    PowerShellWasmExecutionContext executionContext,
-    IReadOnlyDictionary<string, object?> parameters,
-    IReadOnlyList<object?> arguments)
+public sealed class PowerShellWasmCommandContext
 {
-    public PowerShellWasmExecutionContext ExecutionContext { get; } = executionContext;
-    public IReadOnlyDictionary<string, object?> Parameters { get; } = parameters;
-    public IReadOnlyList<object?> Arguments { get; } = arguments;
+    public PowerShellWasmCommandContext(
+        PowerShellWasmExecutionContext executionContext,
+        IReadOnlyDictionary<string, object?> parameters,
+        IReadOnlyList<object?> arguments,
+        IReadOnlyList<object?>? pipelineInput = null)
+    {
+        ExecutionContext = executionContext;
+        Parameters = parameters;
+        Arguments = arguments;
+        PipelineInput = pipelineInput ?? [];
+    }
+
+    public PowerShellWasmExecutionContext ExecutionContext { get; }
+    public IReadOnlyDictionary<string, object?> Parameters { get; }
+    public IReadOnlyList<object?> Arguments { get; }
+    public IReadOnlyList<object?> PipelineInput { get; }
 
     public string? GetString(string name)
     {

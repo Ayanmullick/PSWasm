@@ -4,7 +4,14 @@ internal sealed class WriteOutputCommand : IPowerShellWasmCommand
 {
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
-        foreach (var argument in context.Arguments)
+        if (context.Parameters.TryGetValue("InputObject", out var inputObject))
+        {
+            context.ExecutionContext.WriteOutput(inputObject);
+            return ValueTask.CompletedTask;
+        }
+
+        var output = context.Arguments.Count > 0 ? context.Arguments : context.PipelineInput;
+        foreach (var argument in output)
         {
             context.ExecutionContext.WriteOutput(argument);
         }

@@ -9,11 +9,17 @@ The goal is to execute PowerShell text in a static web page without a build-time
 The first runtime supports:
 
 * `Write-Output`
+* tokenization into a browser-safe PowerShell token stream
+* parsing into a small AST profile
+* AST-based expression and command execution
 * variable assignment
 * hashtable literals
 * splatting with `@Params`
+* expandable strings such as `"Hello $Name"`
 * `$env:Name` lookup through a browser-provided environment map
 * simple named parameters
+* arithmetic expressions with precedence and parentheses
+* a basic command pipeline for registered browser commands
 * a pluggable command registry
 
 The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs.
@@ -22,7 +28,7 @@ The runtime intentionally does not include the full PowerShell host, providers, 
 
 ```text
 src/PowerShell.Wasm
-  Small PowerShell-compatible runtime and command registry.
+  Browser-safe PowerShell parser, AST profile, executor, and command registry.
 
 samples/BrowserHost
   Static browser-wasm host that reads <script type="pwsh"> blocks at runtime.
@@ -108,4 +114,16 @@ This repo deploys the browser host with GitHub Actions. After the workflow succe
 
 ## Direction
 
-This is the first carve-out toward a browser-compatible PowerShell profile. The long-term path is to replace more of the small interpreter with reusable pieces from `System.Management.Automation` where they can be made `browser-wasm` compatible without pulling in the full desktop/server runtime.
+This is a carve-out toward a browser-compatible PowerShell profile. The runtime now has the same broad layers as the PowerShell engine: tokenizer, parser, AST, session state, command dispatch, parameter binding, splatting, expression evaluation, and a basic pipeline.
+
+The implementation keeps source-reference comments in the new language/runtime files so future work can compare against the original PowerShell repository:
+
+* `src/System.Management.Automation/engine/parser/token.cs`
+* `src/System.Management.Automation/engine/parser/tokenizer.cs`
+* `src/System.Management.Automation/engine/parser/Parser.cs`
+* `src/System.Management.Automation/engine/parser/ast.cs`
+* `src/System.Management.Automation/engine/SessionState*.cs`
+* `src/System.Management.Automation/engine/CommandProcessor*.cs`
+* `src/System.Management.Automation/engine/ParameterBinder*.cs`
+
+This repo should continue copying or adapting those designs only where they can stay browser-safe. Full `System.Management.Automation` parity still requires explicitly excluding desktop/server features such as providers, native process execution, remoting, jobs, module autoloading, and host UI APIs.
