@@ -1,0 +1,12 @@
+C:\temp\PSWasm\src\PowerShell.Wasm\bin\Debug\net10.0\PowerShell.Wasm.deps.json
+C:\temp\PSWasm\src\PowerShell.Wasm\bin\Debug\net10.0\PowerShell.Wasm.dll
+C:\temp\PSWasm\src\PowerShell.Wasm\bin\Debug\net10.0\PowerShell.Wasm.pdb
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\PowerShell.Wasm.GeneratedMSBuildEditorConfig.editorconfig
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\PowerShell.Wasm.AssemblyInfoInputs.cache
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\PowerShell.Wasm.AssemblyInfo.cs
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\PowerShell.Wasm.csproj.CoreCompileInputs.cache
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\PowerShell.Wasm.sourcelink.json
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\PowerShell.Wasm.dll
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\refint\PowerShell.Wasm.dll
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\PowerShell.Wasm.pdb
+C:\temp\PSWasm\src\PowerShell.Wasm\obj\Debug\net10.0\ref\PowerShell.Wasm.dll
