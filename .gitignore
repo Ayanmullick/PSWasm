@@ -5,7 +5,9 @@ publish/
 TestResults/
 
 .vs/
-.vscode/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 .idea/
 *.user
 *.suo

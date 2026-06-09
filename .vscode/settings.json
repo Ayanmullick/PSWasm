@@ -1,0 +1,15 @@
+{
+  "extensions.ignoreRecommendations": false,
+  "files.exclude": {
+    "**/bin": true,
+    "**/obj": true,
+    "publish": true
+  },
+  "search.exclude": {
+    "**/bin": true,
+    "**/obj": true,
+    "publish": true
+  },
+  "unoplatform.ignoreCheck": true,
+  "unoplatform.ignoreUnoSdkValidation": true
+}

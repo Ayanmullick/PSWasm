@@ -1,0 +1,21 @@
+{
+  "recommendations": [
+    "ms-dotnettools.csdevkit",
+    "ms-dotnettools.csharp",
+    "ms-dotnettools.vscode-dotnet-runtime"
+  ],
+  "unwantedRecommendations": [
+    "azureadb2ctools.aadb2c",
+    "ms-azuretools.vscode-azure-github-copilot",
+    "ms-azuretools.vscode-azure-mcp-server",
+    "ms-azuretools.vscode-azurefunctions",
+    "ms-azuretools.vscode-azureresourcegroups",
+    "ms-azuretools.vscode-azurestaticwebapps",
+    "ms-azuretools.vscode-azurevirtualmachines",
+    "ms-azuretools.vscode-bicep",
+    "ms-azuretools.vscode-cosmosdb",
+    "ms-dotnettools.blazorwasm-companion",
+    "ms-vscode.azure-repos",
+    "unoplatform.vscode"
+  ]
+}
