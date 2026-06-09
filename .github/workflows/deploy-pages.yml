@@ -34,6 +34,12 @@ jobs:
       - name: Build runtime
         run: dotnet build src/PowerShell.Wasm/PowerShell.Wasm.csproj --configuration Release
 
+      - name: Verify runtime behavior
+        run: dotnet run --project tests/PowerShell.Wasm.Verify/PowerShell.Wasm.Verify.csproj --configuration Release
+
+      - name: Check browser module syntax
+        run: node --check samples/BrowserHost/wwwroot/app.js
+
       - name: Publish browser host
         run: dotnet publish samples/BrowserHost/PSWasm.BrowserHost.csproj --configuration Release --runtime browser-wasm --output publish /p:UseAppHost=false
 

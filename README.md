@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* browser-safe built-in commands: `Get-Date`, `Get-Time`, `Get-TimeZone`, `Write-*`
+* browser-safe built-in commands: `ConvertFrom-Json`, `ConvertTo-Json`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
@@ -16,12 +16,14 @@ The first runtime supports:
 * hashtable literals
 * splatting with `@Params`
 * expandable strings such as `"Hello $Name"`
+* script blocks with `$_` and `$PSItem` for browser-safe pipeline commands
+* simple member access such as `$_.Name` against hashtable-like objects
 * `$env:Name` lookup through a browser-provided environment map
 * simple named parameters
 * arithmetic expressions with PowerShell-style precedence and parentheses
 * grouped assignment expressions such as `($var = 1 + 2)`
 * browser-safe operators adapted from PowerShell `TokenTraits`
-* a basic command pipeline for registered browser commands
+* a basic object pipeline for registered browser commands
 * a pluggable command registry
 
 The browser-safe operator set currently includes:
@@ -48,6 +50,31 @@ The browser-safe `Write-*` command set includes:
 
 `Write-Output` emits pipeline output. `Write-Host` writes visible host output. The other streams render as tagged browser output, such as `[Warning] message`, until a richer DOM stream UI is added.
 
+The browser-safe object pipeline command set includes:
+
+* `ConvertFrom-Json`
+* `ConvertTo-Json`
+* `ForEach-Object`
+* `Group-Object`
+* `Measure-Object`
+* `Out-String`
+* `Select-Object`
+* `Sort-Object`
+* `Where-Object`
+
+The aliases `ForEach`, `Group`, `Measure`, `Select`, `Sort`, and `Where` are also registered. Script blocks can use `$_` or `$PSItem` for the current pipeline item:
+
+```powershell
+1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
+@{Name='browser'; Value=42} | ConvertTo-Json -Compress
+'{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
+@(@{Name='three'; Value=3}, @{Name='one'; Value=1}, @{Name='two'; Value=2}) | Sort-Object Value
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Measure-Object Value -Sum -Average
+@('b','a','b') | Group-Object | Sort-Object Name
+@{Name='one'; Value=1} | Out-String
+```
+
 The browser loader colors stream output by default:
 
 * `Write-Error` renders red.
@@ -67,6 +94,9 @@ samples/BrowserHost
 
 samples/ConsoleSmoke
   Local smoke test for the runtime without the WebAssembly workload.
+
+tests/PowerShell.Wasm.Verify
+  Assertion-based runtime checks for operators, streams, built-ins, splatting, and object pipelines.
 ```
 
 ## Build
@@ -89,6 +119,12 @@ Run the local smoke sample:
 dotnet run --project .\samples\ConsoleSmoke\ConsoleSmoke.csproj
 ```
 
+Run assertion-based runtime verification:
+
+```powershell
+dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.csproj
+```
+
 Publish the browser sample:
 
 ```powershell
@@ -103,7 +139,7 @@ publish/wwwroot
 
 ## Browser POC
 
-The browser sample reads inline PowerShell blocks like this at runtime:
+The browser sample reads inline PowerShell blocks like this at runtime. Importing `app.js` automatically runs every `<script type="pwsh">` block on the page and writes to `#output`.
 
 ```html
 <pre id="output">Starting...</pre>
@@ -112,9 +148,53 @@ The browser sample reads inline PowerShell blocks like this at runtime:
 Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Write-Warning 'Browser-visible warning'
 Write-Output (2 + 2)
+1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
+@{Name='browser'; Value=42} | ConvertTo-Json -Compress
 </script>
 
 <script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
+```
+
+Static apps can also call the browser API directly:
+
+```html
+<pre id="output">Starting...</pre>
+
+<script type="module">
+  window.pswasmDisableAutoRun = true;
+
+  const { executePowerShell, renderPowerShellOutput } =
+    await import("https://ayanmullick.github.io/PSWasm/app.js");
+
+  const output = await executePowerShell(`
+Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+Write-Information 'Executed from JavaScript'
+Write-Output (2 + 2)
+  `);
+
+  renderPowerShellOutput(output, "#output");
+</script>
+```
+
+For stream-aware rendering, use the structured result API:
+
+```javascript
+const { executePowerShellResult, renderPowerShellResult } =
+  await import("https://ayanmullick.github.io/PSWasm/app.js");
+
+const result = await executePowerShellResult("Write-Warning 'Check this'");
+// result.records: [{ stream: "Warning", text: "Check this" }]
+renderPowerShellResult(result, "#output");
+```
+
+The published browser module includes `app.d.ts` beside `app.js` for editors and static-app tooling. The public API shape is:
+
+```typescript
+executePowerShell(script, options)       // Promise<string>
+executePowerShellResult(script, options) // Promise<PowerShellWasmResult>
+runPowerShellScripts(options)            // Promise<void>
+renderPowerShellResult(result, target)   // void
+renderPowerShellOutput(text, target)     // void
 ```
 
 If a static host or CodePen keeps an old browser bundle in cache after a new deployment, add a version query string:

@@ -12,7 +12,8 @@ public sealed class PowerShellWasmExecutionContext
         _environment = environment is null ? new(StringComparer.OrdinalIgnoreCase) : new(environment, StringComparer.OrdinalIgnoreCase);
     }
 
-    public IReadOnlyList<string> Output => _output.Select(FormatOutput).ToArray();
+    public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Select(FormatRecord).ToArray();
+    public IReadOnlyList<string> Output => Records.Select(FormatRecordLine).ToArray();
 
     public string? GetEnvironmentVariable(string name) =>
         _environment.TryGetValue(name, out var value) ? value : Environment.GetEnvironmentVariable(name);
@@ -22,6 +23,15 @@ public sealed class PowerShellWasmExecutionContext
 
     public void SetVariable(string name, object? value) =>
         _variables[name] = value;
+
+    internal IDisposable WithPipelineItem(object? value)
+    {
+        var hadUnderscore = _variables.TryGetValue("_", out var underscore);
+        var hadPSItem = _variables.TryGetValue("PSItem", out var psItem);
+        _variables["_"] = value;
+        _variables["PSItem"] = value;
+        return new PipelineItemScope(this, hadUnderscore, underscore, hadPSItem, psItem);
+    }
 
     public void WriteOutput(object? value)
     {
@@ -60,11 +70,41 @@ public sealed class PowerShellWasmExecutionContext
         }
     }
 
+    private void RestorePipelineItem(bool hadUnderscore, object? underscore, bool hadPSItem, object? psItem)
+    {
+        RestoreVariable("_", hadUnderscore, underscore);
+        RestoreVariable("PSItem", hadPSItem, psItem);
+    }
+
+    private void RestoreVariable(string name, bool hadValue, object? value)
+    {
+        if (hadValue)
+        {
+            _variables[name] = value;
+        }
+        else
+        {
+            _variables.Remove(name);
+        }
+    }
+
+    private static PowerShellWasmOutputRecord FormatRecord(object? value) =>
+        value switch
+        {
+            PowerShellWasmStreamRecord stream => new(stream.StreamName, FormatOutput(stream.Value)),
+            _ => new("Output", FormatOutput(value))
+        };
+
+    private static string FormatRecordLine(PowerShellWasmOutputRecord record) =>
+        record.Stream.Equals("Output", StringComparison.OrdinalIgnoreCase)
+            ? record.Text
+            : $"[{record.Stream}] {record.Text}";
+
     private static string FormatOutput(object? value) =>
         value switch
         {
             null => string.Empty,
-            PowerShellWasmStreamRecord stream => $"[{stream.StreamName}] {FormatOutput(stream.Value)}",
+            PowerShellWasmStreamRecord stream => FormatOutput(stream.Value),
             Dictionary<string, object?> hashtable => "@{" + string.Join("; ", hashtable.Select(static item => $"{item.Key}={FormatOutput(item.Value)}")) + "}",
             object?[] array => string.Join(Environment.NewLine, array.Select(FormatOutput)),
             _ => value.ToString() ?? string.Empty
@@ -76,5 +116,16 @@ public sealed class PowerShellWasmExecutionContext
     {
         public void Dispose() =>
             context.ReleaseOutputCapture(output);
+    }
+
+    private sealed class PipelineItemScope(
+        PowerShellWasmExecutionContext context,
+        bool hadUnderscore,
+        object? underscore,
+        bool hadPSItem,
+        object? psItem) : IDisposable
+    {
+        public void Dispose() =>
+            context.RestorePipelineItem(hadUnderscore, underscore, hadPSItem, psItem);
     }
 }

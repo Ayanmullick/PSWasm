@@ -105,7 +105,8 @@ public sealed class PowerShellWasmParser
     private static IReadOnlyList<PowerShellWasmToken> ReadCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
     {
         var start = position;
-        if (tokens[position].Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen)
+        if (tokens[position].Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or
+            PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen)
         {
             var depth = 0;
             do
@@ -173,6 +174,12 @@ public sealed class PowerShellWasmParser
 
             if (depth == 0 && token.Kind is PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.Semicolon)
             {
+                if (token.Kind == PowerShellWasmTokenKind.NewLine && LastSignificantTokenKind(tokens, start, position) == PowerShellWasmTokenKind.Pipe)
+                {
+                    position++;
+                    continue;
+                }
+
                 break;
             }
 
@@ -181,6 +188,22 @@ public sealed class PowerShellWasmParser
         }
 
         return tokens.Skip(start).Take(position - start).Where(static t => t.Kind != PowerShellWasmTokenKind.NewLine).ToArray();
+    }
+
+    private static PowerShellWasmTokenKind? LastSignificantTokenKind(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        int start,
+        int position)
+    {
+        for (var i = position - 1; i >= start; i--)
+        {
+            if (tokens[i].Kind is not PowerShellWasmTokenKind.NewLine and not PowerShellWasmTokenKind.Semicolon)
+            {
+                return tokens[i].Kind;
+            }
+        }
+
+        return null;
     }
 
     private static IReadOnlyList<IReadOnlyList<PowerShellWasmToken>> SplitTopLevel(
@@ -288,7 +311,21 @@ public sealed class PowerShellWasmParser
                 return new UnaryExpressionAst(op, ParseUnary());
             }
 
-            return ParsePrimary();
+            return ParsePostfix();
+        }
+
+        private ExpressionAst ParsePostfix()
+        {
+            var expression = ParsePrimary();
+            while (Current.Kind == PowerShellWasmTokenKind.Identifier &&
+                Current.Text.StartsWith(".", StringComparison.Ordinal) &&
+                Current.Text.Length > 1)
+            {
+                expression = new MemberAccessExpressionAst(expression, Current.Text[1..]);
+                _position++;
+            }
+
+            return expression;
         }
 
         private ExpressionAst ParsePrimary()
@@ -305,6 +342,7 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.Identifier => new BareWordExpressionAst(token.Text),
                 PowerShellWasmTokenKind.Parameter => new BareWordExpressionAst("-" + token.Text),
                 PowerShellWasmTokenKind.LParen => ParseParenthesized(),
+                PowerShellWasmTokenKind.LBrace => ParseScriptBlock(),
                 PowerShellWasmTokenKind.AtLBrace => ParseHashtable(),
                 PowerShellWasmTokenKind.AtLParen => ParseArray(),
                 _ => new BareWordExpressionAst(token.Text)
@@ -316,6 +354,27 @@ public sealed class PowerShellWasmParser
             var expression = ParseAssignment();
             Consume(PowerShellWasmTokenKind.RParen);
             return new ParenthesizedExpressionAst(expression);
+        }
+
+        private ScriptBlockExpressionAst ParseScriptBlock()
+        {
+            var start = _position;
+            var depth = 0;
+
+            while (Current.Kind is not PowerShellWasmTokenKind.EndOfInput)
+            {
+                if (Current.Kind == PowerShellWasmTokenKind.RBrace && depth == 0)
+                {
+                    break;
+                }
+
+                UpdateDepth(Current, ref depth);
+                _position++;
+            }
+
+            var bodyTokens = tokens.Skip(start).Take(_position - start).ToArray();
+            Consume(PowerShellWasmTokenKind.RBrace);
+            return new ScriptBlockExpressionAst(new ScriptAst(ParseStatements(bodyTokens)));
         }
 
         private HashtableExpressionAst ParseHashtable()

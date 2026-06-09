@@ -55,7 +55,11 @@ internal sealed class PowerShellWasmAstExecutor(
                 switch (element)
                 {
                     case ExpressionPipelineElementAst expression:
-                        executionContext.WriteOutput(EvaluateExpression(expression.Expression));
+                        foreach (var item in Enumerate(EvaluateExpression(expression.Expression)))
+                        {
+                            executionContext.WriteOutput(item);
+                        }
+
                         break;
                     case CommandPipelineElementAst command:
                         await ExecuteCommandAsync(command.Command, input, cancellationToken);
@@ -131,7 +135,9 @@ internal sealed class PowerShellWasmAstExecutor(
             AssignmentExpressionAst assignment => EvaluateAssignment(assignment),
             HashtableExpressionAst hashtable => EvaluateHashtable(hashtable),
             ArrayExpressionAst array => array.Items.Select(EvaluateExpression).ToArray(),
+            ScriptBlockExpressionAst scriptBlock => CreateScriptBlock(scriptBlock),
             ParenthesizedExpressionAst parenthesized => EvaluateExpression(parenthesized.Expression),
+            MemberAccessExpressionAst member => EvaluateMemberAccess(member),
             UnaryExpressionAst unary => EvaluateUnary(unary),
             BinaryExpressionAst binary => EvaluateBinary(binary),
             _ => null
@@ -162,6 +168,58 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         return result;
+    }
+
+    private PowerShellWasmScriptBlock CreateScriptBlock(ScriptBlockExpressionAst scriptBlock) =>
+        new(async (input, cancellationToken) =>
+        {
+            var output = new List<object?>();
+            using (executionContext.WithPipelineItem(input))
+            using (executionContext.CaptureOutput(output))
+            {
+                foreach (var statement in scriptBlock.Body.Statements)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await ExecuteStatementAsync(statement, [], cancellationToken);
+                }
+            }
+
+            return output;
+        });
+
+    private object? EvaluateMemberAccess(MemberAccessExpressionAst member)
+    {
+        var target = EvaluateExpression(member.Target);
+        if (target is null)
+        {
+            return null;
+        }
+
+        if (target is IReadOnlyDictionary<string, object?> readOnlyDictionary &&
+            readOnlyDictionary.TryGetValue(member.MemberName, out var readOnlyValue))
+        {
+            return readOnlyValue;
+        }
+
+        if (target is IDictionary<string, object?> dictionary &&
+            dictionary.TryGetValue(member.MemberName, out var value))
+        {
+            return value;
+        }
+
+        if (target is System.Collections.IDictionary legacyDictionary)
+        {
+            foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
+            {
+                if (string.Equals(Convert.ToString(entry.Key, CultureInfo.InvariantCulture), member.MemberName,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry.Value;
+                }
+            }
+        }
+
+        return null;
     }
 
     private object EvaluateUnary(UnaryExpressionAst unary)
@@ -339,6 +397,12 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         if (value is string)
+        {
+            yield return value;
+            yield break;
+        }
+
+        if (value is System.Collections.IDictionary or IReadOnlyDictionary<string, object?>)
         {
             yield return value;
             yield break;

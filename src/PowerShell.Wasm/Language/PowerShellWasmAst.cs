@@ -49,7 +49,11 @@ public sealed record HashtableEntryAst(string Key, ExpressionAst Value) : PowerS
 
 public sealed record ArrayExpressionAst(IReadOnlyList<ExpressionAst> Items) : ExpressionAst;
 
+public sealed record ScriptBlockExpressionAst(ScriptAst Body) : ExpressionAst;
+
 public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : ExpressionAst;
+
+public sealed record MemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 
 public sealed record UnaryExpressionAst(PowerShellWasmUnaryOperator Operator, ExpressionAst Operand) : ExpressionAst;
 

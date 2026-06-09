@@ -27,11 +27,30 @@ Write-Warning 'Warning message'
 Write-Error 'Error message'
 Write-Output (2 + 2)
 ($var = 1 + 2) -eq 3
+1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
+    Where-Object { $PSItem.Value -ge 2 } |
+    Select-Object -ExpandProperty Name
+@{Name='browser'; Value=42} | ConvertTo-Json -Compress
+'{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
+@(@{Name='three'; Value=3}, @{Name='one'; Value=1}, @{Name='two'; Value=2}) |
+    Sort-Object Value |
+    Select-Object -ExpandProperty Name
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
+    Measure-Object Value -Sum -Average -Minimum -Maximum |
+    ConvertTo-Json -Compress
+@('b','a','b') |
+    Group-Object |
+    Sort-Object Name |
+    Select-Object Count Name |
+    ConvertTo-Json -Compress
+@{Name='one'; Value=1} | Out-String
   </script>
 
   <script>
     window.pswasmEnvironment = {};
   </script>
+  <!-- Importing app.js automatically runs all <script type="pwsh"> blocks. -->
   <script type="module" src="./app.js"></script>
 </body>
 </html>

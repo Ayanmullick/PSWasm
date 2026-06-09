@@ -1,0 +1,200 @@
+using System.Globalization;
+
+namespace PSWasm.Commands;
+
+internal static class PowerShellWasmCommandUtilities
+{
+    public static IEnumerable<object?> EnumerateInput(IReadOnlyList<object?> input)
+    {
+        foreach (var item in input)
+        {
+            foreach (var value in Enumerate(item))
+            {
+                yield return value;
+            }
+        }
+    }
+
+    public static PowerShellWasmScriptBlock? GetScriptBlock(PowerShellWasmCommandContext context, params string[] parameterNames)
+    {
+        foreach (var name in parameterNames)
+        {
+            if (context.Parameters.TryGetValue(name, out var parameterValue) &&
+                parameterValue is PowerShellWasmScriptBlock parameterScriptBlock)
+            {
+                return parameterScriptBlock;
+            }
+        }
+
+        return context.Arguments.OfType<PowerShellWasmScriptBlock>().FirstOrDefault();
+    }
+
+    public static bool ToBoolean(object? value) =>
+        value switch
+        {
+            null => false,
+            bool boolValue => boolValue,
+            int intValue => intValue != 0,
+            long longValue => longValue != 0,
+            double doubleValue => Math.Abs(doubleValue) > 0.0000000001,
+            decimal decimalValue => decimalValue != 0,
+            string stringValue => stringValue.Length > 0,
+            object?[] arrayValue => arrayValue.Any(ToBoolean),
+            _ => true
+        };
+
+    public static object? GetMemberValue(object? target, string memberName)
+    {
+        if (target is null)
+        {
+            return null;
+        }
+
+        if (target is IReadOnlyDictionary<string, object?> readOnlyDictionary &&
+            readOnlyDictionary.TryGetValue(memberName, out var readOnlyValue))
+        {
+            return readOnlyValue;
+        }
+
+        if (target is IDictionary<string, object?> dictionary && dictionary.TryGetValue(memberName, out var value))
+        {
+            return value;
+        }
+
+        if (target is System.Collections.IDictionary legacyDictionary)
+        {
+            foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
+            {
+                if (string.Equals(Convert.ToString(entry.Key, CultureInfo.InvariantCulture), memberName,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry.Value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public static int CompareValues(object? left, object? right)
+    {
+        if (TryToNumber(left, out var leftNumber) && TryToNumber(right, out var rightNumber))
+        {
+            return leftNumber.CompareTo(rightNumber);
+        }
+
+        return string.Compare(ToInvariantString(left), ToInvariantString(right), StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool TryToNumber(object? value, out double number)
+    {
+        switch (value)
+        {
+            case bool boolValue:
+                number = boolValue ? 1 : 0;
+                return true;
+            case byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal:
+                number = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+                return true;
+            case string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed):
+                number = parsed;
+                return true;
+            default:
+                number = 0;
+                return false;
+        }
+    }
+
+    public static string ToInvariantString(object? value) =>
+        Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    public static string FormatValue(object? value) =>
+        value switch
+        {
+            null => string.Empty,
+            IReadOnlyDictionary<string, object?> readOnlyDictionary => FormatDictionary(readOnlyDictionary),
+            IDictionary<string, object?> dictionary => FormatDictionary(dictionary),
+            System.Collections.IDictionary legacyDictionary => FormatLegacyDictionary(legacyDictionary),
+            object?[] array => string.Join(Environment.NewLine, array.Select(FormatValue)),
+            _ => ToInvariantString(value)
+        };
+
+    public static IReadOnlyList<string> GetPropertyNames(PowerShellWasmCommandContext context)
+    {
+        var names = new List<string>();
+        if (context.Parameters.TryGetValue("Property", out var property))
+        {
+            AddNames(property);
+        }
+
+        foreach (var argument in context.Arguments)
+        {
+            if (argument is PowerShellWasmScriptBlock)
+            {
+                continue;
+            }
+
+            AddNames(argument);
+        }
+
+        return names;
+
+        void AddNames(object? value)
+        {
+            foreach (var item in Enumerate(value))
+            {
+                var text = Convert.ToString(item, CultureInfo.InvariantCulture);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    names.Add(text);
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<object?> Enumerate(object? value)
+    {
+        if (value is null)
+        {
+            yield break;
+        }
+
+        if (value is string)
+        {
+            yield return value;
+            yield break;
+        }
+
+        if (value is System.Collections.IDictionary or IReadOnlyDictionary<string, object?>)
+        {
+            yield return value;
+            yield break;
+        }
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                yield return item;
+            }
+
+            yield break;
+        }
+
+        yield return value;
+    }
+
+    private static string FormatDictionary(IEnumerable<KeyValuePair<string, object?>> dictionary) =>
+        "@{" + string.Join("; ", dictionary.Select(static item => $"{item.Key}={FormatValue(item.Value)}")) + "}";
+
+    private static string FormatLegacyDictionary(System.Collections.IDictionary dictionary)
+    {
+        var items = new List<string>();
+        foreach (System.Collections.DictionaryEntry item in dictionary)
+        {
+            items.Add($"{ToInvariantString(item.Key)}={FormatValue(item.Value)}");
+        }
+
+        return "@{" + string.Join("; ", items) + "}";
+    }
+}

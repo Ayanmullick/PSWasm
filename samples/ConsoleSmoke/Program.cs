@@ -56,6 +56,24 @@ $missing ?? 'fallback'
 $Out = @{InputObject= 'Splat works'}
 Write-Output @Out
 1 | Write-Output
+1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
+    Where-Object { $PSItem.Value -ge 2 } |
+    Select-Object -ExpandProperty Name
+@{Name='browser'; Value=42} | ConvertTo-Json -Compress
+'{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
+@(@{Name='three'; Value=3}, @{Name='one'; Value=1}, @{Name='two'; Value=2}) |
+    Sort-Object Value |
+    Select-Object -ExpandProperty Name
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
+    Measure-Object Value -Sum -Average -Minimum -Maximum |
+    ConvertTo-Json -Compress
+@('b','a','b') |
+    Group-Object |
+    Sort-Object Name |
+    Select-Object Count Name |
+    ConvertTo-Json -Compress
+@{Name='one'; Value=1} | Out-String
 $ReadParams = @{Endpoint= 'https://example.invalid/items'; Token= $env:DemoToken}
 Read-ClientItems @ReadParams -PartitionKey 'demo-partition'
 """;

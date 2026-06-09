@@ -20,4 +20,6 @@ internal static class BrowserEnvironment
 }
 
 [JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(BrowserPowerShellResult))]
+[JsonSerializable(typeof(PSWasm.PowerShellWasmOutputRecord))]
 internal sealed partial class BrowserHostJsonContext : JsonSerializerContext;
