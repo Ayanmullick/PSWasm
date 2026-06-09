@@ -48,6 +48,14 @@ The browser-safe `Write-*` command set includes:
 
 `Write-Output` emits pipeline output. `Write-Host` writes visible host output. The other streams render as tagged browser output, such as `[Warning] message`, until a richer DOM stream UI is added.
 
+The browser loader colors stream output by default:
+
+* `Write-Error` renders red.
+* `Write-Warning` renders orange.
+* `Write-Information` renders green.
+
+The generated DOM uses classes such as `pswasm-stream-error`, `pswasm-stream-warning`, and `pswasm-stream-information` so host pages can override the colors.
+
 ## Layout
 
 ```text
