@@ -90,10 +90,12 @@ src/PowerShell.Wasm
   Browser-safe PowerShell parser, AST profile, executor, and command registry.
 
 samples/BrowserHost
-  Static browser-wasm host that reads <script type="pwsh"> blocks at runtime.
+  User-facing static browser-wasm host that reads <script type="pwsh"> blocks at runtime.
+  This is the sample published by GitHub Pages and the main reference for static web apps.
 
 samples/ConsoleSmoke
-  Local smoke test for the runtime without the WebAssembly workload.
+  Maintainer/agent smoke harness for the runtime without the WebAssembly workload.
+  This is not an end-user sample. It exists for quick parser, operator, command, and host-command checks while changing PSWasm.
 
 tests/PowerShell.Wasm.Verify
   Assertion-based runtime checks for operators, streams, built-ins, splatting, and object pipelines.
@@ -113,18 +115,6 @@ Build the core runtime:
 dotnet build .\src\PowerShell.Wasm\PowerShell.Wasm.csproj
 ```
 
-Run the local smoke sample:
-
-```powershell
-dotnet run --project .\samples\ConsoleSmoke\ConsoleSmoke.csproj
-```
-
-Run assertion-based runtime verification:
-
-```powershell
-dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.csproj
-```
-
 Publish the browser sample:
 
 ```powershell
@@ -135,6 +125,22 @@ The static files are emitted under:
 
 ```text
 publish/wwwroot
+```
+
+## Maintainer Checks
+
+These checks are for maintainers and agents changing PSWasm internals. They are not required to use the browser sample.
+
+Run the console smoke harness:
+
+```powershell
+dotnet run --project .\samples\ConsoleSmoke\ConsoleSmoke.csproj
+```
+
+Run assertion-based runtime verification:
+
+```powershell
+dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.csproj
 ```
 
 ## Browser POC
