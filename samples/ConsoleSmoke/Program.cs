@@ -18,6 +18,16 @@ runtime.RegisterCommand("Read-ClientItems", new DelegatePowerShellWasmCommand((c
 
 var script = """
 Write-Output 'Hello PowerShell'
+Write-Debug 'Debug message'
+Write-Error 'Error message'
+Write-Host 'Host message'
+Write-Information 'Information message'
+Write-Progress -Activity 'Loading' -Status 'Halfway' -PercentComplete 50
+Write-Verbose 'Verbose message'
+Write-Warning 'Warning message'
+Get-Date -Format 'yyyy-MM-dd'
+Get-Time
+Get-TimeZone
 $name = 'PowerShell'
 Write-Output "Hello $name"
 Write-Output (2+2)

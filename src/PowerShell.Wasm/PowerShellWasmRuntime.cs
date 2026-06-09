@@ -12,7 +12,17 @@ public sealed class PowerShellWasmRuntime
     public PowerShellWasmRuntime(IDictionary<string, string>? environment = null)
     {
         _executionContext = new PowerShellWasmExecutionContext(environment);
+        RegisterCommand("Get-Date", new GetDateCommand());
+        RegisterCommand("Get-Time", new GetDateCommand(timeOnly: true));
+        RegisterCommand("Get-TimeZone", new GetTimeZoneCommand());
+        RegisterCommand("Write-Debug", new WriteStreamCommand("Debug", "Message"));
+        RegisterCommand("Write-Error", new WriteStreamCommand("Error", "Message"));
+        RegisterCommand("Write-Host", new WriteStreamCommand("Host", "Object", "Message"));
+        RegisterCommand("Write-Information", new WriteStreamCommand("Information", "MessageData", "Message"));
         RegisterCommand("Write-Output", new WriteOutputCommand());
+        RegisterCommand("Write-Progress", new WriteStreamCommand("Progress", "Activity"));
+        RegisterCommand("Write-Verbose", new WriteStreamCommand("Verbose", "Message"));
+        RegisterCommand("Write-Warning", new WriteStreamCommand("Warning", "Message"));
     }
 
     public void RegisterCommand(string name, IPowerShellWasmCommand command) =>

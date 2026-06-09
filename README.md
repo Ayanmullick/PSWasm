@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* `Write-Output`
+* browser-safe built-in commands: `Get-Date`, `Get-Time`, `Get-TimeZone`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
@@ -34,6 +34,19 @@ The browser-safe operator set currently includes:
 * collection/string helpers: `-contains`, `-notcontains`, `-in`, `-notin`, `-join`, `-split`, `-f`
 
 The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs. It also does not reproduce the full `System.Management.Automation` parse-mode split between command mode and expression mode; the browser profile flattens those modes and maps each useful operator to browser-safe AST and executor behavior.
+
+The browser-safe `Write-*` command set includes:
+
+* `Write-Debug`
+* `Write-Error`
+* `Write-Host`
+* `Write-Information`
+* `Write-Output`
+* `Write-Progress`
+* `Write-Verbose`
+* `Write-Warning`
+
+`Write-Output` emits pipeline output. `Write-Host` writes visible host output. The other streams render as tagged browser output, such as `[Warning] message`, until a richer DOM stream UI is added.
 
 ## Layout
 

@@ -33,6 +33,16 @@ public sealed class PowerShellWasmExecutionContext
         ActiveOutput.Add(value);
     }
 
+    public void WriteStream(string streamName, object? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        ActiveOutput.Add(new PowerShellWasmStreamRecord(streamName, value));
+    }
+
     internal IDisposable CaptureOutput(List<object?> output)
     {
         _outputCaptures.Push(output);
@@ -54,10 +64,13 @@ public sealed class PowerShellWasmExecutionContext
         value switch
         {
             null => string.Empty,
+            PowerShellWasmStreamRecord stream => $"[{stream.StreamName}] {FormatOutput(stream.Value)}",
             Dictionary<string, object?> hashtable => "@{" + string.Join("; ", hashtable.Select(static item => $"{item.Key}={FormatOutput(item.Value)}")) + "}",
             object?[] array => string.Join(Environment.NewLine, array.Select(FormatOutput)),
             _ => value.ToString() ?? string.Empty
         };
+
+    private sealed record PowerShellWasmStreamRecord(string StreamName, object? Value);
 
     private sealed class OutputCapture(PowerShellWasmExecutionContext context, List<object?> output) : IDisposable
     {
