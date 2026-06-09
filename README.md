@@ -98,9 +98,21 @@ publish/wwwroot
 The browser sample reads inline PowerShell blocks like this at runtime:
 
 ```html
+<pre id="output">Starting...</pre>
+
 <script type="pwsh">
-Write-Output 'Hello PowerShell'
+Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+Write-Warning 'Browser-visible warning'
+Write-Output (2 + 2)
 </script>
+
+<script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
+```
+
+If a static host or CodePen keeps an old browser bundle in cache after a new deployment, add a version query string:
+
+```html
+<script type="module" src="https://ayanmullick.github.io/PSWasm/app.js?v=latest"></script>
 ```
 
 Application-specific commands are registered by the host:
