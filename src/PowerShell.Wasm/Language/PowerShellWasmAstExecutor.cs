@@ -42,6 +42,9 @@ internal sealed class PowerShellWasmAstExecutor(
             case PipelineStatementAst pipeline:
                 await ExecutePipelineAsync(pipeline, cancellationToken);
                 break;
+            case PipelineChainStatementAst pipelineChain:
+                await ExecutePipelineChainAsync(pipelineChain, cancellationToken);
+                break;
             case TryStatementAst tryStatement:
                 await ExecuteTryStatementAsync(tryStatement, cancellationToken);
                 break;
@@ -113,6 +116,26 @@ internal sealed class PowerShellWasmAstExecutor(
             ["Exception"] = error.GetType().Name,
             ["FullyQualifiedErrorId"] = error.GetType().FullName ?? error.GetType().Name
         };
+
+    private async ValueTask ExecutePipelineChainAsync(PipelineChainStatementAst chain, CancellationToken cancellationToken)
+    {
+        var succeeded = await ExecuteStatementAndGetSuccessAsync(chain.First, cancellationToken);
+        foreach (var clause in chain.Clauses)
+        {
+            var shouldExecute = clause.Operator == PipelineChainOperator.And ? succeeded : !succeeded;
+            if (shouldExecute)
+            {
+                succeeded = await ExecuteStatementAndGetSuccessAsync(clause.Statement, cancellationToken);
+            }
+        }
+    }
+
+    private async ValueTask<bool> ExecuteStatementAndGetSuccessAsync(StatementAst statement, CancellationToken cancellationToken)
+    {
+        var errorCount = executionContext.ErrorCount;
+        await ExecuteStatementAsync(statement, [], cancellationToken);
+        return executionContext.ErrorCount == errorCount;
+    }
 
     private async ValueTask ExecutePipelineAsync(PipelineStatementAst pipeline, CancellationToken cancellationToken)
     {

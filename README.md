@@ -25,6 +25,7 @@ The first runtime supports:
 * simple named parameters
 * arithmetic expressions with PowerShell-style precedence and parentheses
 * grouped assignment expressions such as `($var = 1 + 2)`
+* pipeline chain operators `&&` and `||`
 * browser-safe operators adapted from PowerShell `TokenTraits`
 * a basic object pipeline for registered browser commands
 * a pluggable command registry
@@ -48,6 +49,7 @@ The browser-safe operator set currently includes:
 * comparisons: `-eq`, `-ne`, `-gt`, `-ge`, `-lt`, `-le` and case-sensitive `-c*` variants
 * wildcard/regex/string: `-like`, `-notlike`, `-match`, `-notmatch`, `-replace` and case-sensitive `-c*` variants
 * collection/string helpers: `-contains`, `-notcontains`, `-in`, `-notin`, `-join`, `-split`, `-f`
+* pipeline chain: `&&`, `||`
 
 The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs. It also does not reproduce the full `System.Management.Automation` parse-mode split between command mode and expression mode; the browser profile flattens those modes and maps each useful operator to browser-safe AST and executor behavior.
 
@@ -96,6 +98,8 @@ Set-Variable -Name BrowserName -Value 'PSWasm'
 Get-Variable BrowserName -ValueOnly
 Get-Variable BrowserName | Format-List Name Value
 Get-Command Format-* | Select-Object -ExpandProperty Name
+Write-Output 'First' && Write-Output 'Second'
+Write-Error 'Bad' || Write-Output 'Recovered'
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress

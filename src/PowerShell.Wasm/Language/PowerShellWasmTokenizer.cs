@@ -57,7 +57,26 @@ public static class PowerShellWasmTokenizer
                     Add(PowerShellWasmTokenKind.Semicolon, ";", 1);
                     break;
                 case '|':
-                    Add(PowerShellWasmTokenKind.Pipe, "|", 1);
+                    if (position + 1 < script.Length && script[position + 1] == '|')
+                    {
+                        Add(PowerShellWasmTokenKind.PipelineChainOr, "||", 2);
+                    }
+                    else
+                    {
+                        Add(PowerShellWasmTokenKind.Pipe, "|", 1);
+                    }
+
+                    break;
+                case '&':
+                    if (position + 1 < script.Length && script[position + 1] == '&')
+                    {
+                        Add(PowerShellWasmTokenKind.PipelineChainAnd, "&&", 2);
+                    }
+                    else
+                    {
+                        ReadIdentifier();
+                    }
+
                     break;
                 case '=':
                     Add(PowerShellWasmTokenKind.Equals, "=", 1);

@@ -16,6 +16,12 @@ public sealed record CommandStatementAst(CommandAst Command) : StatementAst;
 
 public sealed record PipelineStatementAst(IReadOnlyList<PipelineElementAst> Elements) : StatementAst;
 
+public sealed record PipelineChainStatementAst(
+    StatementAst First,
+    IReadOnlyList<PipelineChainClauseAst> Clauses) : StatementAst;
+
+public sealed record PipelineChainClauseAst(PipelineChainOperator Operator, StatementAst Statement) : PowerShellWasmAst;
+
 public sealed record TryStatementAst(
     ScriptAst TryBlock,
     IReadOnlyList<ScriptAst> CatchBlocks,
@@ -35,6 +41,12 @@ public sealed record CommandAst(
 public sealed record CommandParameterAst(string Name, ExpressionAst? Value) : PowerShellWasmAst;
 
 public sealed record CommandArgumentAst(ExpressionAst Value, bool IsSplat = false) : PowerShellWasmAst;
+
+public enum PipelineChainOperator
+{
+    And,
+    Or
+}
 
 public abstract record ExpressionAst : PowerShellWasmAst;
 

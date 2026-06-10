@@ -14,6 +14,7 @@ public sealed class PowerShellWasmExecutionContext
 
     public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Select(FormatRecord).ToArray();
     public IReadOnlyList<string> Output => Records.Select(FormatRecordLine).ToArray();
+    public int ErrorCount { get; private set; }
 
     public string? GetEnvironmentVariable(string name) =>
         _environment.TryGetValue(name, out var value) ? value : Environment.GetEnvironmentVariable(name);
@@ -57,6 +58,11 @@ public sealed class PowerShellWasmExecutionContext
         if (value is null)
         {
             return;
+        }
+
+        if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
+        {
+            ErrorCount++;
         }
 
         ActiveOutput.Add(new PowerShellWasmStreamRecord(streamName, value));

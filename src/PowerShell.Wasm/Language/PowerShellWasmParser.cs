@@ -42,6 +42,15 @@ public sealed class PowerShellWasmParser
             return ParseTryStatement(tokens);
         }
 
+        var pipelineChain = SplitTopLevelPipelineChain(tokens);
+        if (pipelineChain.Segments.Count > 1)
+        {
+            var first = ParseStatement(pipelineChain.Segments[0]);
+            var clauses = pipelineChain.Operators.Select((op, index) =>
+                new PipelineChainClauseAst(op, ParseStatement(pipelineChain.Segments[index + 1]))).ToArray();
+            return new PipelineChainStatementAst(first, clauses);
+        }
+
         var pipelineSegments = SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe);
         if (pipelineSegments.Count > 1)
         {
@@ -132,6 +141,33 @@ public sealed class PowerShellWasmParser
         IsCommandSegment(tokens)
             ? new CommandPipelineElementAst(ParseCommand(tokens))
             : new ExpressionPipelineElementAst(ParseExpression(tokens));
+
+    private static (IReadOnlyList<IReadOnlyList<PowerShellWasmToken>> Segments, IReadOnlyList<PipelineChainOperator> Operators)
+        SplitTopLevelPipelineChain(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var segments = new List<IReadOnlyList<PowerShellWasmToken>>();
+        var operators = new List<PipelineChainOperator>();
+        var start = 0;
+        var depth = 0;
+
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            if (depth == 0 && tokens[i].Kind is PowerShellWasmTokenKind.PipelineChainAnd or PowerShellWasmTokenKind.PipelineChainOr)
+            {
+                segments.Add(tokens.Skip(start).Take(i - start).ToArray());
+                operators.Add(tokens[i].Kind == PowerShellWasmTokenKind.PipelineChainAnd
+                    ? PipelineChainOperator.And
+                    : PipelineChainOperator.Or);
+                start = i + 1;
+                continue;
+            }
+
+            UpdateDepth(tokens[i], ref depth);
+        }
+
+        segments.Add(tokens.Skip(start).ToArray());
+        return (segments, operators);
+    }
 
     private static CommandAst ParseCommand(IReadOnlyList<PowerShellWasmToken> tokens)
     {
@@ -276,7 +312,8 @@ public sealed class PowerShellWasmParser
 
             if (depth == 0 && token.Kind is PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.Semicolon)
             {
-                if (token.Kind == PowerShellWasmTokenKind.NewLine && LastSignificantTokenKind(tokens, start, position) == PowerShellWasmTokenKind.Pipe)
+                if (token.Kind == PowerShellWasmTokenKind.NewLine && LastSignificantTokenKind(tokens, start, position) is
+                    PowerShellWasmTokenKind.Pipe or PowerShellWasmTokenKind.PipelineChainAnd or PowerShellWasmTokenKind.PipelineChainOr)
                 {
                     position++;
                     continue;

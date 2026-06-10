@@ -8,6 +8,8 @@ public enum PowerShellWasmTokenKind
     NewLine,
     Semicolon,
     Pipe,
+    PipelineChainAnd,
+    PipelineChainOr,
     Equals,
     Comma,
     LParen,

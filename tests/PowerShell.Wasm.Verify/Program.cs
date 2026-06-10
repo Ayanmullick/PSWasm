@@ -6,6 +6,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("variable commands", VerifyVariableCommandsAsync),
     ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
+    ("pipeline chain operators", VerifyPipelineChainOperatorsAsync),
     ("browser-safe built-ins", VerifyBuiltInsAsync),
     ("splatting and pipeline", VerifySplattingAndPipelineAsync),
     ("object pipeline commands", VerifyObjectPipelineCommandsAsync),
@@ -72,6 +73,38 @@ Write-Information 'info'
         new("Warning", "warn"),
         new("Error", "err"),
         new("Information", "info")
+    ]);
+}
+
+static async ValueTask VerifyPipelineChainOperatorsAsync()
+{
+    var result = await ExecuteAsync("""
+Write-Output 'First' && Write-Output 'Second'
+Write-Error 'BadAnd' && Write-Output 'SkippedAnd'
+Write-Output 'FirstOr' || Write-Output 'SkippedOr'
+Write-Error 'BadOr' || Write-Output 'SecondOr'
+Write-Output 'Pipe' | ForEach-Object { $_ + 'Ok' } && Write-Output 'AfterPipe'
+Write-Output 'NewLineLeft' &&
+    Write-Output 'NewLineRight'
+try {
+    throw 'ChainStop' && Write-Output 'SkippedThrow'
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "First",
+        "Second",
+        "[Error] BadAnd",
+        "FirstOr",
+        "[Error] BadOr",
+        "SecondOr",
+        "PipeOk",
+        "AfterPipe",
+        "NewLineLeft",
+        "NewLineRight",
+        "ChainStop"
     ]);
 }
 
