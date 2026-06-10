@@ -26,6 +26,7 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Select", new SelectObjectCommand());
         RegisterCommand("Sort-Object", new SortObjectCommand());
         RegisterCommand("Sort", new SortObjectCommand());
+        RegisterCommand("throw", new ThrowCommand());
         RegisterCommand("Measure-Object", new MeasureObjectCommand());
         RegisterCommand("Measure", new MeasureObjectCommand());
         RegisterCommand("Where-Object", new WhereObjectCommand());

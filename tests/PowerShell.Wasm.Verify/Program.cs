@@ -10,7 +10,8 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("json commands", VerifyJsonCommandsAsync),
     ("sort and measure commands", VerifySortAndMeasureCommandsAsync),
     ("group and output commands", VerifyGroupAndOutputCommandsAsync),
-    ("region comments", VerifyRegionCommentsAsync)
+    ("region comments", VerifyRegionCommentsAsync),
+    ("try catch finally", VerifyTryCatchFinallyAsync)
 };
 
 foreach (var test in tests)
@@ -205,6 +206,33 @@ Write-Output (2 + 2)
     ExpectLines(result, [
         "4",
         "{\"Name\":\"region\",\"Value\":5}"
+    ]);
+}
+
+static async ValueTask VerifyTryCatchFinallyAsync()
+{
+    var result = await ExecuteAsync("""
+try {
+    throw 'boom'
+} catch {
+    $_.Message
+} finally {
+    'cleanup'
+}
+try {
+    'ok'
+} catch {
+    'bad'
+} finally {
+    'done'
+}
+""");
+
+    ExpectLines(result, [
+        "boom",
+        "cleanup",
+        "ok",
+        "done"
     ]);
 }
 

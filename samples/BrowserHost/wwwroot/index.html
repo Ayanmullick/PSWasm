@@ -29,6 +29,13 @@ Write-Error 'Error message'
 Write-Output (2 + 2)
 ($var = 1 + 2) -eq 3
 #endregion
+try {
+    throw 'Browser try/catch sample'
+} catch {
+    $_.Message
+} finally {
+    'finally ran'
+}
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |

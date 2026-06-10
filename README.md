@@ -18,6 +18,8 @@ The first runtime supports:
 * expandable strings such as `"Hello $Name"`
 * PowerShell region comments such as `#region` and `#endregion`
 * script blocks with `$_` and `$PSItem` for browser-safe pipeline commands
+* `try` / `catch` / `finally` for browser-safe terminating runtime errors
+* `throw` for script-level browser runtime errors
 * simple member access such as `$_.Name` against hashtable-like objects
 * `$env:Name` lookup through a browser-provided environment map
 * simple named parameters
@@ -65,7 +67,16 @@ The browser-safe object pipeline command set includes:
 
 The aliases `ForEach`, `Group`, `Measure`, `Select`, `Sort`, and `Where` are also registered. Script blocks can use `$_` or `$PSItem` for the current pipeline item:
 
+The `try` / `catch` / `finally` support follows the browser-safe subset of PowerShell terminating error handling. Untyped `catch` blocks catch PSWasm runtime errors, `finally` always runs, and caught errors are available as `$_` / `$PSItem` with fields such as `Message`, `Exception`, and `FullyQualifiedErrorId`.
+
 ```powershell
+try {
+    throw 'boom'
+} catch {
+    $_.Message
+} finally {
+    'cleanup'
+}
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress

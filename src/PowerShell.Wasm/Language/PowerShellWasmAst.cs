@@ -16,6 +16,11 @@ public sealed record CommandStatementAst(CommandAst Command) : StatementAst;
 
 public sealed record PipelineStatementAst(IReadOnlyList<PipelineElementAst> Elements) : StatementAst;
 
+public sealed record TryStatementAst(
+    ScriptAst TryBlock,
+    IReadOnlyList<ScriptAst> CatchBlocks,
+    ScriptAst? FinallyBlock) : StatementAst;
+
 public abstract record PipelineElementAst : PowerShellWasmAst;
 
 public sealed record ExpressionPipelineElementAst(ExpressionAst Expression) : PipelineElementAst;

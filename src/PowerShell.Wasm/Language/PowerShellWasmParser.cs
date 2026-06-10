@@ -37,6 +37,11 @@ public sealed class PowerShellWasmParser
 
     private static StatementAst ParseStatement(IReadOnlyList<PowerShellWasmToken> tokens)
     {
+        if (IsKeyword(tokens, 0, "try"))
+        {
+            return ParseTryStatement(tokens);
+        }
+
         var pipelineSegments = SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe);
         if (pipelineSegments.Count > 1)
         {
@@ -55,6 +60,72 @@ public sealed class PowerShellWasmParser
         }
 
         return new ExpressionStatementAst(ParseExpression(tokens));
+    }
+
+    private static TryStatementAst ParseTryStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        var tryBlock = ReadScriptBlock(tokens, ref position, "try");
+        var catchBlocks = new List<ScriptAst>();
+        ScriptAst? finallyBlock = null;
+
+        while (position < tokens.Count)
+        {
+            if (IsKeyword(tokens, position, "catch"))
+            {
+                position++;
+                while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.LBrace)
+                {
+                    position++;
+                }
+
+                catchBlocks.Add(ReadScriptBlock(tokens, ref position, "catch"));
+                continue;
+            }
+
+            if (IsKeyword(tokens, position, "finally"))
+            {
+                position++;
+                finallyBlock = ReadScriptBlock(tokens, ref position, "finally");
+                break;
+            }
+
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' in try statement.");
+        }
+
+        if (catchBlocks.Count == 0 && finallyBlock is null)
+        {
+            throw new InvalidOperationException("A try statement requires at least one catch or finally block.");
+        }
+
+        return new TryStatementAst(tryBlock, catchBlocks, finallyBlock);
+    }
+
+    private static ScriptAst ReadScriptBlock(IReadOnlyList<PowerShellWasmToken> tokens, ref int position, string blockName)
+    {
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.LBrace)
+        {
+            throw new InvalidOperationException($"Expected '{{' after {blockName}.");
+        }
+
+        position++;
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.RBrace && depth == 0)
+            {
+                var bodyTokens = tokens.Skip(start).Take(position - start).ToArray();
+                position++;
+                return new ScriptAst(ParseStatements(bodyTokens));
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        throw new InvalidOperationException($"Expected '}}' to close {blockName}.");
     }
 
     private static PipelineElementAst ParsePipelineElement(IReadOnlyList<PowerShellWasmToken> tokens) =>
@@ -146,6 +217,11 @@ public sealed class PowerShellWasmParser
     private static bool IsCommandSegment(IReadOnlyList<PowerShellWasmToken> tokens) =>
         tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Identifier;
 
+    private static bool IsKeyword(IReadOnlyList<PowerShellWasmToken> tokens, int position, string keyword) =>
+        position < tokens.Count &&
+        tokens[position].Kind == PowerShellWasmTokenKind.Identifier &&
+        tokens[position].Text.Equals(keyword, StringComparison.OrdinalIgnoreCase);
+
     private static bool IsSplatStart(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
         position + 1 < tokens.Count &&
         tokens[position].Kind == PowerShellWasmTokenKind.At &&
@@ -180,6 +256,12 @@ public sealed class PowerShellWasmParser
                     continue;
                 }
 
+                if (IsTryContinuation(tokens, start, position))
+                {
+                    position++;
+                    continue;
+                }
+
                 break;
             }
 
@@ -204,6 +286,27 @@ public sealed class PowerShellWasmParser
         }
 
         return null;
+    }
+
+    private static bool IsTryContinuation(IReadOnlyList<PowerShellWasmToken> tokens, int start, int separatorPosition)
+    {
+        if (!IsKeyword(tokens, start, "try") ||
+            LastSignificantTokenKind(tokens, start, separatorPosition) != PowerShellWasmTokenKind.RBrace)
+        {
+            return false;
+        }
+
+        for (var i = separatorPosition + 1; i < tokens.Count; i++)
+        {
+            if (tokens[i].Kind is PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.Semicolon)
+            {
+                continue;
+            }
+
+            return IsKeyword(tokens, i, "catch") || IsKeyword(tokens, i, "finally");
+        }
+
+        return false;
     }
 
     private static IReadOnlyList<IReadOnlyList<PowerShellWasmToken>> SplitTopLevel(

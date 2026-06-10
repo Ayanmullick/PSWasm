@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Text.RegularExpressions;
 
 namespace PSWasm.Language;
@@ -41,8 +42,77 @@ internal sealed class PowerShellWasmAstExecutor(
             case PipelineStatementAst pipeline:
                 await ExecutePipelineAsync(pipeline, cancellationToken);
                 break;
+            case TryStatementAst tryStatement:
+                await ExecuteTryStatementAsync(tryStatement, cancellationToken);
+                break;
         }
     }
+
+    private async ValueTask ExecuteTryStatementAsync(TryStatementAst statement, CancellationToken cancellationToken)
+    {
+        Exception? pending = null;
+
+        try
+        {
+            await ExecuteScriptAsync(statement.TryBlock, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            if (statement.CatchBlocks.Count == 0)
+            {
+                pending = error;
+            }
+            else
+            {
+                try
+                {
+                    using (executionContext.WithPipelineItem(CreateErrorRecord(error)))
+                    {
+                        await ExecuteScriptAsync(statement.CatchBlocks[0], cancellationToken);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception catchError)
+                {
+                    pending = catchError;
+                }
+            }
+        }
+
+        if (statement.FinallyBlock is not null)
+        {
+            await ExecuteScriptAsync(statement.FinallyBlock, cancellationToken);
+        }
+
+        if (pending is not null)
+        {
+            ExceptionDispatchInfo.Capture(pending).Throw();
+        }
+    }
+
+    private async ValueTask ExecuteScriptAsync(ScriptAst script, CancellationToken cancellationToken)
+    {
+        foreach (var statement in script.Statements)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await ExecuteStatementAsync(statement, [], cancellationToken);
+        }
+    }
+
+    private static Dictionary<string, object?> CreateErrorRecord(Exception error) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Message"] = error.Message,
+            ["Exception"] = error.GetType().Name,
+            ["FullyQualifiedErrorId"] = error.GetType().FullName ?? error.GetType().Name
+        };
 
     private async ValueTask ExecutePipelineAsync(PipelineStatementAst pipeline, CancellationToken cancellationToken)
     {
