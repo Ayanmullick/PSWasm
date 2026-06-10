@@ -77,11 +77,13 @@ static async ValueTask VerifyBuiltInsAsync()
     var result = await ExecuteAsync("""
 Get-Date -Format 'yyyy'
 Get-TimeZone
+Get-Culture
+Get-UICulture
 """);
 
-    if (result.Records.Count != 2)
+    if (result.Records.Count != 4)
     {
-        Fail($"Expected 2 built-in records, got {result.Records.Count}.");
+        Fail($"Expected 4 built-in records, got {result.Records.Count}.");
     }
 
     if (result.Records[0].Stream != "Output" || result.Records[0].Text.Length != 4 || !result.Records[0].Text.All(char.IsDigit))
@@ -93,6 +95,16 @@ Get-TimeZone
         !result.Records[1].Text.Contains("BaseUtcOffset=", StringComparison.Ordinal))
     {
         Fail($"Unexpected Get-TimeZone output: '{result.Records[1].Text}'.");
+    }
+
+    for (var i = 2; i <= 3; i++)
+    {
+        if (!result.Records[i].Text.Contains("Name=", StringComparison.Ordinal) ||
+            !result.Records[i].Text.Contains("DisplayName=", StringComparison.Ordinal) ||
+            !result.Records[i].Text.Contains("LCID=", StringComparison.Ordinal))
+        {
+            Fail($"Unexpected culture output: '{result.Records[i].Text}'.");
+        }
     }
 }
 

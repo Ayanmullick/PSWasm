@@ -14,9 +14,11 @@ public sealed class PowerShellWasmRuntime
         _executionContext = new PowerShellWasmExecutionContext(environment);
         RegisterCommand("ConvertFrom-Json", new ConvertFromJsonCommand());
         RegisterCommand("ConvertTo-Json", new ConvertToJsonCommand());
+        RegisterCommand("Get-Culture", new GetCultureCommand());
         RegisterCommand("Get-Date", new GetDateCommand());
         RegisterCommand("Get-Time", new GetDateCommand(timeOnly: true));
         RegisterCommand("Get-TimeZone", new GetTimeZoneCommand());
+        RegisterCommand("Get-UICulture", new GetCultureCommand(uiCulture: true));
         RegisterCommand("ForEach-Object", new ForEachObjectCommand());
         RegisterCommand("ForEach", new ForEachObjectCommand());
         RegisterCommand("Group-Object", new GroupObjectCommand());

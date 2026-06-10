@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* browser-safe built-in commands: `ConvertFrom-Json`, `ConvertTo-Json`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Write-*`
+* browser-safe built-in commands: `ConvertFrom-Json`, `ConvertTo-Json`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
