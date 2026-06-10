@@ -12,6 +12,7 @@ public sealed class PowerShellWasmRuntime
     public PowerShellWasmRuntime(IDictionary<string, string>? environment = null)
     {
         _executionContext = new PowerShellWasmExecutionContext(environment);
+        RegisterCommand("ConvertFrom-Csv", new ConvertFromCsvCommand());
         RegisterCommand("ConvertFrom-Json", new ConvertFromJsonCommand());
         RegisterCommand("ConvertTo-Json", new ConvertToJsonCommand());
         RegisterCommand("Get-Culture", new GetCultureCommand());

@@ -44,6 +44,8 @@ try {
     Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
 '{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
+'Name,Value
+csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
 @(@{Name='three'; Value=3}, @{Name='one'; Value=1}, @{Name='two'; Value=2}) |
     Sort-Object Value |
     Select-Object -ExpandProperty Name

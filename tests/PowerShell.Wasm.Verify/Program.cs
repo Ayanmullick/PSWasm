@@ -7,7 +7,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("browser-safe built-ins", VerifyBuiltInsAsync),
     ("splatting and pipeline", VerifySplattingAndPipelineAsync),
     ("object pipeline commands", VerifyObjectPipelineCommandsAsync),
-    ("json commands", VerifyJsonCommandsAsync),
+    ("json and csv commands", VerifyJsonAndCsvCommandsAsync),
     ("sort and measure commands", VerifySortAndMeasureCommandsAsync),
     ("group and output commands", VerifyGroupAndOutputCommandsAsync),
     ("region comments", VerifyRegionCommentsAsync),
@@ -140,19 +140,28 @@ static async ValueTask VerifyObjectPipelineCommandsAsync()
     ]);
 }
 
-static async ValueTask VerifyJsonCommandsAsync()
+static async ValueTask VerifyJsonAndCsvCommandsAsync()
 {
     var result = await ExecuteAsync("""
 @{Name='one'; Value=2; Tags=@('a','b')} | ConvertTo-Json -Compress
 '{"Name":"two","Value":3}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
 '[1,2,3]' | ConvertFrom-Json | Where-Object { $_ -gt 1 }
+'Name,Value
+csv,4
+"quoted, name",5' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
+@('Name;Value','semi;6') | ConvertFrom-Csv -Delimiter ';' | Select-Object -ExpandProperty Value
+'explicit,7' | ConvertFrom-Csv -Header @('Name','Value') | Select-Object -ExpandProperty Value
 """);
 
     ExpectLines(result, [
         "{\"Name\":\"one\",\"Value\":2,\"Tags\":[\"a\",\"b\"]}",
         "two",
         "2",
-        "3"
+        "3",
+        "csv",
+        "quoted, name",
+        "6",
+        "7"
     ]);
 }
 

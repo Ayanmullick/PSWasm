@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* browser-safe built-in commands: `ConvertFrom-Json`, `ConvertTo-Json`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Write-*`
+* browser-safe built-in commands: `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
@@ -56,6 +56,7 @@ The browser-safe `Write-*` command set includes:
 The browser-safe object pipeline command set includes:
 
 * `ConvertFrom-Json`
+* `ConvertFrom-Csv`
 * `ConvertTo-Json`
 * `ForEach-Object`
 * `Group-Object`
@@ -81,6 +82,8 @@ try {
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
 '{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
+'Name,Value
+csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
 @(@{Name='three'; Value=3}, @{Name='one'; Value=1}, @{Name='two'; Value=2}) | Sort-Object Value
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Measure-Object Value -Sum -Average
 @('b','a','b') | Group-Object | Sort-Object Name
