@@ -2,17 +2,16 @@ using PSWasm;
 
 var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 {
-    ["DemoToken"] = "local-demo-token"
+    ["DemoPrefix"] = "local"
 };
 
 var runtime = new PowerShellWasmRuntime(environment);
-runtime.RegisterCommand("Read-ClientItems", new DelegatePowerShellWasmCommand((context, cancellationToken) =>
+runtime.RegisterCommand("Invoke-HostEcho", new DelegatePowerShellWasmCommand((context, cancellationToken) =>
 {
-    var endpoint = context.GetString("Endpoint");
-    var token = context.GetString("Token");
-    var partitionKey = context.GetString("PartitionKey");
+    var message = context.GetString("Message");
+    var prefix = context.GetString("Prefix");
 
-    context.ExecutionContext.WriteOutput($"Host command: endpoint={endpoint}; partitionKey={partitionKey}; tokenLength={token?.Length ?? 0}");
+    context.ExecutionContext.WriteOutput($"Host command: {prefix}: {message}");
     return ValueTask.CompletedTask;
 }));
 
@@ -74,8 +73,8 @@ Write-Output @Out
     Select-Object Count Name |
     ConvertTo-Json -Compress
 @{Name='one'; Value=1} | Out-String
-$ReadParams = @{Endpoint= 'https://example.invalid/items'; Token= $env:DemoToken}
-Read-ClientItems @ReadParams -PartitionKey 'demo-partition'
+$EchoParams = @{Message= 'from host'; Prefix= $env:DemoPrefix}
+Invoke-HostEcho @EchoParams
 """;
 
 var result = await runtime.ExecuteAsync(script);

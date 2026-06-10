@@ -21,6 +21,7 @@ Get-UICulture
 Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Get-Time
 Get-TimeZone
+Get-Command Format-* | Select-Object -ExpandProperty Name
 Write-Debug 'Debug message'
 Write-Information 'Information message'
 Write-Progress -Activity 'Loading' -Status 'Halfway' -PercentComplete 50
@@ -31,6 +32,9 @@ Write-Error 'Error message'
 Write-Output (2 + 2)
 ($var = 1 + 2) -eq 3
 #endregion
+Set-Variable -Name BrowserName -Value 'PSWasm'
+Get-Variable BrowserName -ValueOnly
+Get-Variable BrowserName | Format-List Name Value
 try {
     throw 'Browser try/catch sample'
 } catch {

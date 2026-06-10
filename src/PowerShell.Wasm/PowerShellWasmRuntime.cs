@@ -12,6 +12,8 @@ public sealed class PowerShellWasmRuntime
     public PowerShellWasmRuntime(IDictionary<string, string>? environment = null)
     {
         _executionContext = new PowerShellWasmExecutionContext(environment);
+        RegisterCommand("Clear-Variable", new ClearVariableCommand());
+        RegisterCommand("clv", new ClearVariableCommand());
         RegisterCommand("ConvertFrom-Csv", new ConvertFromCsvCommand());
         RegisterCommand("ConvertFrom-Json", new ConvertFromJsonCommand());
         RegisterCommand("ConvertTo-Json", new ConvertToJsonCommand());
@@ -19,6 +21,8 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Format-Table", new FormatTableCommand());
         RegisterCommand("fl", new FormatListCommand());
         RegisterCommand("ft", new FormatTableCommand());
+        RegisterCommand("Get-Command", new GetCommandCommand(() => _commands.Keys));
+        RegisterCommand("gcm", new GetCommandCommand(() => _commands.Keys));
         RegisterCommand("Get-Culture", new GetCultureCommand());
         RegisterCommand("Get-Date", new GetDateCommand());
         RegisterCommand("Get-Time", new GetDateCommand(timeOnly: true));
@@ -28,9 +32,15 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("ForEach", new ForEachObjectCommand());
         RegisterCommand("Group-Object", new GroupObjectCommand());
         RegisterCommand("Group", new GroupObjectCommand());
+        RegisterCommand("Get-Variable", new GetVariableCommand());
+        RegisterCommand("gv", new GetVariableCommand());
         RegisterCommand("Out-String", new OutStringCommand());
+        RegisterCommand("Remove-Variable", new RemoveVariableCommand());
+        RegisterCommand("rv", new RemoveVariableCommand());
         RegisterCommand("Select-Object", new SelectObjectCommand());
         RegisterCommand("Select", new SelectObjectCommand());
+        RegisterCommand("Set-Variable", new SetVariableCommand());
+        RegisterCommand("sv", new SetVariableCommand());
         RegisterCommand("Sort-Object", new SortObjectCommand());
         RegisterCommand("Sort", new SortObjectCommand());
         RegisterCommand("throw", new ThrowCommand());

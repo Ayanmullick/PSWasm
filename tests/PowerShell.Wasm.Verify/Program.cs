@@ -3,6 +3,8 @@ using PSWasm;
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
     ("operators and expressions", VerifyOperatorsAsync),
+    ("variable commands", VerifyVariableCommandsAsync),
+    ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
     ("browser-safe built-ins", VerifyBuiltInsAsync),
     ("splatting and pipeline", VerifySplattingAndPipelineAsync),
@@ -70,6 +72,45 @@ Write-Information 'info'
         new("Warning", "warn"),
         new("Error", "err"),
         new("Information", "info")
+    ]);
+}
+
+static async ValueTask VerifyCommandDiscoveryAsync()
+{
+    var result = await ExecuteAsync("""
+Get-Command Format-* | Select-Object -ExpandProperty Name
+gcm sv | Select-Object -ExpandProperty CommandType
+Get-Command -Name Get-Variable | Select-Object -ExpandProperty Name
+""");
+
+    ExpectLines(result, [
+        "Format-List",
+        "Format-Table",
+        "BrowserCommand",
+        "Get-Variable"
+    ]);
+}
+
+static async ValueTask VerifyVariableCommandsAsync()
+{
+    var result = await ExecuteAsync("""
+Set-Variable -Name BrowserName -Value 'PSWasm'
+Get-Variable BrowserName -ValueOnly
+$BrowserName
+Set-Variable Count 3
+Get-Variable Count | Select-Object -ExpandProperty Value
+Clear-Variable BrowserName
+Get-Variable BrowserName | Format-List Name Value
+Remove-Variable Count
+Get-Variable Count
+""");
+
+    ExpectLines(result, [
+        "PSWasm",
+        "PSWasm",
+        "3",
+        "Name  : BrowserName",
+        "Value : "
     ]);
 }
 

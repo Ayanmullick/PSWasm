@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* browser-safe built-in commands: `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Write-*`
+* browser-safe built-in commands: `Clear-Variable`, `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Command`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Get-Variable`, `Remove-Variable`, `Set-Variable`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
@@ -28,6 +28,17 @@ The first runtime supports:
 * browser-safe operators adapted from PowerShell `TokenTraits`
 * a basic object pipeline for registered browser commands
 * a pluggable command registry
+
+The browser-safe variable command set includes:
+
+* `Clear-Variable`
+* `Get-Variable`
+* `Remove-Variable`
+* `Set-Variable`
+
+The aliases `clv`, `gv`, `rv`, and `sv` are also registered. These commands operate only on the current PSWasm runtime's in-memory session variables.
+
+`Get-Command` lists the commands available in the current browser runtime. The `gcm` alias is also registered.
 
 The browser-safe operator set currently includes:
 
@@ -61,6 +72,7 @@ The browser-safe object pipeline command set includes:
 * `Format-List`
 * `Format-Table`
 * `ForEach-Object`
+* `Get-Command`
 * `Group-Object`
 * `Measure-Object`
 * `Out-String`
@@ -80,6 +92,10 @@ try {
 } finally {
     'cleanup'
 }
+Set-Variable -Name BrowserName -Value 'PSWasm'
+Get-Variable BrowserName -ValueOnly
+Get-Variable BrowserName | Format-List Name Value
+Get-Command Format-* | Select-Object -ExpandProperty Name
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
@@ -228,26 +244,13 @@ If a static host or CodePen keeps an old browser bundle in cache after a new dep
 <script type="module" src="https://ayanmullick.github.io/PSWasm/app.js?v=latest"></script>
 ```
 
-Application-specific commands are registered by the host:
-
-```csharp
-var runtime = new PowerShellWasmRuntime(environment);
-runtime.RegisterCommand("Read-ClientItems", new DelegatePowerShellWasmCommand(async (context, cancellationToken) =>
-{
-    var endpoint = context.GetString("Endpoint");
-    var token = context.GetString("Token");
-    var partitionKey = context.GetString("PartitionKey");
-
-    await Task.Yield();
-    context.ExecutionContext.WriteOutput($"{endpoint} {partitionKey} {token?.Length ?? 0}");
-}));
-```
+The published browser host is intentionally generic and does not include app-specific commands. If an application needs custom C# commands, build a custom host that registers those commands before executing scripts.
 
 For browser POCs, environment values can be passed from JavaScript:
 
 ```javascript
 window.pswasmEnvironment = {
-  DemoToken: "..."
+  DemoValue: "..."
 };
 ```
 

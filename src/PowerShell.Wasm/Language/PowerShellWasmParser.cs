@@ -155,7 +155,7 @@ public sealed class PowerShellWasmParser
                     continue;
                 }
 
-                parameters.Add(new(name, ParseExpression(ReadCommandArgument(tokens, ref position))));
+                parameters.Add(new(name, ParseCommandArgumentExpression(ReadCommandArgument(tokens, ref position))));
                 continue;
             }
 
@@ -167,7 +167,7 @@ public sealed class PowerShellWasmParser
                 continue;
             }
 
-            arguments.Add(new CommandArgumentAst(ParseExpression(ReadCommandArgument(tokens, ref position))));
+            arguments.Add(new CommandArgumentAst(ParseCommandArgumentExpression(ReadCommandArgument(tokens, ref position))));
         }
 
         return new CommandAst(tokens[0].Text, parameters, arguments);
@@ -196,6 +196,17 @@ public sealed class PowerShellWasmParser
             return tokens.Skip(start).Take(position - start).ToArray();
         }
 
+        if (tokens[position].Kind == PowerShellWasmTokenKind.Star)
+        {
+            position++;
+            while (position < tokens.Count && IsContiguousBareCommandToken(tokens[position - 1], tokens[position]))
+            {
+                position++;
+            }
+
+            return tokens.Skip(start).Take(position - start).ToArray();
+        }
+
         position++;
         if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator())
         {
@@ -207,6 +218,21 @@ public sealed class PowerShellWasmParser
 
         return tokens.Skip(start).Take(position - start).ToArray();
     }
+
+    private static ExpressionAst ParseCommandArgumentExpression(IReadOnlyList<PowerShellWasmToken> tokens) =>
+        IsBareWildcardArgument(tokens)
+            ? new BareWordExpressionAst(string.Concat(tokens.Select(static token => token.Text)))
+            : ParseExpression(tokens);
+
+    private static bool IsBareWildcardArgument(IReadOnlyList<PowerShellWasmToken> tokens) =>
+        tokens.Count > 1 &&
+        tokens.Any(static token => token.Kind == PowerShellWasmTokenKind.Star) &&
+        tokens.All(static token => token.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Star) &&
+        tokens.Zip(tokens.Skip(1)).All(static pair => IsContiguousBareCommandToken(pair.First, pair.Second));
+
+    private static bool IsContiguousBareCommandToken(PowerShellWasmToken left, PowerShellWasmToken right) =>
+        !right.HasLeadingWhitespace && right.Offset == left.Offset + left.Length &&
+        right.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Star;
 
     private static ExpressionAst ParseExpression(IReadOnlyList<PowerShellWasmToken> tokens)
     {

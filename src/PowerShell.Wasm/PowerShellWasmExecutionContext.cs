@@ -21,8 +21,17 @@ public sealed class PowerShellWasmExecutionContext
     public object? GetVariable(string name) =>
         _variables.TryGetValue(name, out var value) ? value : null;
 
+    public IReadOnlyDictionary<string, object?> GetVariables() =>
+        new Dictionary<string, object?>(_variables, StringComparer.OrdinalIgnoreCase);
+
     public void SetVariable(string name, object? value) =>
         _variables[name] = value;
+
+    public void ClearVariable(string name) =>
+        _variables[name] = null;
+
+    public void RemoveVariable(string name) =>
+        _variables.Remove(name);
 
     internal IDisposable WithPipelineItem(object? value)
     {

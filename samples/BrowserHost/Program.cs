@@ -35,19 +35,7 @@ public static partial class Interop
 
     private static PowerShellWasmRuntime CreateRuntime(IDictionary<string, string> environment)
     {
-        var runtime = new PowerShellWasmRuntime(environment);
-
-        runtime.RegisterCommand("Read-ClientItems", new DelegatePowerShellWasmCommand((context, cancellationToken) =>
-        {
-            var endpoint = context.GetString("Endpoint");
-            var token = context.GetString("Token");
-            var partitionKey = context.GetString("PartitionKey");
-
-            context.ExecutionContext.WriteOutput($"Host command: endpoint={endpoint}; partitionKey={partitionKey}; tokenLength={token?.Length ?? 0}");
-            return ValueTask.CompletedTask;
-        }));
-
-        return runtime;
+        return new PowerShellWasmRuntime(environment);
     }
 }
 
