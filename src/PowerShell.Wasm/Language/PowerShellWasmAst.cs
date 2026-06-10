@@ -72,6 +72,8 @@ public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : Expr
 
 public sealed record MemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 
+public sealed record IndexExpressionAst(ExpressionAst Target, ExpressionAst Index) : ExpressionAst;
+
 public sealed record UnaryExpressionAst(PowerShellWasmUnaryOperator Operator, ExpressionAst Operand) : ExpressionAst;
 
 public sealed record BinaryExpressionAst(ExpressionAst Left, PowerShellWasmBinaryOperator Operator, ExpressionAst Right) : ExpressionAst;

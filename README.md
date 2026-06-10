@@ -13,6 +13,7 @@ The first runtime supports:
 * parsing into a small AST profile
 * AST-based expression and command execution
 * variable assignment
+* arrays with comma literals, `@(...)`, ranges, indexing, negative indexes, and `Count` / `Length`
 * hashtable literals
 * splatting with `@Params`
 * expandable strings such as `"Hello $Name"`
@@ -100,6 +101,11 @@ Get-Variable BrowserName | Format-List Name Value
 Get-Command Format-* | Select-Object -ExpandProperty Name
 Write-Output 'First' && Write-Output 'Second'
 Write-Error 'Bad' || Write-Output 'Recovered'
+$array = 22,5,10,8,12
+$array.Count
+$array[0]
+$array[-1]
+$array[1..2]
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress

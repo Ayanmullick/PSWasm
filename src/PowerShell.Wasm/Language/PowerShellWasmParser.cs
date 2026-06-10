@@ -213,7 +213,7 @@ public sealed class PowerShellWasmParser
     {
         var start = position;
         if (tokens[position].Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or
-            PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen)
+            PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.LBracket)
         {
             var depth = 0;
             do
@@ -244,6 +244,29 @@ public sealed class PowerShellWasmParser
         }
 
         position++;
+        while (position < tokens.Count && tokens[position].Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.LBracket &&
+            !tokens[position].HasLeadingWhitespace)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.Identifier && !tokens[position].Text.StartsWith(".", StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            if (tokens[position].Kind == PowerShellWasmTokenKind.Identifier)
+            {
+                position++;
+                continue;
+            }
+
+            var depth = 0;
+            do
+            {
+                UpdateDepth(tokens[position], ref depth);
+                position++;
+            }
+            while (position < tokens.Count && depth > 0);
+        }
+
         if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator())
         {
             while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.Parameter && !IsSplatStart(tokens, position))
@@ -417,8 +440,8 @@ public sealed class PowerShellWasmParser
         depth += token.Kind switch
         {
             PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or PowerShellWasmTokenKind.AtLBrace or
-                PowerShellWasmTokenKind.AtLParen => 1,
-            PowerShellWasmTokenKind.RParen or PowerShellWasmTokenKind.RBrace => -1,
+                PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.LBracket => 1,
+            PowerShellWasmTokenKind.RParen or PowerShellWasmTokenKind.RBrace or PowerShellWasmTokenKind.RBracket => -1,
             _ => 0
         };
     }
@@ -434,7 +457,28 @@ public sealed class PowerShellWasmParser
                 return new StringExpressionAst(string.Empty, IsExpandable: false);
             }
 
-            return ParseAssignment();
+            return ParseCommaExpression();
+        }
+
+        private ExpressionAst ParseCommaExpression()
+        {
+            var items = new List<ExpressionAst>();
+            var leadingComma = false;
+
+            if (Current.Kind == PowerShellWasmTokenKind.Comma)
+            {
+                leadingComma = true;
+                _position++;
+            }
+
+            items.Add(ParseAssignment());
+            while (Current.Kind == PowerShellWasmTokenKind.Comma)
+            {
+                _position++;
+                items.Add(ParseAssignment());
+            }
+
+            return leadingComma || items.Count > 1 ? new ArrayExpressionAst(items) : items[0];
         }
 
         private ExpressionAst ParseAssignment()
@@ -491,6 +535,11 @@ public sealed class PowerShellWasmParser
                 _position++;
             }
 
+            while (Current.Kind == PowerShellWasmTokenKind.LBracket)
+            {
+                expression = ParseIndex(expression);
+            }
+
             return expression;
         }
 
@@ -520,6 +569,30 @@ public sealed class PowerShellWasmParser
             var expression = ParseAssignment();
             Consume(PowerShellWasmTokenKind.RParen);
             return new ParenthesizedExpressionAst(expression);
+        }
+
+        private IndexExpressionAst ParseIndex(ExpressionAst target)
+        {
+            Consume(PowerShellWasmTokenKind.LBracket);
+            var indexes = new List<ExpressionAst>();
+            while (Current.Kind is not PowerShellWasmTokenKind.RBracket and not PowerShellWasmTokenKind.EndOfInput)
+            {
+                if (Current.Kind == PowerShellWasmTokenKind.Comma)
+                {
+                    _position++;
+                    continue;
+                }
+
+                indexes.Add(ParseAssignment());
+                if (Current.Kind == PowerShellWasmTokenKind.Comma)
+                {
+                    _position++;
+                }
+            }
+
+            Consume(PowerShellWasmTokenKind.RBracket);
+            var index = indexes.Count == 1 ? indexes[0] : new ArrayExpressionAst(indexes);
+            return new IndexExpressionAst(target, index);
         }
 
         private ScriptBlockExpressionAst ParseScriptBlock()

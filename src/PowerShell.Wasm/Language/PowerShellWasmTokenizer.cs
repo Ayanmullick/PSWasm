@@ -96,6 +96,12 @@ public static class PowerShellWasmTokenizer
                 case '}':
                     Add(PowerShellWasmTokenKind.RBrace, "}", 1);
                     break;
+                case '[':
+                    Add(PowerShellWasmTokenKind.LBracket, "[", 1);
+                    break;
+                case ']':
+                    Add(PowerShellWasmTokenKind.RBracket, "]", 1);
+                    break;
                 case '+':
                     Add(PowerShellWasmTokenKind.Plus, "+", 1);
                     break;
@@ -335,5 +341,5 @@ public static class PowerShellWasmTokenizer
 
     private static bool IsBareWordCharacter(char ch) =>
         !char.IsWhiteSpace(ch) && ch is not ';' and not '|' and not '=' and not ',' and not '(' and not ')' and not '{' and not '}'
-            and not '\'' and not '"' and not '+' and not '*' and not '/' and not '@';
+            and not '[' and not ']' and not '\'' and not '"' and not '+' and not '*' and not '/' and not '@';
 }

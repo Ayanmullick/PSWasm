@@ -16,6 +16,8 @@ public enum PowerShellWasmTokenKind
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     At,
     AtLBrace,
     AtLParen,

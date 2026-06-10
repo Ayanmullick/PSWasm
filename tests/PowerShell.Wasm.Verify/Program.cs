@@ -3,6 +3,7 @@ using PSWasm;
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
     ("operators and expressions", VerifyOperatorsAsync),
+    ("array basics", VerifyArrayBasicsAsync),
     ("variable commands", VerifyVariableCommandsAsync),
     ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
@@ -73,6 +74,46 @@ Write-Information 'info'
         new("Warning", "warn"),
         new("Error", "err"),
         new("Information", "info")
+    ]);
+}
+
+static async ValueTask VerifyArrayBasicsAsync()
+{
+    var result = await ExecuteAsync("""
+$a = 22,5,10,8,12
+$a.Count
+$a.Length
+$a[0]
+$a[-1]
+$a[1..3]
+$a[0,2]
+$single = ,7
+$single.Count
+@("Hello World").Count
+@().Count
+$range = 5..8
+$range
+($a + @(99,100)).Count
+""");
+
+    ExpectLines(result, [
+        "5",
+        "5",
+        "22",
+        "12",
+        "5",
+        "10",
+        "8",
+        "22",
+        "10",
+        "1",
+        "1",
+        "0",
+        "5",
+        "6",
+        "7",
+        "8",
+        "7"
     ]);
 }
 

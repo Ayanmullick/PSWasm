@@ -231,6 +231,7 @@ internal sealed class PowerShellWasmAstExecutor(
             ScriptBlockExpressionAst scriptBlock => CreateScriptBlock(scriptBlock),
             ParenthesizedExpressionAst parenthesized => EvaluateExpression(parenthesized.Expression),
             MemberAccessExpressionAst member => EvaluateMemberAccess(member),
+            IndexExpressionAst index => EvaluateIndex(index),
             UnaryExpressionAst unary => EvaluateUnary(unary),
             BinaryExpressionAst binary => EvaluateBinary(binary),
             _ => null
@@ -312,7 +313,44 @@ internal sealed class PowerShellWasmAstExecutor(
             }
         }
 
+        if (TryGetCollectionProperty(target, member.MemberName, out var collectionValue))
+        {
+            return collectionValue;
+        }
+
         return null;
+    }
+
+    private object? EvaluateIndex(IndexExpressionAst index)
+    {
+        var target = EvaluateExpression(index.Target);
+        var values = ToIndexableValues(target);
+        if (values.Length == 0)
+        {
+            return null;
+        }
+
+        var selected = new List<object?>();
+        foreach (var indexValue in Enumerate(EvaluateExpression(index.Index)))
+        {
+            var itemIndex = Convert.ToInt32(ToNumber(indexValue), CultureInfo.InvariantCulture);
+            if (itemIndex < 0)
+            {
+                itemIndex = values.Length + itemIndex;
+            }
+
+            if (itemIndex >= 0 && itemIndex < values.Length)
+            {
+                selected.Add(values[itemIndex]);
+            }
+        }
+
+        return selected.Count switch
+        {
+            0 => null,
+            1 => selected[0],
+            _ => selected.ToArray()
+        };
     }
 
     private object EvaluateUnary(UnaryExpressionAst unary)
@@ -512,6 +550,63 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         yield return value;
+    }
+
+    private static object?[] ToIndexableValues(object? value)
+    {
+        if (value is null)
+        {
+            return [];
+        }
+
+        if (value is string text)
+        {
+            return text.Select(static ch => ch.ToString()).Cast<object?>().ToArray();
+        }
+
+        if (value is System.Collections.IDictionary or IReadOnlyDictionary<string, object?>)
+        {
+            return [value];
+        }
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            return enumerable.Cast<object?>().ToArray();
+        }
+
+        return [value];
+    }
+
+    private static bool TryGetCollectionProperty(object? target, string memberName, out object? value)
+    {
+        value = null;
+        if (memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) && target is string text)
+        {
+            value = text.Length;
+            return true;
+        }
+
+        if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) && target is string)
+        {
+            value = 1;
+            return true;
+        }
+
+        if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
+            memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ||
+            memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase))
+        {
+            value = ToIndexableValues(target).Length;
+            return true;
+        }
+
+        if (memberName.Equals("Rank", StringComparison.OrdinalIgnoreCase))
+        {
+            value = target is System.Collections.IEnumerable and not string ? 1 : 0;
+            return true;
+        }
+
+        return false;
     }
 
     private string ExpandString(string value) =>
