@@ -7,6 +7,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("browser-safe built-ins", VerifyBuiltInsAsync),
     ("splatting and pipeline", VerifySplattingAndPipelineAsync),
     ("object pipeline commands", VerifyObjectPipelineCommandsAsync),
+    ("format commands", VerifyFormatCommandsAsync),
     ("json and csv commands", VerifyJsonAndCsvCommandsAsync),
     ("sort and measure commands", VerifySortAndMeasureCommandsAsync),
     ("group and output commands", VerifyGroupAndOutputCommandsAsync),
@@ -162,6 +163,29 @@ csv,4
         "quoted, name",
         "6",
         "7"
+    ]);
+}
+
+static async ValueTask VerifyFormatCommandsAsync()
+{
+    var result = await ExecuteAsync("""
+@(@{Name='one'; Value=1}, @{Name='two'; Value=20}) | Format-Table Name Value
+@{Name='list'; Value=3} | Format-List
+'Name,Value
+csv,4' | ConvertFrom-Csv | Format-List Name Value
+@(@{Name='hide'; Value=5}) | Format-Table Name Value -HideTableHeaders
+""");
+
+    ExpectLines(result, [
+        "Name  Value",
+        "----  -----",
+        "one   1",
+        "two   20",
+        "Name  : list",
+        "Value : 3",
+        "Name  : csv",
+        "Value : 4",
+        "hide  5"
     ]);
 }
 

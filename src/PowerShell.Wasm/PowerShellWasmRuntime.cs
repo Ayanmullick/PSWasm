@@ -15,6 +15,10 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("ConvertFrom-Csv", new ConvertFromCsvCommand());
         RegisterCommand("ConvertFrom-Json", new ConvertFromJsonCommand());
         RegisterCommand("ConvertTo-Json", new ConvertToJsonCommand());
+        RegisterCommand("Format-List", new FormatListCommand());
+        RegisterCommand("Format-Table", new FormatTableCommand());
+        RegisterCommand("fl", new FormatListCommand());
+        RegisterCommand("ft", new FormatTableCommand());
         RegisterCommand("Get-Culture", new GetCultureCommand());
         RegisterCommand("Get-Date", new GetDateCommand());
         RegisterCommand("Get-Time", new GetDateCommand(timeOnly: true));
