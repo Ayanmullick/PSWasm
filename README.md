@@ -14,7 +14,7 @@ The first runtime supports:
 * AST-based expression and command execution
 * variable assignment
 * arrays with comma literals, `@(...)`, ranges, indexing, negative indexes, and `Count` / `Length`
-* hashtable literals
+* hashtable literals with key indexing and `Count` / `Keys` / `Values`
 * splatting with `@Params`
 * expandable strings such as `"Hello $Name"`
 * PowerShell region comments such as `#region` and `#endregion`
@@ -106,6 +106,10 @@ $array.Count
 $array[0]
 $array[-1]
 $array[1..2]
+$table = @{Name='PSWasm'; Value=42}
+$table['Name']
+$table.Count
+$table.Keys | Sort-Object
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
@@ -191,6 +195,8 @@ dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.cspro
 ## Browser POC
 
 The browser sample reads inline PowerShell blocks like this at runtime. Importing `app.js` automatically runs every `<script type="pwsh">` block on the page and writes to `#output`.
+
+Static pages and browser playgrounds such as CodePen should import `app.js`. The `app.d.ts` file is only a TypeScript declaration file for editors and build tools; browsers do not execute it.
 
 ```html
 <pre id="output">Starting...</pre>

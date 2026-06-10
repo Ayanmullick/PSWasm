@@ -38,6 +38,10 @@ $array.Count
 $array[0]
 $array[-1]
 $array[1..2]
+$table = @{Name='PSWasm'; Value=42}
+$table['Name']
+$table.Count
+$table.Keys | Sort-Object
 #endregion
 Set-Variable -Name BrowserName -Value 'PSWasm'
 Get-Variable BrowserName -ValueOnly

@@ -318,6 +318,19 @@ public static class PowerShellWasmTokenizer
         void ReadIdentifier()
         {
             var tokenStart = position;
+            if (position < script.Length && script[position] == '.')
+            {
+                position++;
+                while (position < script.Length && IsBareWordCharacter(script[position]) && script[position] != '.')
+                {
+                    position++;
+                }
+
+                tokens.Add(new(PowerShellWasmTokenKind.Identifier, script[tokenStart..position], tokenStart, position - tokenStart, leadingWhitespace));
+                leadingWhitespace = false;
+                return;
+            }
+
             while (position < script.Length && IsBareWordCharacter(script[position]))
             {
                 position++;

@@ -4,6 +4,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
 {
     ("operators and expressions", VerifyOperatorsAsync),
     ("array basics", VerifyArrayBasicsAsync),
+    ("hashtable basics", VerifyHashtableBasicsAsync),
     ("variable commands", VerifyVariableCommandsAsync),
     ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
@@ -114,6 +115,44 @@ $range
         "7",
         "8",
         "7"
+    ]);
+}
+
+static async ValueTask VerifyHashtableBasicsAsync()
+{
+    var result = await ExecuteAsync("""
+$h = @{Name='PowerShell'; CountValue=3; Nested=@{Inner='value'}}
+$h.Name
+$h['Name']
+$h['name']
+$h['Missing'] ?? 'missing'
+$h.Count
+$h.Keys | Sort-Object
+$h.Values.Count
+$h['Name','CountValue']
+$h.Nested.Inner
+$shadow = @{Count='shadow'; Name='ok'}
+$shadow.Count
+$shadow['Count']
+$shadow.Keys.Count
+""");
+
+    ExpectLines(result, [
+        "PowerShell",
+        "PowerShell",
+        "PowerShell",
+        "missing",
+        "3",
+        "CountValue",
+        "Name",
+        "Nested",
+        "3",
+        "PowerShell",
+        "3",
+        "value",
+        "shadow",
+        "shadow",
+        "2"
     ]);
 }
 

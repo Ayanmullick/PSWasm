@@ -324,6 +324,11 @@ internal sealed class PowerShellWasmAstExecutor(
     private object? EvaluateIndex(IndexExpressionAst index)
     {
         var target = EvaluateExpression(index.Target);
+        if (TryGetDictionaryIndex(target, EvaluateExpression(index.Index), out var dictionaryValue))
+        {
+            return dictionaryValue;
+        }
+
         var values = ToIndexableValues(target);
         if (values.Length == 0)
         {
@@ -351,6 +356,33 @@ internal sealed class PowerShellWasmAstExecutor(
             1 => selected[0],
             _ => selected.ToArray()
         };
+    }
+
+    private static bool TryGetDictionaryIndex(object? target, object? index, out object? value)
+    {
+        value = null;
+        if (!TryAsDictionary(target, out var dictionary))
+        {
+            return false;
+        }
+
+        var selected = new List<object?>();
+        foreach (var keyValue in Enumerate(index))
+        {
+            var key = ToInvariantString(keyValue);
+            if (TryGetDictionaryValue(dictionary, key, out var item))
+            {
+                selected.Add(item);
+            }
+        }
+
+        value = selected.Count switch
+        {
+            0 => null,
+            1 => selected[0],
+            _ => selected.ToArray()
+        };
+        return true;
     }
 
     private object EvaluateUnary(UnaryExpressionAst unary)
@@ -580,6 +612,29 @@ internal sealed class PowerShellWasmAstExecutor(
     private static bool TryGetCollectionProperty(object? target, string memberName, out object? value)
     {
         value = null;
+        if (TryAsDictionary(target, out var dictionary))
+        {
+            if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
+                memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ||
+                memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase))
+            {
+                value = dictionary.Count;
+                return true;
+            }
+
+            if (memberName.Equals("Keys", StringComparison.OrdinalIgnoreCase))
+            {
+                value = dictionary.Keys.Cast<object?>().ToArray();
+                return true;
+            }
+
+            if (memberName.Equals("Values", StringComparison.OrdinalIgnoreCase))
+            {
+                value = dictionary.Values.ToArray();
+                return true;
+            }
+        }
+
         if (memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) && target is string text)
         {
             value = text.Length;
@@ -608,6 +663,40 @@ internal sealed class PowerShellWasmAstExecutor(
 
         return false;
     }
+
+    private static bool TryAsDictionary(object? target, out Dictionary<string, object?> dictionary)
+    {
+        dictionary = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        switch (target)
+        {
+            case IReadOnlyDictionary<string, object?> readOnlyDictionary:
+                foreach (var item in readOnlyDictionary)
+                {
+                    dictionary[item.Key] = item.Value;
+                }
+
+                return true;
+            case IDictionary<string, object?> genericDictionary:
+                foreach (var item in genericDictionary)
+                {
+                    dictionary[item.Key] = item.Value;
+                }
+
+                return true;
+            case System.Collections.IDictionary legacyDictionary:
+                foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
+                {
+                    dictionary[ToInvariantString(entry.Key)] = entry.Value;
+                }
+
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryGetDictionaryValue(Dictionary<string, object?> dictionary, string key, out object? value) =>
+        dictionary.TryGetValue(key, out value);
 
     private string ExpandString(string value) =>
         Regex.Replace(value, @"\$(env:)?([A-Za-z_][A-Za-z0-9_]*)", match =>
