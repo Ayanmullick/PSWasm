@@ -9,7 +9,8 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("object pipeline commands", VerifyObjectPipelineCommandsAsync),
     ("json commands", VerifyJsonCommandsAsync),
     ("sort and measure commands", VerifySortAndMeasureCommandsAsync),
-    ("group and output commands", VerifyGroupAndOutputCommandsAsync)
+    ("group and output commands", VerifyGroupAndOutputCommandsAsync),
+    ("region comments", VerifyRegionCommentsAsync)
 };
 
 foreach (var test in tests)
@@ -187,6 +188,23 @@ static async ValueTask VerifyGroupAndOutputCommandsAsync()
         "@{Name=one; Value=1}",
         "x",
         "y"
+    ]);
+}
+
+static async ValueTask VerifyRegionCommentsAsync()
+{
+    var result = await ExecuteAsync("""
+#region math
+Write-Output (2 + 2)
+#endregion
+# region data
+@{Name='region'; Value=5} | ConvertTo-Json -Compress
+# endregion
+""");
+
+    ExpectLines(result, [
+        "4",
+        "{\"Name\":\"region\",\"Value\":5}"
     ]);
 }
 

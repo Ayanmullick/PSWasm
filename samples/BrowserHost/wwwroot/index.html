@@ -25,8 +25,10 @@ Write-Progress -Activity 'Loading' -Status 'Halfway' -PercentComplete 50
 Write-Verbose 'Verbose message'
 Write-Warning 'Warning message'
 Write-Error 'Error message'
+#region expressions
 Write-Output (2 + 2)
 ($var = 1 + 2) -eq 3
+#endregion
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |

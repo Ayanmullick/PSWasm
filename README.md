@@ -16,6 +16,7 @@ The first runtime supports:
 * hashtable literals
 * splatting with `@Params`
 * expandable strings such as `"Hello $Name"`
+* PowerShell region comments such as `#region` and `#endregion`
 * script blocks with `$_` and `$PSItem` for browser-safe pipeline commands
 * simple member access such as `$_.Name` against hashtable-like objects
 * `$env:Name` lookup through a browser-provided environment map
