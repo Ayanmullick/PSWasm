@@ -43,7 +43,7 @@ $table['Name']
 $table.Count
 $table.Keys | Sort-Object
 # Invoke-WebRequest uses browser HTTP and requires the target service to allow CORS.
-Invoke-WebRequest -Uri 'https://api.github.com/zen' -Headers @{Accept='text/plain'} -SkipHttpErrorCheck |
+Invoke-WebRequest -Uri 'https://api.github.com/zen' -Headers @{Accept='application/json'} -SkipHttpErrorCheck |
     Select-Object StatusCode RawContentLength
 #endregion
 Set-Variable -Name BrowserName -Value 'PSWasm'
