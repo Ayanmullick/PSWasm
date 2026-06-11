@@ -68,6 +68,12 @@ internal sealed class PowerShellWasmAstExecutor(
             case WhileStatementAst whileStatement:
                 await ExecuteWhileStatementAsync(whileStatement, cancellationToken);
                 break;
+            case ForStatementAst forStatement:
+                await ExecuteForStatementAsync(forStatement, cancellationToken);
+                break;
+            case SwitchStatementAst switchStatement:
+                await ExecuteSwitchStatementAsync(switchStatement, cancellationToken);
+                break;
             case FunctionDefinitionStatementAst functionDefinition:
                 executionContext.SetFunction(new PowerShellWasmScriptFunction(
                     functionDefinition.Name,
@@ -152,6 +158,121 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
+    private async ValueTask ExecuteForStatementAsync(ForStatementAst statement, CancellationToken cancellationToken)
+    {
+        if (statement.Initializer is not null)
+        {
+            await ExecuteStatementDiscardingOutputAsync(statement.Initializer, cancellationToken);
+        }
+
+        var iterations = 0;
+        while (statement.Condition is null || ToBoolean(EvaluateExpression(statement.Condition)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (++iterations > MaximumLoopIterations)
+            {
+                throw new InvalidOperationException($"The browser-safe for loop exceeded {MaximumLoopIterations} iterations.");
+            }
+
+            try
+            {
+                await ExecuteScriptAsync(statement.Body, cancellationToken);
+            }
+            catch (LoopContinueFlowException)
+            {
+            }
+            catch (LoopBreakFlowException)
+            {
+                break;
+            }
+
+            if (statement.Iterator is not null)
+            {
+                await ExecuteStatementDiscardingOutputAsync(statement.Iterator, cancellationToken);
+            }
+        }
+    }
+
+    private async ValueTask ExecuteSwitchStatementAsync(SwitchStatementAst statement, CancellationToken cancellationToken)
+    {
+        var breakSwitch = false;
+        foreach (var input in Enumerate(EvaluateExpression(statement.Input)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var matched = false;
+            var continueInput = false;
+
+            foreach (var clause in statement.Clauses)
+            {
+                if (!SwitchMatches(input, EvaluateExpression(clause.Pattern)))
+                {
+                    continue;
+                }
+
+                matched = true;
+                try
+                {
+                    await ExecuteScriptAsync(clause.Body, cancellationToken);
+                }
+                catch (LoopContinueFlowException)
+                {
+                    continueInput = true;
+                    break;
+                }
+                catch (LoopBreakFlowException)
+                {
+                    breakSwitch = true;
+                    break;
+                }
+            }
+
+            if (breakSwitch)
+            {
+                break;
+            }
+
+            if (continueInput)
+            {
+                continue;
+            }
+
+            if (!matched)
+            {
+                foreach (var defaultBlock in statement.DefaultBlocks)
+                {
+                    try
+                    {
+                        await ExecuteScriptAsync(defaultBlock, cancellationToken);
+                    }
+                    catch (LoopContinueFlowException)
+                    {
+                        continueInput = true;
+                        break;
+                    }
+                    catch (LoopBreakFlowException)
+                    {
+                        breakSwitch = true;
+                        break;
+                    }
+                }
+            }
+
+            if (breakSwitch)
+            {
+                break;
+            }
+        }
+    }
+
+    private static bool SwitchMatches(object? input, object? pattern) =>
+        Enumerate(pattern).Any(patternItem =>
+        {
+            var patternText = ToInvariantString(patternItem);
+            return patternText.Contains('*', StringComparison.Ordinal) || patternText.Contains('?', StringComparison.Ordinal)
+                ? WildcardMatch(input, patternItem, caseSensitive: false)
+                : CompareValues(input, patternItem, caseSensitive: false) == 0;
+        });
+
     private async ValueTask ExecuteStatementAssignmentAsync(StatementAssignmentAst assignment, CancellationToken cancellationToken)
     {
         var output = new List<object?>();
@@ -167,6 +288,15 @@ internal sealed class PowerShellWasmAstExecutor(
             _ => output.ToArray()
         };
         executionContext.SetVariable(assignment.VariableName, value);
+    }
+
+    private async ValueTask ExecuteStatementDiscardingOutputAsync(StatementAst statement, CancellationToken cancellationToken)
+    {
+        var output = new List<object?>();
+        using (executionContext.CaptureOutput(output))
+        {
+            await ExecuteStatementAsync(statement, [], cancellationToken);
+        }
     }
 
     private async ValueTask ExecuteTryStatementAsync(TryStatementAst statement, CancellationToken cancellationToken)

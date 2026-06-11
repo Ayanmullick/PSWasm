@@ -22,6 +22,8 @@ The first runtime supports:
 * `if` / `elseif` / `else` for browser-safe conditional execution
 * `foreach ($item in $items) { ... }` for browser-safe collection loops
 * `while ($condition) { ... }` loops with a browser-safe iteration guard
+* `for ($init; $condition; $iterator) { ... }` loops with a browser-safe iteration guard
+* `switch ($value) { pattern { ... } default { ... } }` with exact, wildcard, default, `break`, and `continue` behavior
 * browser-safe script functions with positional arguments, simple named parameters, `$args`, and `$input`
 * `return`, `break`, and `continue` for browser-safe function and loop control flow
 * `try` / `catch` / `finally` for browser-safe terminating runtime errors
@@ -118,6 +120,16 @@ $i = 0
 while ($i -lt 3) {
     $i = $i + 1
     $i
+}
+
+for ($j = 0; $j -lt 3; $j = $j + 1) {
+    $j
+}
+
+switch ('browser') {
+    'server' { 'server path' }
+    'brow*' { 'browser path' }
+    default { 'fallback path' }
 }
 
 function Add-Prefix($Text) {

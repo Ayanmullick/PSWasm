@@ -57,6 +57,21 @@ public sealed class PowerShellWasmParser
             return ParseWhileStatement(tokens);
         }
 
+        if (IsKeyword(tokens, 0, "do"))
+        {
+            return ParseDoWhileStatement(tokens);
+        }
+
+        if (IsKeyword(tokens, 0, "for"))
+        {
+            return ParseForStatement(tokens);
+        }
+
+        if (IsKeyword(tokens, 0, "switch"))
+        {
+            return ParseSwitchStatement(tokens);
+        }
+
         if (IsKeyword(tokens, 0, "function"))
         {
             return ParseFunctionDefinition(tokens);
@@ -209,6 +224,176 @@ public sealed class PowerShellWasmParser
         }
 
         return new WhileStatementAst(condition, body);
+    }
+
+    private static DoWhileStatementAst ParseDoWhileStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        var body = ReadScriptBlock(tokens, ref position, "do");
+        SkipStatementSeparators(tokens, ref position);
+
+        var until = false;
+        if (IsKeyword(tokens, position, "while"))
+        {
+            position++;
+        }
+        else if (IsKeyword(tokens, position, "until"))
+        {
+            position++;
+            until = true;
+        }
+        else
+        {
+            throw new InvalidOperationException("Expected while or until after do block.");
+        }
+
+        var condition = ReadParenthesizedExpression(tokens, ref position, until ? "until" : "while");
+        SkipStatementSeparators(tokens, ref position);
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after do statement.");
+        }
+
+        return new DoWhileStatementAst(body, condition, until);
+    }
+
+    private static ForStatementAst ParseForStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        var sections = ReadForSections(tokens, ref position);
+        var body = ReadScriptBlock(tokens, ref position, "for");
+        SkipStatementSeparators(tokens, ref position);
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after for statement.");
+        }
+
+        return new ForStatementAst(
+            sections[0].Count == 0 ? null : ParseStatement(sections[0]),
+            sections[1].Count == 0 ? null : ParseExpression(sections[1]),
+            sections[2].Count == 0 ? null : ParseStatement(sections[2]),
+            body);
+    }
+
+    private static SwitchStatementAst ParseSwitchStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        var input = ReadParenthesizedExpression(tokens, ref position, "switch");
+        var (clauses, defaultBlocks) = ReadSwitchClauses(tokens, ref position);
+        SkipStatementSeparators(tokens, ref position);
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after switch statement.");
+        }
+
+        return new SwitchStatementAst(input, clauses, defaultBlocks);
+    }
+
+    private static (IReadOnlyList<SwitchClauseAst> Clauses, IReadOnlyList<ScriptAst> DefaultBlocks) ReadSwitchClauses(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        ref int position)
+    {
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.LBrace)
+        {
+            throw new InvalidOperationException("Expected '{' after switch.");
+        }
+
+        position++;
+        var clauses = new List<SwitchClauseAst>();
+        var defaultBlocks = new List<ScriptAst>();
+
+        while (position < tokens.Count)
+        {
+            SkipStatementSeparators(tokens, ref position);
+            if (position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.RBrace)
+            {
+                position++;
+                return (clauses, defaultBlocks);
+            }
+
+            if (IsKeyword(tokens, position, "default"))
+            {
+                position++;
+                defaultBlocks.Add(ReadScriptBlock(tokens, ref position, "switch default"));
+                continue;
+            }
+
+            var patternTokens = ReadSwitchPattern(tokens, ref position);
+            clauses.Add(new SwitchClauseAst(ParseExpression(patternTokens), ReadScriptBlock(tokens, ref position, "switch clause")));
+        }
+
+        throw new InvalidOperationException("Expected '}' to close switch.");
+    }
+
+    private static IReadOnlyList<PowerShellWasmToken> ReadSwitchPattern(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    {
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.LBrace && depth == 0)
+            {
+                var pattern = tokens.Skip(start).Take(position - start).ToArray();
+                if (pattern.Length == 0)
+                {
+                    throw new InvalidOperationException("Expected a switch pattern before '{'.");
+                }
+
+                return pattern;
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        throw new InvalidOperationException("Expected switch clause body.");
+    }
+
+    private static IReadOnlyList<IReadOnlyList<PowerShellWasmToken>> ReadForSections(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        ref int position)
+    {
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.LParen)
+        {
+            throw new InvalidOperationException("Expected '(' after for.");
+        }
+
+        position++;
+        var sections = new List<IReadOnlyList<PowerShellWasmToken>>();
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.RParen && depth == 0)
+            {
+                sections.Add(tokens.Skip(start).Take(position - start).ToArray());
+                position++;
+                if (sections.Count != 3)
+                {
+                    throw new InvalidOperationException("A for statement requires initializer, condition, and iterator sections.");
+                }
+
+                return sections;
+            }
+
+            if (tokens[position].Kind == PowerShellWasmTokenKind.Semicolon && depth == 0)
+            {
+                sections.Add(tokens.Skip(start).Take(position - start).ToArray());
+                position++;
+                start = position;
+                continue;
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        throw new InvalidOperationException("Expected ')' to close for statement.");
     }
 
     private static FunctionDefinitionStatementAst ParseFunctionDefinition(IReadOnlyList<PowerShellWasmToken> tokens)

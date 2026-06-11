@@ -26,7 +26,9 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("foreach statement", VerifyForEachStatementAsync),
     ("script functions", VerifyScriptFunctionsAsync),
     ("return break continue", VerifyReturnBreakContinueAsync),
-    ("while statement", VerifyWhileStatementAsync)
+    ("while statement", VerifyWhileStatementAsync),
+    ("for statement", VerifyForStatementAsync),
+    ("switch statement", VerifySwitchStatementAsync)
 };
 
 foreach (var test in tests)
@@ -690,6 +692,81 @@ try {
         "4",
         "none",
         "The browser-safe while loop exceeded 10000 iterations."
+    ]);
+}
+
+static async ValueTask VerifyForStatementAsync()
+{
+    var result = await ExecuteAsync("""
+for ($i = 0; $i -lt 5; $i = $i + 1) {
+    if ($i -eq 1) {
+        continue
+    }
+    if ($i -eq 4) {
+        break
+    }
+    $i
+}
+$i
+$captured = for ($j = 0; $j -lt 0; $j = $j + 1) {
+    'bad'
+}
+$captured ?? 'none'
+try {
+    for (;;) {
+    }
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "0",
+        "2",
+        "3",
+        "4",
+        "none",
+        "The browser-safe for loop exceeded 10000 iterations."
+    ]);
+}
+
+static async ValueTask VerifySwitchStatementAsync()
+{
+    var result = await ExecuteAsync("""
+switch (2) {
+    1 { 'one' }
+    2 { 'two' }
+    default { 'other' }
+}
+switch ('cat') {
+    'c*' { 'wild' }
+    'cat' { 'exact' }
+}
+switch ('other') {
+    'x' { 'x' }
+    default { 'default' }
+}
+switch (@('red','blue','green','tail')) {
+    'red' { 'r' }
+    'blue' { continue }
+    'green' { 'g'; break }
+    default { 'd' }
+}
+$captured = switch (42) {
+    40 { 'no' }
+    42 { 'yes' }
+}
+$captured
+""");
+
+    ExpectLines(result, [
+        "two",
+        "wild",
+        "exact",
+        "default",
+        "r",
+        "g",
+        "yes"
     ]);
 }
 

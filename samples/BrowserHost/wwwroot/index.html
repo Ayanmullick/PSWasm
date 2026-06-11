@@ -82,6 +82,14 @@ while ($i -lt 3) {
     $i = $i + 1
     $i
 }
+for ($j = 0; $j -lt 3; $j = $j + 1) {
+    $j
+}
+switch ('browser') {
+    'server' { 'server path' }
+    'brow*' { 'browser path' }
+    default { 'fallback path' }
+}
 function Add-Prefix($Text) {
     "pre-$Text"
 }

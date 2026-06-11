@@ -39,6 +39,21 @@ public sealed record ForEachStatementAst(string VariableName, ExpressionAst Coll
 
 public sealed record WhileStatementAst(ExpressionAst Condition, ScriptAst Body) : StatementAst;
 
+public sealed record DoWhileStatementAst(ScriptAst Body, ExpressionAst Condition, bool Until) : StatementAst;
+
+public sealed record ForStatementAst(
+    StatementAst? Initializer,
+    ExpressionAst? Condition,
+    StatementAst? Iterator,
+    ScriptAst Body) : StatementAst;
+
+public sealed record SwitchStatementAst(
+    ExpressionAst Input,
+    IReadOnlyList<SwitchClauseAst> Clauses,
+    IReadOnlyList<ScriptAst> DefaultBlocks) : StatementAst;
+
+public sealed record SwitchClauseAst(ExpressionAst Pattern, ScriptAst Body) : PowerShellWasmAst;
+
 public sealed record FunctionDefinitionStatementAst(
     string Name,
     IReadOnlyList<string> ParameterNames,
