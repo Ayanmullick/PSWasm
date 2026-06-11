@@ -260,23 +260,28 @@ dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.cspro
 
 ## Browser POC
 
-The browser sample reads inline PowerShell blocks like this at runtime. Importing `app.js` automatically runs every `<script type="pwsh">` block on the page and writes to `#output`.
+The browser sample reads inline PowerShell blocks like this at runtime. Importing `app.js` automatically runs every `<script type="pwsh">` block on the page and inserts a `<pre class="pswasm-output">` output block after each script. Normal HTML between scripts, such as `<hr>`, is still rendered by the browser.
 
 Static pages and browser playgrounds such as CodePen should import `app.js`. The `app.d.ts` file is only a TypeScript declaration file for editors and build tools; browsers do not execute it.
 
 ```html
-<pre id="output">Starting...</pre>
-
 <script type="pwsh">
 Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Write-Warning 'Browser-visible warning'
 Write-Output (2 + 2)
+</script>
+
+<hr>
+
+<script type="pwsh">
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
 </script>
 
 <script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
 ```
+
+If a page needs one combined output area instead, set `window.pswasmDisableAutoRun = true` before importing `app.js`, then call `runPowerShellScripts({ output: "#output" })` explicitly.
 
 Static apps can also call the browser API directly:
 

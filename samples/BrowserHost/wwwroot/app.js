@@ -27,26 +27,42 @@ export async function executePowerShellResult(script, options = {}) {
 }
 
 /**
- * Find and execute browser script blocks. Defaults to script[type="pwsh"] and #output.
+ * Find and execute browser script blocks. Auto-run creates one output block per script.
+ * Pass options.output to render all scripts into one combined output target.
  * @param {{ environment?: Record<string, string>, output?: Element | string, selector?: string }} [options]
  * @returns {Promise<void>}
  */
 export async function runPowerShellScripts(options = {}) {
-  const output = resolveOutputElement(options.output);
   const scripts = Array.from(document.querySelectorAll(options.selector ?? 'script[type="pwsh"]'))
-    .map(script => script.textContent.trim())
-    .filter(Boolean);
-  const results = [];
+    .filter(script => script.textContent.trim());
 
-  try {
-    for (const script of scripts) {
-      results.push(await executePowerShellResult(script, options));
+  if (options.output !== undefined) {
+    const output = resolveOutputElement(options.output);
+    const results = [];
+
+    try {
+      for (const script of scripts) {
+        results.push(await executePowerShellResult(script.textContent.trim(), options));
+      }
+
+      renderPowerShellResult(mergeResults(results), output);
+    } catch (error) {
+      console.error(error);
+      renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
     }
 
-    renderPowerShellResult(mergeResults(results), output);
-  } catch (error) {
-    console.error(error);
-    renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
+    return;
+  }
+
+  for (const script of scripts) {
+    const output = getOrCreateScriptOutputElement(script);
+
+    try {
+      renderPowerShellResult(await executePowerShellResult(script.textContent.trim(), options), output);
+    } catch (error) {
+      console.error(error);
+      renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
+    }
   }
 }
 
@@ -126,6 +142,19 @@ function resolveOutputElement(target = undefined) {
   return document.getElementById("output") ?? document.body.appendChild(document.createElement("pre"));
 }
 
+function getOrCreateScriptOutputElement(script) {
+  const existing = script.nextElementSibling;
+  if (existing?.classList.contains("pswasm-output") && existing.dataset.pswasmGenerated === "true") {
+    return existing;
+  }
+
+  const output = document.createElement("pre");
+  output.className = "pswasm-output";
+  output.dataset.pswasmGenerated = "true";
+  script.insertAdjacentElement("afterend", output);
+  return output;
+}
+
 function renderRecord(record) {
   const element = document.createElement("span");
   const stream = record.stream ?? "Output";
@@ -169,6 +198,7 @@ function installDefaultStyles() {
   const style = document.createElement("style");
   style.id = "pswasm-default-styles";
   style.textContent = `
+    .pswasm-output { white-space: pre-wrap; }
     .pswasm-stream-error { color: #dc2626; }
     .pswasm-stream-warning { color: #d97706; }
     .pswasm-stream-information { color: #16a34a; }
