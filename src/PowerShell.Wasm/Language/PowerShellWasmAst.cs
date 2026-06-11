@@ -10,6 +10,8 @@ public abstract record StatementAst : PowerShellWasmAst;
 
 public sealed record AssignmentStatementAst(string VariableName, ExpressionAst Value) : StatementAst;
 
+public sealed record StatementAssignmentAst(string VariableName, StatementAst Statement) : StatementAst;
+
 public sealed record ExpressionStatementAst(ExpressionAst Expression) : StatementAst;
 
 public sealed record CommandStatementAst(CommandAst Command) : StatementAst;

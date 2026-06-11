@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
@@ -8,6 +11,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("variable commands", VerifyVariableCommandsAsync),
     ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
+    ("invoke web request", VerifyInvokeWebRequestAsync),
     ("pipeline chain operators", VerifyPipelineChainOperatorsAsync),
     ("browser-safe built-ins", VerifyBuiltInsAsync),
     ("splatting and pipeline", VerifySplattingAndPipelineAsync),
@@ -75,6 +79,67 @@ Write-Information 'info'
         new("Warning", "warn"),
         new("Error", "err"),
         new("Information", "info")
+    ]);
+}
+
+static async ValueTask VerifyInvokeWebRequestAsync()
+{
+    var handler = new FakeHttpMessageHandler(async (request, cancellationToken) =>
+    {
+        var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+        if (path.Equals("/data", StringComparison.OrdinalIgnoreCase))
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($"{HeaderValue(request, "Accept")}|{HeaderValue(request, "X-Demo")}", Encoding.UTF8)
+            };
+            response.Headers.TryAddWithoutValidation("X-Reply", "browser");
+            return response;
+        }
+
+        if (path.Equals("/echo", StringComparison.OrdinalIgnoreCase))
+        {
+            var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+            var contentType = request.Content?.Headers.ContentType?.MediaType ?? string.Empty;
+            return new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent($"{request.Method}:{body}:{contentType}", Encoding.UTF8)
+            };
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            ReasonPhrase = "Not Found",
+            Content = new StringContent("missing", Encoding.UTF8)
+        };
+    });
+
+    var runtime = new PowerShellWasmRuntime(httpMessageHandler: handler);
+    var result = await runtime.ExecuteAsync("""
+$response = Invoke-WebRequest -Uri 'https://example.test/data' -Headers @{Accept='application/json'; 'X-Demo'='yes'}
+$response.StatusCode
+$response.Content
+$response.Headers['X-Reply']
+$post = iwr -Uri 'https://example.test/echo' -Method Post -Body 'hello' -ContentType 'text/plain'
+$post.StatusCode
+$post.Content
+$skip = Invoke-WebRequest 'https://example.test/missing' -SkipHttpErrorCheck
+$skip.StatusCode
+try {
+    Invoke-WebRequest 'https://example.test/missing'
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "200",
+        "application/json|yes",
+        "browser",
+        "201",
+        "POST:hello:text/plain",
+        "404",
+        "Invoke-WebRequest failed with HTTP 404 Not Found."
     ]);
 }
 
@@ -465,4 +530,13 @@ static void Fail(string message)
     Console.Error.WriteLine(message);
     Environment.ExitCode = 1;
     throw new InvalidOperationException(message);
+}
+
+static string HeaderValue(HttpRequestMessage request, string name) =>
+    request.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : string.Empty;
+
+sealed class FakeHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        handler(request, cancellationToken);
 }

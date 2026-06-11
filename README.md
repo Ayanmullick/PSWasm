@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* browser-safe built-in commands: `Clear-Variable`, `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Command`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Get-Variable`, `Remove-Variable`, `Set-Variable`, `Write-*`
+* browser-safe built-in commands: `Clear-Variable`, `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Command`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Get-Variable`, `Invoke-WebRequest`, `Remove-Variable`, `Set-Variable`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
@@ -41,6 +41,14 @@ The browser-safe variable command set includes:
 The aliases `clv`, `gv`, `rv`, and `sv` are also registered. These commands operate only on the current PSWasm runtime's in-memory session variables.
 
 `Get-Command` lists the commands available in the current browser runtime. The `gcm` alias is also registered.
+
+The browser-safe web command set includes:
+
+* `Invoke-WebRequest`
+
+The `iwr` alias is also registered. `Invoke-WebRequest` uses .NET `HttpClient`, which maps to the browser HTTP stack in browser-wasm. The browser-safe subset supports `-Uri`, `-Method`, `-CustomMethod`, `-Headers`, `-Body`, `-ContentType`, and `-SkipHttpErrorCheck`. It returns a hashtable-like response object with `StatusCode`, `StatusDescription`, `Headers`, `Content`, `RawContent`, and `RawContentLength`.
+
+Browser security still applies. Cross-origin calls require the target service to allow the page's origin with CORS headers. PSWasm does not include desktop/server features such as `-OutFile`, `-InFile`, proxy configuration, certificate options, web sessions, local cookie containers, or CORS bypasses.
 
 The browser-safe operator set currently includes:
 
@@ -110,6 +118,9 @@ $table = @{Name='PSWasm'; Value=42}
 $table['Name']
 $table.Count
 $table.Keys | Sort-Object
+$response = Invoke-WebRequest -Uri 'https://api.github.com/zen' -Headers @{Accept='text/plain'} -SkipHttpErrorCheck
+$response.StatusCode
+$response.RawContentLength
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object -ExpandProperty Name
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress

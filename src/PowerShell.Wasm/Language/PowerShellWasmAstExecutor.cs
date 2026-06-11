@@ -33,6 +33,9 @@ internal sealed class PowerShellWasmAstExecutor(
             case AssignmentStatementAst assignment:
                 executionContext.SetVariable(assignment.VariableName, EvaluateExpression(assignment.Value));
                 break;
+            case StatementAssignmentAst assignment:
+                await ExecuteStatementAssignmentAsync(assignment, cancellationToken);
+                break;
             case ExpressionStatementAst expression:
                 executionContext.WriteOutput(EvaluateExpression(expression.Expression));
                 break;
@@ -49,6 +52,23 @@ internal sealed class PowerShellWasmAstExecutor(
                 await ExecuteTryStatementAsync(tryStatement, cancellationToken);
                 break;
         }
+    }
+
+    private async ValueTask ExecuteStatementAssignmentAsync(StatementAssignmentAst assignment, CancellationToken cancellationToken)
+    {
+        var output = new List<object?>();
+        using (executionContext.CaptureOutput(output))
+        {
+            await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
+        }
+
+        var value = output.Count switch
+        {
+            0 => null,
+            1 => output[0],
+            _ => output.ToArray()
+        };
+        executionContext.SetVariable(assignment.VariableName, value);
     }
 
     private async ValueTask ExecuteTryStatementAsync(TryStatementAst statement, CancellationToken cancellationToken)

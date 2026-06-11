@@ -60,7 +60,10 @@ public sealed class PowerShellWasmParser
         var equals = FindTopLevel(tokens, PowerShellWasmTokenKind.Equals);
         if (tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Variable && equals > 0)
         {
-            return new AssignmentStatementAst(tokens[0].Text, ParseExpression(tokens.Skip(equals + 1).ToArray()));
+            var valueTokens = tokens.Skip(equals + 1).ToArray();
+            return IsStatementAssignmentValue(valueTokens)
+                ? new StatementAssignmentAst(tokens[0].Text, ParseStatement(valueTokens))
+                : new AssignmentStatementAst(tokens[0].Text, ParseExpression(valueTokens));
         }
 
         if (IsCommandSegment(tokens))
@@ -301,6 +304,11 @@ public sealed class PowerShellWasmParser
 
     private static bool IsCommandSegment(IReadOnlyList<PowerShellWasmToken> tokens) =>
         tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Identifier;
+
+    private static bool IsStatementAssignmentValue(IReadOnlyList<PowerShellWasmToken> tokens) =>
+        IsCommandSegment(tokens) ||
+        SplitTopLevelPipelineChain(tokens).Segments.Count > 1 ||
+        SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe).Count > 1;
 
     private static bool IsKeyword(IReadOnlyList<PowerShellWasmToken> tokens, int position, string keyword) =>
         position < tokens.Count &&

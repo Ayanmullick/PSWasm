@@ -1,5 +1,6 @@
 using PSWasm.Commands;
 using PSWasm.Language;
+using System.Net.Http;
 
 namespace PSWasm;
 
@@ -9,9 +10,11 @@ public sealed class PowerShellWasmRuntime
     private readonly PowerShellWasmExecutionContext _executionContext;
     private readonly PowerShellWasmParser _parser = new();
 
-    public PowerShellWasmRuntime(IDictionary<string, string>? environment = null)
+    public PowerShellWasmRuntime(IDictionary<string, string>? environment = null, HttpMessageHandler? httpMessageHandler = null)
     {
         _executionContext = new PowerShellWasmExecutionContext(environment);
+        var httpClient = httpMessageHandler is null ? new HttpClient() : new HttpClient(httpMessageHandler);
+
         RegisterCommand("Clear-Variable", new ClearVariableCommand());
         RegisterCommand("clv", new ClearVariableCommand());
         RegisterCommand("ConvertFrom-Csv", new ConvertFromCsvCommand());
@@ -34,6 +37,8 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Group", new GroupObjectCommand());
         RegisterCommand("Get-Variable", new GetVariableCommand());
         RegisterCommand("gv", new GetVariableCommand());
+        RegisterCommand("Invoke-WebRequest", new InvokeWebRequestCommand(httpClient));
+        RegisterCommand("iwr", new InvokeWebRequestCommand(httpClient));
         RegisterCommand("Out-String", new OutStringCommand());
         RegisterCommand("Remove-Variable", new RemoveVariableCommand());
         RegisterCommand("rv", new RemoveVariableCommand());
