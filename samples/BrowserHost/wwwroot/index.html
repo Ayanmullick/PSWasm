@@ -24,6 +24,8 @@ Get-TimeZone
 Get-Command Format-* | Select-Object -ExpandProperty Name
   </script>
 
+  <br>
+
   <script type="pwsh">
 Write-Host 'PSWasm stream output'
 Write-Debug 'Debug message'
@@ -33,6 +35,8 @@ Write-Verbose 'Verbose message'
 Write-Warning 'Warning message'
 Write-Error 'Error message'
   </script>
+
+  <br>
 
   <script type="pwsh">
 #region expressions and collections
@@ -52,6 +56,8 @@ $table.Keys | Sort-Object
 #endregion
   </script>
 
+  <br>
+
   <script type="pwsh">
 # Invoke-WebRequest uses browser HTTP and requires the target service to allow CORS.
 $response = Invoke-WebRequest -Uri 'https://api.github.com/zen' -Headers @{Accept='application/json'} -SkipHttpErrorCheck
@@ -59,11 +65,15 @@ $response | Select-Object StatusCode RawContentLength
 $response.Content
   </script>
 
+  <br>
+
   <script type="pwsh">
 Set-Variable -Name BrowserName -Value 'PSWasm'
 Get-Variable BrowserName -ValueOnly
 Get-Variable BrowserName | Format-List Name Value
   </script>
+
+  <br>
 
   <script type="pwsh">
 $value = 3
@@ -74,26 +84,56 @@ if ($value -gt 5) {
 } else {
     'small'
 }
+  </script>
+
+  <br>
+
+  <script type="pwsh">
 foreach ($item in 1..3) {
     $item * 2
 }
+  </script>
+
+  <br>
+
+  <script type="pwsh">
 $i = 0
 while ($i -lt 3) {
     $i = $i + 1
     $i
 }
+  </script>
+
+  <br>
+
+  <script type="pwsh">
 for ($j = 0; $j -lt 3; $j = $j + 1) {
     $j
 }
+  </script>
+
+  <br>
+
+  <script type="pwsh">
 switch ('browser') {
     'server' { 'server path' }
     'brow*' { 'browser path' }
     default { 'fallback path' }
 }
+  </script>
+
+  <br>
+
+  <script type="pwsh">
 function Add-Prefix($Text) {
     "pre-$Text"
 }
 Add-Prefix -Text 'browser'
+  </script>
+
+  <br>
+
+  <script type="pwsh">
 function First-Matches($Items) {
     foreach ($item in $Items) {
         if ($item -lt 2) {
@@ -109,6 +149,8 @@ function First-Matches($Items) {
 First-Matches @(1,2,3,4)
   </script>
 
+  <br>
+
   <script type="pwsh">
 try {
     throw 'Browser try/catch sample'
@@ -119,6 +161,8 @@ try {
 }
   </script>
 
+  <br>
+
   <script type="pwsh">
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
@@ -126,12 +170,16 @@ try {
     Select-Object -ExpandProperty Name
   </script>
 
+  <br>
+
   <script type="pwsh">
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
 '{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
 'Name,Value
 csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
   </script>
+
+  <br>
 
   <script type="pwsh">
 @(@{Name='table-one'; Value=1}, @{Name='table-two'; Value=2}) | Format-Table Name Value
