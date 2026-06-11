@@ -790,8 +790,8 @@ $StackTrace ?? 'no stack'
 $Matches[0]
 $Matches[1]
 $Matches['Digits']
-$PSCulture.Length -gt 0
-$PSUICulture.Length -gt 0
+$PSCulture -ne $null
+$PSUICulture -ne $null
 $PSEdition
 $PSVersionTable.PSEdition
 $PSVersionTable.Platform
