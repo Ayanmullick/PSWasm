@@ -204,7 +204,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
             foreach (var clause in statement.Clauses)
             {
-                if (!SwitchMatches(input, EvaluateExpression(clause.Pattern)))
+                if (!SwitchMatches(input, EvaluateExpression(clause.Pattern), statement.UseRegex, statement.CaseSensitive))
                 {
                     continue;
                 }
@@ -264,13 +264,18 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    private static bool SwitchMatches(object? input, object? pattern) =>
+    private bool SwitchMatches(object? input, object? pattern, bool useRegex, bool caseSensitive) =>
         Enumerate(pattern).Any(patternItem =>
         {
+            if (useRegex)
+            {
+                return RegexMatch(input, patternItem, caseSensitive);
+            }
+
             var patternText = ToInvariantString(patternItem);
             return patternText.Contains('*', StringComparison.Ordinal) || patternText.Contains('?', StringComparison.Ordinal)
-                ? WildcardMatch(input, patternItem, caseSensitive: false)
-                : CompareValues(input, patternItem, caseSensitive: false) == 0;
+                ? WildcardMatch(input, patternItem, caseSensitive)
+                : CompareValues(input, patternItem, caseSensitive) == 0;
         });
 
     private async ValueTask ExecuteStatementAssignmentAsync(StatementAssignmentAst assignment, CancellationToken cancellationToken)

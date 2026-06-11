@@ -46,6 +46,8 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("rv", new RemoveVariableCommand());
         RegisterCommand("Select-Object", new SelectObjectCommand());
         RegisterCommand("Select", new SelectObjectCommand());
+        RegisterCommand("Select-String", new SelectStringCommand());
+        RegisterCommand("sls", new SelectStringCommand());
         RegisterCommand("Set-Variable", new SetVariableCommand());
         RegisterCommand("sv", new SetVariableCommand());
         RegisterCommand("Sort-Object", new SortObjectCommand());

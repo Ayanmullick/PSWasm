@@ -280,6 +280,7 @@ public sealed class PowerShellWasmParser
     private static SwitchStatementAst ParseSwitchStatement(IReadOnlyList<PowerShellWasmToken> tokens)
     {
         var position = 1;
+        var (useRegex, caseSensitive) = ReadSwitchOptions(tokens, ref position);
         var input = ReadParenthesizedExpression(tokens, ref position, "switch");
         var (clauses, defaultBlocks) = ReadSwitchClauses(tokens, ref position);
         SkipStatementSeparators(tokens, ref position);
@@ -289,7 +290,41 @@ public sealed class PowerShellWasmParser
             throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after switch statement.");
         }
 
-        return new SwitchStatementAst(input, clauses, defaultBlocks);
+        return new SwitchStatementAst(input, clauses, defaultBlocks, useRegex, caseSensitive);
+    }
+
+    private static (bool UseRegex, bool CaseSensitive) ReadSwitchOptions(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        ref int position)
+    {
+        var useRegex = false;
+        var caseSensitive = false;
+
+        while (position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.Parameter)
+        {
+            var option = tokens[position++].Text;
+            if (option.Equals("Regex", StringComparison.OrdinalIgnoreCase))
+            {
+                useRegex = true;
+                continue;
+            }
+
+            if (option.Equals("CaseSensitive", StringComparison.OrdinalIgnoreCase))
+            {
+                caseSensitive = true;
+                continue;
+            }
+
+            if (option.Equals("Wildcard", StringComparison.OrdinalIgnoreCase))
+            {
+                useRegex = false;
+                continue;
+            }
+
+            throw new InvalidOperationException($"Unsupported browser-safe switch option '-{option}'.");
+        }
+
+        return (useRegex, caseSensitive);
     }
 
     private static (IReadOnlyList<SwitchClauseAst> Clauses, IReadOnlyList<ScriptAst> DefaultBlocks) ReadSwitchClauses(
@@ -628,6 +663,12 @@ public sealed class PowerShellWasmParser
                 continue;
             }
 
+            if (TryReadOperatorSwitchParameter(tokens, ref position, out var switchParameter))
+            {
+                parameters.Add(new(switchParameter, null));
+                continue;
+            }
+
             if (IsSplatStart(tokens, position))
             {
                 var name = tokens[position + 1].Text;
@@ -641,6 +682,28 @@ public sealed class PowerShellWasmParser
 
         return new CommandAst(tokens[0].Text, parameters, arguments);
     }
+
+    private static bool TryReadOperatorSwitchParameter(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        ref int position,
+        out string parameterName)
+    {
+        parameterName = string.Empty;
+        if (!IsOperatorSwitchParameter(tokens, position))
+        {
+            return false;
+        }
+
+        parameterName = "NotMatch";
+        position++;
+        return true;
+    }
+
+    private static bool IsOperatorSwitchParameter(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
+        tokens[position].Kind is PowerShellWasmTokenKind.Inotmatch or PowerShellWasmTokenKind.Cnotmatch &&
+        (position + 1 >= tokens.Count ||
+            tokens[position + 1].Kind == PowerShellWasmTokenKind.Parameter ||
+            IsSplatStart(tokens, position + 1));
 
     private static IReadOnlyList<PowerShellWasmToken> ReadCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
     {
@@ -700,9 +763,12 @@ public sealed class PowerShellWasmParser
             while (position < tokens.Count && depth > 0);
         }
 
-        if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator())
+        if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator() && !IsOperatorSwitchParameter(tokens, position))
         {
-            while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.Parameter && !IsSplatStart(tokens, position))
+            while (position < tokens.Count &&
+                tokens[position].Kind != PowerShellWasmTokenKind.Parameter &&
+                !IsSplatStart(tokens, position) &&
+                !IsOperatorSwitchParameter(tokens, position))
             {
                 position++;
             }

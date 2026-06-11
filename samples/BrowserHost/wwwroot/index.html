@@ -104,6 +104,28 @@ Show-Bound -Name 'browser' -Value 42
   <hr>
 
   <script type="pwsh">
+Write-Host 'PSWasm regular expressions'
+'Server-01' -match 'Server-\d\d'
+$Matches[0]
+'CONTOSO\jsmith' -match '(?<Domain>\w+)\\(?<User>\w+)'
+$Matches.Domain
+$Matches.User
+'Hello World' -replace @('(\w+) \w+', '$1 Browser')
+'a1 b22 c333' -split '\s+'
+switch -Regex ('browser-42') {
+    'browser-(?<Id>\d+)' { 'browser-' + $Matches.Id }
+    default { 'fallback' }
+}
+@('Alpha','beta','gamma42') | Select-String -Pattern '^[a-z]+$' | Select-Object -ExpandProperty Line
+'one two one' |
+    Select-String -Pattern 'one' -AllMatches |
+    Select-Object -ExpandProperty Matches |
+    Select-Object -ExpandProperty Value
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
 Write-Host 'PSWasm splatting'
 function Show-Splat($Name, $Value) {
     "$Name=$Value"

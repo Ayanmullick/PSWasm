@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* browser-safe built-in commands: `Clear-Variable`, `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Command`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Get-Variable`, `Invoke-WebRequest`, `Remove-Variable`, `Set-Variable`, `Write-*`
+* browser-safe built-in commands: `Clear-Variable`, `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Command`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Get-Variable`, `Invoke-WebRequest`, `Remove-Variable`, `Select-String`, `Set-Variable`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
@@ -23,7 +23,7 @@ The first runtime supports:
 * `foreach ($item in $items) { ... }` for browser-safe collection loops
 * `while ($condition) { ... }` loops with a browser-safe iteration guard
 * `for ($init; $condition; $iterator) { ... }` loops with a browser-safe iteration guard
-* `switch ($value) { pattern { ... } default { ... } }` with exact, wildcard, default, `break`, and `continue` behavior
+* `switch ($value) { pattern { ... } default { ... } }` with exact, wildcard, regex, default, `break`, and `continue` behavior
 * browser-safe script functions with positional arguments, simple named parameters, `$args`, and `$input`
 * `return`, `break`, and `continue` for browser-safe function and loop control flow
 * `try` / `catch` / `finally` for browser-safe terminating runtime errors
@@ -108,6 +108,16 @@ The browser-safe operator set currently includes:
 * collection/string helpers: `-contains`, `-notcontains`, `-in`, `-notin`, `-join`, `-split`, `-f`
 * pipeline chain: `&&`, `||`
 
+The browser-safe regular expression subset uses the .NET regex engine and includes:
+
+* `-match`, `-notmatch`, `-replace`, and `-split`
+* case-sensitive variants: `-cmatch`, `-cnotmatch`, `-creplace`, and `-csplit`
+* `$Matches` for numeric and named captures from `-match` and `switch -Regex`
+* `switch -Regex` and `switch -Regex -CaseSensitive`
+* `Select-String` / `sls` with `-Pattern`, `-InputObject`, `-CaseSensitive`, `-NotMatch`, and `-AllMatches`
+
+PSWasm does not expose the static `[regex]` type, file-backed `Select-String`, full `MatchInfo` formatting, or every .NET regex option yet.
+
 The runtime intentionally does not include the full PowerShell host, providers, native command execution, remoting, jobs, module autoloading, profiles, formatting data, help, or OS-specific APIs. It also does not reproduce the full `System.Management.Automation` parse-mode split between command mode and expression mode; the browser profile flattens those modes and maps each useful operator to browser-safe AST and executor behavior.
 
 The browser-safe `Write-*` command set includes:
@@ -136,10 +146,11 @@ The browser-safe object pipeline command set includes:
 * `Measure-Object`
 * `Out-String`
 * `Select-Object`
+* `Select-String`
 * `Sort-Object`
 * `Where-Object`
 
-The aliases `ForEach`, `Group`, `Measure`, `Select`, `Sort`, and `Where` are also registered. Script blocks can use `$_` or `$PSItem` for the current pipeline item:
+The aliases `ForEach`, `Group`, `Measure`, `Select`, `sls`, `Sort`, and `Where` are also registered. Script blocks can use `$_` or `$PSItem` for the current pipeline item:
 
 The `try` / `catch` / `finally` support follows the browser-safe subset of PowerShell terminating error handling. Untyped `catch` blocks catch PSWasm runtime errors, `finally` always runs, and caught errors are available as `$_` / `$PSItem` with fields such as `Message`, `Exception`, and `FullyQualifiedErrorId`.
 

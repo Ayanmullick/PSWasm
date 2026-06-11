@@ -6,6 +6,7 @@ using PSWasm;
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
     ("operators and expressions", VerifyOperatorsAsync),
+    ("regular expressions", VerifyRegularExpressionsAsync),
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),
     ("variable commands", VerifyVariableCommandsAsync),
@@ -72,6 +73,56 @@ $missing ?? 'fallback'
         "c",
         "left-right",
         "fallback"
+    ]);
+}
+
+static async ValueTask VerifyRegularExpressionsAsync()
+{
+    var result = await ExecuteAsync("""
+'Server-01' -match 'Server-\d\d'
+$Matches[0]
+'CONTOSO\jsmith' -match '(?<Domain>\w+)\\(?<User>\w+)'
+$Matches['Domain']
+$Matches.User
+'Hello World' -replace @('(\w+) \w+', '$1 Browser')
+'ABC' -cmatch '^[a-z]+$'
+'ABC' -imatch '^[a-z]+$'
+'a1 b22 c333' -split '\s+'
+switch -Regex ('browser-42') {
+    'server-\d+' { 'server' }
+    'browser-(?<Id>\d+)' { 'browser-' + $Matches.Id }
+    default { 'fallback' }
+}
+switch -Regex -CaseSensitive ('ABC') {
+    '^[a-z]+$' { 'lower' }
+    '^[A-Z]+$' { 'upper' }
+}
+@('Alpha','beta','gamma42') | Select-String -Pattern '^[a-z]+$' | Select-Object -ExpandProperty Line
+@('Alpha','beta') | Select-String -Pattern '^[a-z]+$' -CaseSensitive | Select-Object -ExpandProperty Line
+'one two one' | Select-String -Pattern 'one' -AllMatches | Select-Object -ExpandProperty Matches | Select-Object -ExpandProperty Value
+@('Alpha','beta') | Select-String -Pattern '^a' -NotMatch | Select-Object -ExpandProperty Line
+""");
+
+    ExpectLines(result, [
+        "True",
+        "Server-01",
+        "True",
+        "CONTOSO",
+        "jsmith",
+        "Hello Browser",
+        "False",
+        "True",
+        "a1",
+        "b22",
+        "c333",
+        "browser-42",
+        "upper",
+        "Alpha",
+        "beta",
+        "beta",
+        "one",
+        "one",
+        "beta"
     ]);
 }
 

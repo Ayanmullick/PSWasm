@@ -50,7 +50,9 @@ public sealed record ForStatementAst(
 public sealed record SwitchStatementAst(
     ExpressionAst Input,
     IReadOnlyList<SwitchClauseAst> Clauses,
-    IReadOnlyList<ScriptAst> DefaultBlocks) : StatementAst;
+    IReadOnlyList<ScriptAst> DefaultBlocks,
+    bool UseRegex,
+    bool CaseSensitive) : StatementAst;
 
 public sealed record SwitchClauseAst(ExpressionAst Pattern, ScriptAst Body) : PowerShellWasmAst;
 
