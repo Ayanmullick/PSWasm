@@ -126,6 +126,25 @@ $OFS = '|'
   <hr>
 
   <script type="pwsh">
+Write-Host 'PSWasm common parameters'
+Write-Verbose 'Visible with -Verbose' -Verbose
+Write-Debug 'Visible with -Debug' -Debug
+Write-Warning 'Hidden warning' -WarningAction SilentlyContinue
+Write-Information 'Visible information' -InformationAction Continue
+Write-Output 'Captured output' -OutVariable capturedOutput
+$capturedOutput
+Write-Warning 'Captured warning' -WarningVariable capturedWarning
+$capturedWarning
+Write-Error 'Captured error' -ErrorAction SilentlyContinue -ErrorVariable capturedError
+$capturedError[0].Message
+Write-Output 'Pipeline capture' -PipelineVariable pipelineValue
+$pipelineValue
+Write-Output 'OutBuffer accepted' -OutBuffer 10
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
 $value = 3
 if ($value -gt 5) {
     'large'

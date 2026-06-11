@@ -623,7 +623,8 @@ public sealed class PowerShellWasmParser
                     continue;
                 }
 
-                parameters.Add(new(name, ParseCommandArgumentExpression(ReadCommandArgument(tokens, ref position))));
+                var argumentTokens = ReadCommandArgument(tokens, ref position);
+                parameters.Add(new(name, ParseParameterArgumentExpression(name, argumentTokens)));
                 continue;
             }
 
@@ -714,6 +715,25 @@ public sealed class PowerShellWasmParser
         IsBareWildcardArgument(tokens)
             ? new BareWordExpressionAst(string.Concat(tokens.Select(static token => token.Text)))
             : ParseExpression(tokens);
+
+    private static ExpressionAst ParseParameterArgumentExpression(string parameterName, IReadOnlyList<PowerShellWasmToken> tokens) =>
+        IsAppendVariableCommonParameter(parameterName, tokens)
+            ? new StringExpressionAst("+" + tokens[1].Text, IsExpandable: false)
+            : ParseCommandArgumentExpression(tokens);
+
+    private static bool IsAppendVariableCommonParameter(string parameterName, IReadOnlyList<PowerShellWasmToken> tokens) =>
+        tokens.Count == 2 &&
+        tokens[0].Kind == PowerShellWasmTokenKind.Plus &&
+        tokens[1].Kind == PowerShellWasmTokenKind.Identifier &&
+        tokens[1].Offset == tokens[0].Offset + tokens[0].Length &&
+        (parameterName.Equals("OutVariable", StringComparison.OrdinalIgnoreCase) ||
+            parameterName.Equals("ov", StringComparison.OrdinalIgnoreCase) ||
+            parameterName.Equals("ErrorVariable", StringComparison.OrdinalIgnoreCase) ||
+            parameterName.Equals("ev", StringComparison.OrdinalIgnoreCase) ||
+            parameterName.Equals("InformationVariable", StringComparison.OrdinalIgnoreCase) ||
+            parameterName.Equals("iv", StringComparison.OrdinalIgnoreCase) ||
+            parameterName.Equals("WarningVariable", StringComparison.OrdinalIgnoreCase) ||
+            parameterName.Equals("wv", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsBareWildcardArgument(IReadOnlyList<PowerShellWasmToken> tokens) =>
         tokens.Count > 1 &&

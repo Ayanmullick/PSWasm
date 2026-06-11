@@ -31,6 +31,7 @@ The first runtime supports:
 * simple member access such as `$_.Name` against hashtable-like objects
 * `$env:Name` lookup through a browser-provided environment map
 * simple named parameters
+* browser-safe common parameter handling for stream preferences and variable capture
 * arithmetic expressions with PowerShell-style precedence and parentheses
 * grouped assignment expressions such as `($var = 1 + 2)`
 * pipeline chain operators `&&` and `||`
@@ -65,6 +66,16 @@ The browser-safe preference variable subset includes:
 * initialized session preferences: `$ConfirmPreference`, `$ErrorView`, `$FormatEnumerationLimit`, `$OutputEncoding`, `$PSDefaultParameterValues`, `$WhatIfPreference`
 
 The stream preferences support `Continue`, `SilentlyContinue`, `Ignore`, and `Stop` for PSWasm `Write-*` commands. Interactive/debugger/workflow values such as `Inquire`, `Break`, and `Suspend` stop with a browser runtime error instead of prompting. Preferences tied to host history, logging, email, modules, native commands, remoting, styles, or transcripts are intentionally not included yet, such as `$MaximumHistoryCount`, `$PSModuleAutoLoadingPreference`, `$PSNativeCommandArgumentPassing`, `$PSSessionOption`, `$PSStyle`, and `$Transcript`.
+
+The browser-safe common parameter subset includes:
+
+* command-local stream overrides: `-Debug`, `-Verbose`, `-ErrorAction`, `-InformationAction`, `-ProgressAction`, `-WarningAction`
+* variable capture: `-OutVariable`, `-ErrorVariable`, `-InformationVariable`, `-WarningVariable`, `-PipelineVariable`
+* aliases: `-db`, `-vb`, `-ea`, `-infa`, `-proga`, `-wa`, `-ov`, `-ev`, `-iv`, `-wv`, `-pv`, `-ob`, `-wi`, `-cf`
+* append capture syntax such as `-OutVariable +captured`
+* accepted no-op parameters for browser commands that do not use them yet: `-OutBuffer`, `-WhatIf`, `-Confirm`
+
+`-PipelineVariable` / `-pv` is available as a browser subset that captures the command output into the named variable. It does not yet reproduce PowerShell's full item-by-item, pipeline-scoped streaming semantics.
 
 `Get-Command` lists the commands available in the current browser runtime. The `gcm` alias is also registered.
 

@@ -30,7 +30,8 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("for statement", VerifyForStatementAsync),
     ("switch statement", VerifySwitchStatementAsync),
     ("automatic variables", VerifyAutomaticVariablesAsync),
-    ("preference variables", VerifyPreferenceVariablesAsync)
+    ("preference variables", VerifyPreferenceVariablesAsync),
+    ("common parameters", VerifyCommonParametersAsync)
 };
 
 foreach (var test in tests)
@@ -912,6 +913,76 @@ try {
         "1",
         "1 2 3",
         "1|2|3",
+        "[Error] stop error",
+        "The running command stopped because the preference variable \"ErrorActionPreference\" is set to Stop: stop error"
+    ]);
+}
+
+static async ValueTask VerifyCommonParametersAsync()
+{
+    var result = await ExecuteAsync("""
+Write-Verbose 'hidden verbose'
+Write-Verbose 'shown verbose' -Verbose
+Write-Debug 'shown debug' -Debug
+Write-Verbose 'alias verbose' -vb
+Write-Warning 'hidden warning' -WarningAction SilentlyContinue
+'after hidden warning'
+Write-Information 'shown info' -InformationAction Continue
+Write-Progress -Activity 'hidden progress' -ProgressAction SilentlyContinue
+Write-Output 'captured output' -OutVariable capturedOutput
+$capturedOutput
+Write-Output 'appended output' -OutVariable +capturedOutput
+$capturedOutput.Count
+$capturedOutput[-1]
+Write-Warning 'captured warning' -WarningVariable capturedWarning
+$capturedWarning
+Write-Information 'captured information' -InformationAction Continue -InformationVariable capturedInfo
+$capturedInfo
+Write-Error 'captured error' -ErrorAction SilentlyContinue -ErrorVariable capturedError
+$?
+$Error.Count
+$capturedError[0].Message
+Write-Error 'ignored error' -ErrorAction Ignore
+$?
+$Error.Count
+Write-Output 'pipeline value' -PipelineVariable pipelineValue
+$pipelineValue
+Write-Output 'buffer accepted' -OutBuffer 10
+Write-Output 'whatif accepted' -WhatIf
+Write-Output 'confirm accepted' -Confirm
+try {
+    Write-Error 'stop error' -ErrorAction Stop
+    'skipped'
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "[Verbose] shown verbose",
+        "[Debug] shown debug",
+        "[Verbose] alias verbose",
+        "after hidden warning",
+        "[Information] shown info",
+        "captured output",
+        "captured output",
+        "appended output",
+        "2",
+        "appended output",
+        "[Warning] captured warning",
+        "captured warning",
+        "[Information] captured information",
+        "captured information",
+        "False",
+        "1",
+        "captured error",
+        "False",
+        "1",
+        "pipeline value",
+        "pipeline value",
+        "buffer accepted",
+        "whatif accepted",
+        "confirm accepted",
         "[Error] stop error",
         "The running command stopped because the preference variable \"ErrorActionPreference\" is set to Stop: stop error"
     ]);

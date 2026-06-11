@@ -387,10 +387,13 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var errorCount = executionContext.ErrorCount;
+        var failureSignalCount = executionContext.FailureSignalCount;
         try
         {
             await ExecuteStatementAsync(statement, pipelineInput, cancellationToken);
-            executionContext.SetLastCommandSucceeded(executionContext.ErrorCount == errorCount);
+            executionContext.SetLastCommandSucceeded(
+                executionContext.ErrorCount == errorCount &&
+                executionContext.FailureSignalCount == failureSignalCount);
         }
         catch (OperationCanceledException)
         {
@@ -465,9 +468,12 @@ internal sealed class PowerShellWasmAstExecutor(
             parameters[parameter.Name] = parameter.Value is null ? true : EvaluateExpression(parameter.Value);
         }
 
+        var commonParameters = PowerShellWasmCommonParameters.From(parameters);
         if (executionContext.TryGetFunction(commandAst.Name, out var function))
         {
-            await ExecuteScriptFunctionAsync(function, parameters, arguments, pipelineInput, cancellationToken);
+            await ExecuteWithCommonParametersAsync(
+                commonParameters,
+                () => ExecuteScriptFunctionAsync(function, parameters, arguments, pipelineInput, cancellationToken));
             return;
         }
 
@@ -477,7 +483,39 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         var context = new PowerShellWasmCommandContext(executionContext, parameters, arguments, pipelineInput);
-        await command.InvokeAsync(context, cancellationToken);
+        await ExecuteWithCommonParametersAsync(
+            commonParameters,
+            () => command.InvokeAsync(context, cancellationToken));
+    }
+
+    private async ValueTask ExecuteWithCommonParametersAsync(
+        PowerShellWasmCommonParameters commonParameters,
+        Func<ValueTask> invoke)
+    {
+        var capturedOutput = new List<object?>();
+        var initialErrorCount = executionContext.ErrorCount;
+        ExceptionDispatchInfo? pending = null;
+
+        using (executionContext.CaptureOutput(capturedOutput))
+        using (commonParameters.Apply(executionContext))
+        {
+            try
+            {
+                await invoke();
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                pending = ExceptionDispatchInfo.Capture(error);
+            }
+        }
+
+        commonParameters.ApplyCaptures(executionContext, capturedOutput, initialErrorCount);
+        executionContext.WriteCapturedOutput(capturedOutput);
+        pending?.Throw();
     }
 
     private async ValueTask ExecuteScriptFunctionAsync(

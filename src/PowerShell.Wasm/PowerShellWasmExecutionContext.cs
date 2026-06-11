@@ -13,6 +13,7 @@ public sealed class PowerShellWasmExecutionContext
     private readonly List<object?> _errors = [];
     private readonly List<object?> _output = [];
     private readonly Stack<List<object?>> _outputCaptures = [];
+    private int _failureSignalCount;
 
     public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null)
     {
@@ -23,6 +24,7 @@ public sealed class PowerShellWasmExecutionContext
     public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Select(FormatRecord).ToArray();
     public IReadOnlyList<string> Output => Records.Select(FormatRecordLine).ToArray();
     public int ErrorCount => _errors.Count;
+    internal int FailureSignalCount => _failureSignalCount;
 
     public string? GetEnvironmentVariable(string name) =>
         _environment.TryGetValue(name, out var value) ? value : Environment.GetEnvironmentVariable(name);
@@ -60,6 +62,21 @@ public sealed class PowerShellWasmExecutionContext
         }
 
         return new VariableScope(this, snapshot);
+    }
+
+    internal IDisposable WithTemporaryVariables(IReadOnlyDictionary<string, object?> variables)
+    {
+        var snapshot = variables.ToDictionary(
+            static variable => variable.Key,
+            variable => (_variables.TryGetValue(variable.Key, out var value), value),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var variable in variables)
+        {
+            _variables[variable.Key] = variable.Value;
+        }
+
+        return new TemporaryVariableScope(this, snapshot);
     }
 
     internal IDisposable WithPipelineItem(object? value)
@@ -125,8 +142,15 @@ public sealed class PowerShellWasmExecutionContext
         }
     }
 
-    internal void SetLastCommandSucceeded(bool succeeded) =>
+    internal void SetLastCommandSucceeded(bool succeeded)
+    {
+        if (!succeeded)
+        {
+            _failureSignalCount++;
+        }
+
         _variables["?"] = succeeded;
+    }
 
     internal string OutputFieldSeparator =>
         GetPreferenceValue("OFS", " ");
@@ -148,6 +172,50 @@ public sealed class PowerShellWasmExecutionContext
     {
         _outputCaptures.Push(output);
         return new OutputCapture(this, output);
+    }
+
+    internal void WriteCapturedOutput(IEnumerable<object?> output)
+    {
+        foreach (var item in output)
+        {
+            if (item is not null)
+            {
+                ActiveOutput.Add(item);
+            }
+        }
+    }
+
+    internal IReadOnlyList<object?> GetCapturedOutput(IEnumerable<object?> output) =>
+        output.Where(static item => item is not null and not PowerShellWasmStreamRecord).ToArray();
+
+    internal IReadOnlyList<object?> GetCapturedStreamValues(IEnumerable<object?> output, string streamName) =>
+        output.OfType<PowerShellWasmStreamRecord>()
+            .Where(record => record.StreamName.Equals(streamName, StringComparison.OrdinalIgnoreCase))
+            .Select(static record => record.Value)
+            .Where(static value => value is not null)
+            .ToArray();
+
+    internal IReadOnlyList<object?> GetErrorsAddedAfter(int errorCount)
+    {
+        var added = _errors.Count - errorCount;
+        return added <= 0 ? [] : _errors.Take(added).Reverse<object?>().ToArray();
+    }
+
+    internal void SetCommonParameterVariable(string variableName, IReadOnlyList<object?> values)
+    {
+        if (string.IsNullOrWhiteSpace(variableName))
+        {
+            return;
+        }
+
+        var append = variableName.StartsWith("+", StringComparison.Ordinal);
+        if (append)
+        {
+            variableName = variableName[1..];
+        }
+
+        var existing = append ? EnumerateVariableValue(GetVariable(variableName)) : [];
+        _variables[variableName] = existing.Concat(values).ToArray();
     }
 
     private List<object?> ActiveOutput =>
@@ -274,6 +342,15 @@ public sealed class PowerShellWasmExecutionContext
         RestoreVariable("PSItem", hadPSItem, psItem);
     }
 
+    private void RestoreTemporaryVariables(
+        IReadOnlyDictionary<string, (bool HadValue, object? Value)> variables)
+    {
+        foreach (var variable in variables)
+        {
+            RestoreVariable(variable.Key, variable.Value.HadValue, variable.Value.Value);
+        }
+    }
+
     private void RestoreVariable(string name, bool hadValue, object? value)
     {
         if (hadValue)
@@ -284,6 +361,32 @@ public sealed class PowerShellWasmExecutionContext
         {
             _variables.Remove(name);
         }
+    }
+
+    private static IEnumerable<object?> EnumerateVariableValue(object? value)
+    {
+        if (value is null)
+        {
+            yield break;
+        }
+
+        if (value is string)
+        {
+            yield return value;
+            yield break;
+        }
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                yield return item;
+            }
+
+            yield break;
+        }
+
+        yield return value;
     }
 
     private void RestoreVariables(Dictionary<string, object?> variables)
@@ -329,6 +432,14 @@ public sealed class PowerShellWasmExecutionContext
     {
         public void Dispose() =>
             context.RestoreVariables(variables);
+    }
+
+    private sealed class TemporaryVariableScope(
+        PowerShellWasmExecutionContext context,
+        IReadOnlyDictionary<string, (bool HadValue, object? Value)> variables) : IDisposable
+    {
+        public void Dispose() =>
+            context.RestoreTemporaryVariables(variables);
     }
 
     private sealed class PipelineItemScope(
