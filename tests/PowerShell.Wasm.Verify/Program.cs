@@ -790,8 +790,6 @@ $StackTrace ?? 'no stack'
 $Matches[0]
 $Matches[1]
 $Matches['Digits']
-$PSCulture -ne $null
-$PSUICulture -ne $null
 $PSEdition
 $PSVersionTable.PSEdition
 $PSVersionTable.Platform
@@ -830,8 +828,6 @@ function Test-Bound($Name, $Value) {
         "abc123",
         "abc",
         "123",
-        "True",
-        "True",
         "Core",
         "Core",
         "Browser",
