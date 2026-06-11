@@ -23,7 +23,7 @@ internal sealed class PowerShellWasmAstExecutor(
             foreach (var statement in script.Statements)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await ExecuteStatementAsync(statement, [], cancellationToken);
+                await ExecuteStatementWithStatusAsync(statement, [], cancellationToken);
             }
         }
         catch (ReturnFlowException)
@@ -325,7 +325,7 @@ internal sealed class PowerShellWasmAstExecutor(
             {
                 try
                 {
-                    using (executionContext.WithPipelineItem(CreateErrorRecord(error)))
+                    using (executionContext.WithPipelineItem(executionContext.RecordException(error)))
                     {
                         await ExecuteScriptAsync(statement.CatchBlocks[0], cancellationToken);
                     }
@@ -357,17 +357,9 @@ internal sealed class PowerShellWasmAstExecutor(
         foreach (var statement in script.Statements)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await ExecuteStatementAsync(statement, [], cancellationToken);
+            await ExecuteStatementWithStatusAsync(statement, [], cancellationToken);
         }
     }
-
-    private static Dictionary<string, object?> CreateErrorRecord(Exception error) =>
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Message"] = error.Message,
-            ["Exception"] = error.GetType().Name,
-            ["FullyQualifiedErrorId"] = error.GetType().FullName ?? error.GetType().Name
-        };
 
     private async ValueTask ExecutePipelineChainAsync(PipelineChainStatementAst chain, CancellationToken cancellationToken)
     {
@@ -385,8 +377,35 @@ internal sealed class PowerShellWasmAstExecutor(
     private async ValueTask<bool> ExecuteStatementAndGetSuccessAsync(StatementAst statement, CancellationToken cancellationToken)
     {
         var errorCount = executionContext.ErrorCount;
-        await ExecuteStatementAsync(statement, [], cancellationToken);
+        await ExecuteStatementWithStatusAsync(statement, [], cancellationToken);
         return executionContext.ErrorCount == errorCount;
+    }
+
+    private async ValueTask ExecuteStatementWithStatusAsync(
+        StatementAst statement,
+        IReadOnlyList<object?> pipelineInput,
+        CancellationToken cancellationToken)
+    {
+        var errorCount = executionContext.ErrorCount;
+        try
+        {
+            await ExecuteStatementAsync(statement, pipelineInput, cancellationToken);
+            executionContext.SetLastCommandSucceeded(executionContext.ErrorCount == errorCount);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (ControlFlowException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            executionContext.RecordException(error);
+            executionContext.SetLastCommandSucceeded(false);
+            throw;
+        }
     }
 
     private async ValueTask ExecutePipelineAsync(PipelineStatementAst pipeline, CancellationToken cancellationToken)
@@ -472,6 +491,7 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             ["input"] = pipelineInput.ToArray()
         };
+        var boundParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var argumentIndex = 0;
 
         foreach (var parameterName in function.ParameterNames)
@@ -479,12 +499,23 @@ internal sealed class PowerShellWasmAstExecutor(
             if (parameters.TryGetValue(parameterName, out var parameterValue))
             {
                 locals[parameterName] = parameterValue;
+                boundParameters[parameterName] = parameterValue;
                 continue;
             }
 
-            locals[parameterName] = argumentIndex < arguments.Count ? arguments[argumentIndex++] : null;
+            if (argumentIndex < arguments.Count)
+            {
+                var argumentValue = arguments[argumentIndex++];
+                locals[parameterName] = argumentValue;
+                boundParameters[parameterName] = argumentValue;
+            }
+            else
+            {
+                locals[parameterName] = null;
+            }
         }
 
+        locals["PSBoundParameters"] = boundParameters;
         locals["args"] = function.ParameterNames.Count == 0
             ? arguments.ToArray()
             : arguments.Skip(argumentIndex).ToArray();
@@ -833,8 +864,38 @@ internal sealed class PowerShellWasmAstExecutor(
         return Regex.IsMatch(ToInvariantString(left), pattern, RegexOptionsFor(caseSensitive));
     }
 
-    private static bool RegexMatch(object? left, object? right, bool caseSensitive) =>
-        Regex.IsMatch(ToInvariantString(left), ToInvariantString(right), RegexOptionsFor(caseSensitive));
+    private bool RegexMatch(object? left, object? right, bool caseSensitive)
+    {
+        var regex = new Regex(ToInvariantString(right), RegexOptionsFor(caseSensitive));
+        var match = regex.Match(ToInvariantString(left));
+        if (match.Success)
+        {
+            var matches = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["0"] = match.Value
+            };
+
+            for (var i = 1; i < match.Groups.Count; i++)
+            {
+                if (match.Groups[i].Success)
+                {
+                    matches[i.ToString(CultureInfo.InvariantCulture)] = match.Groups[i].Value;
+                }
+            }
+
+            foreach (var name in regex.GetGroupNames().Where(static name => !int.TryParse(name, out _)))
+            {
+                if (match.Groups[name].Success)
+                {
+                    matches[name] = match.Groups[name].Value;
+                }
+            }
+
+            executionContext.SetVariable("Matches", matches);
+        }
+
+        return match.Success;
+    }
 
     private static string ReplaceString(object? left, object? right, bool caseSensitive)
     {

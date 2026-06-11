@@ -75,6 +75,32 @@ Get-Variable BrowserName | Format-List Name Value
   <hr>
 
   <script type="pwsh">
+Write-Host 'PSWasm automatic variables'
+$?
+$PSEdition
+$PSVersionTable.Platform
+$Host.Name
+$PWD.Path
+$HOME
+$PSCulture
+$PSUICulture
+'abc123' -match '([a-z]+)(?<Digits>\d+)'
+$Matches[0]
+$Matches['Digits']
+Write-Error 'automatic variable sample error'
+$?
+$Error[0].Message
+function Show-Bound($Name, $Value) {
+    $PSBoundParameters.Count
+    $PSBoundParameters['Name']
+    $PSBoundParameters['Value']
+}
+Show-Bound -Name 'browser' -Value 42
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
 $value = 3
 if ($value -gt 5) {
     'large'

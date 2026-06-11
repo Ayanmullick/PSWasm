@@ -1,23 +1,28 @@
 using PSWasm.Language;
+using System.Globalization;
 
 namespace PSWasm;
 
 public sealed class PowerShellWasmExecutionContext
 {
+    private const string ErrorRecordDataKey = "PSWasm.ErrorRecord";
+
     private readonly Dictionary<string, object?> _variables = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PowerShellWasmScriptFunction> _functions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _environment;
+    private readonly List<object?> _errors = [];
     private readonly List<object?> _output = [];
     private readonly Stack<List<object?>> _outputCaptures = [];
 
     public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null)
     {
         _environment = environment is null ? new(StringComparer.OrdinalIgnoreCase) : new(environment, StringComparer.OrdinalIgnoreCase);
+        InitializeAutomaticVariables();
     }
 
     public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Select(FormatRecord).ToArray();
     public IReadOnlyList<string> Output => Records.Select(FormatRecordLine).ToArray();
-    public int ErrorCount { get; private set; }
+    public int ErrorCount => _errors.Count;
 
     public string? GetEnvironmentVariable(string name) =>
         _environment.TryGetValue(name, out var value) ? value : Environment.GetEnvironmentVariable(name);
@@ -85,10 +90,26 @@ public sealed class PowerShellWasmExecutionContext
 
         if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
         {
-            ErrorCount++;
+            RecordError(value);
         }
 
         ActiveOutput.Add(new PowerShellWasmStreamRecord(streamName, value));
+    }
+
+    internal void SetLastCommandSucceeded(bool succeeded) =>
+        _variables["?"] = succeeded;
+
+    internal Dictionary<string, object?> RecordException(Exception error)
+    {
+        if (error.Data[ErrorRecordDataKey] is Dictionary<string, object?> existingRecord)
+        {
+            return existingRecord;
+        }
+
+        var record = CreateErrorRecord(error.Message, error.GetType().Name, error.GetType().FullName ?? error.GetType().Name);
+        error.Data[ErrorRecordDataKey] = record;
+        PushErrorRecord(record, error.ToString());
+        return record;
     }
 
     internal IDisposable CaptureOutput(List<object?> output)
@@ -99,6 +120,79 @@ public sealed class PowerShellWasmExecutionContext
 
     private List<object?> ActiveOutput =>
         _outputCaptures.TryPeek(out var output) ? output : _output;
+
+    private void InitializeAutomaticVariables()
+    {
+        var culture = CultureInfo.CurrentCulture;
+        var uiCulture = CultureInfo.CurrentUICulture;
+        var version = typeof(PowerShellWasmRuntime).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        _variables["?"] = true;
+        _variables["args"] = Array.Empty<object?>();
+        _variables["EnabledExperimentalFeatures"] = Array.Empty<object?>();
+        _variables["Error"] = Array.Empty<object?>();
+        _variables["HOME"] = "browser:/home";
+        _variables["Host"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Name"] = "PSWasm Browser Host",
+            ["Version"] = version,
+            ["CurrentCulture"] = culture.Name,
+            ["CurrentUICulture"] = uiCulture.Name
+        };
+        _variables["input"] = Array.Empty<object?>();
+        _variables["IsCoreCLR"] = true;
+        _variables["IsLinux"] = false;
+        _variables["IsMacOS"] = false;
+        _variables["IsWindows"] = false;
+        _variables["Matches"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        _variables["NestedPromptLevel"] = 0;
+        _variables["PSBoundParameters"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        _variables["PSCommandPath"] = string.Empty;
+        _variables["PSCulture"] = culture.Name;
+        _variables["PSDebugContext"] = null;
+        _variables["PSEdition"] = "Core";
+        _variables["PSHOME"] = "browser:/pswasm";
+        _variables["PSScriptRoot"] = string.Empty;
+        _variables["PSUICulture"] = uiCulture.Name;
+        _variables["PSVersionTable"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["PSVersion"] = "7.5.0",
+            ["PSEdition"] = "Core",
+            ["GitCommitId"] = "PSWasm",
+            ["OS"] = "Browser",
+            ["Platform"] = "Browser",
+            ["PSCompatibleVersions"] = new object?[] { "7.5" },
+            ["PSWasmVersion"] = version
+        };
+        _variables["PWD"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Path"] = "browser:/",
+            ["Provider"] = "Browser"
+        };
+        _variables["ShellId"] = "PSWasm";
+        _variables["StackTrace"] = null;
+    }
+
+    private void RecordError(object? value)
+    {
+        var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+        PushErrorRecord(CreateErrorRecord(message, "Error", "PSWasm.WriteError"), null);
+    }
+
+    private void PushErrorRecord(Dictionary<string, object?> record, string? stackTrace)
+    {
+        _errors.Insert(0, record);
+        _variables["Error"] = _errors.ToArray();
+        _variables["StackTrace"] = stackTrace;
+        SetLastCommandSucceeded(false);
+    }
+
+    private static Dictionary<string, object?> CreateErrorRecord(string message, string exception, string fullyQualifiedErrorId) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Message"] = message,
+            ["Exception"] = exception,
+            ["FullyQualifiedErrorId"] = fullyQualifiedErrorId
+        };
 
     private void ReleaseOutputCapture(List<object?> output)
     {

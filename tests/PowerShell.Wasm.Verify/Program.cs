@@ -28,7 +28,8 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("return break continue", VerifyReturnBreakContinueAsync),
     ("while statement", VerifyWhileStatementAsync),
     ("for statement", VerifyForStatementAsync),
-    ("switch statement", VerifySwitchStatementAsync)
+    ("switch statement", VerifySwitchStatementAsync),
+    ("automatic variables", VerifyAutomaticVariablesAsync)
 };
 
 foreach (var test in tests)
@@ -767,6 +768,86 @@ $captured
         "r",
         "g",
         "yes"
+    ]);
+}
+
+static async ValueTask VerifyAutomaticVariablesAsync()
+{
+    var result = await ExecuteAsync("""
+$true
+$false
+$null ?? 'null'
+$?
+Write-Error 'automatic failure'
+$?
+$Error.Count
+$Error[0].Message
+$StackTrace ?? 'no stack'
+'abc123' -match '([a-z]+)(?<Digits>\d+)'
+$Matches[0]
+$Matches[1]
+$Matches['Digits']
+$PSCulture.Length -gt 0
+$PSUICulture.Length -gt 0
+$PSEdition
+$PSVersionTable.PSEdition
+$PSVersionTable.Platform
+$Host.Name
+$Host.CurrentCulture -eq $PSCulture
+$PWD.Path
+$HOME
+$PSHOME
+$ShellId
+$IsCoreCLR
+$IsWindows
+$EnabledExperimentalFeatures.Count
+$NestedPromptLevel
+$PSDebugContext ?? 'no debug'
+function Test-Bound($Name, $Value) {
+    $PSBoundParameters.Count
+    $PSBoundParameters['Name']
+    $PSBoundParameters['Value']
+    $args.Count
+    $input.Count
+}
+'pipe' | Test-Bound -Name 'browser' 42
+""");
+
+    ExpectLines(result, [
+        "True",
+        "False",
+        "null",
+        "True",
+        "[Error] automatic failure",
+        "False",
+        "1",
+        "automatic failure",
+        "no stack",
+        "True",
+        "abc123",
+        "abc",
+        "123",
+        "True",
+        "True",
+        "Core",
+        "Core",
+        "Browser",
+        "PSWasm Browser Host",
+        "True",
+        "browser:/",
+        "browser:/home",
+        "browser:/pswasm",
+        "PSWasm",
+        "True",
+        "False",
+        "0",
+        "0",
+        "no debug",
+        "2",
+        "browser",
+        "42",
+        "0",
+        "1"
     ]);
 }
 

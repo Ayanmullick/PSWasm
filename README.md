@@ -12,7 +12,7 @@ The first runtime supports:
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
-* variable assignment
+* variable assignment and a browser-safe automatic variable subset
 * arrays with comma literals, `@(...)`, ranges, indexing, negative indexes, and `Count` / `Length`
 * hashtable literals with key indexing and `Count` / `Keys` / `Values`
 * splatting with `@Params`
@@ -46,6 +46,17 @@ The browser-safe variable command set includes:
 * `Set-Variable`
 
 The aliases `clv`, `gv`, `rv`, and `sv` are also registered. These commands operate only on the current PSWasm runtime's in-memory session variables.
+
+The browser-safe automatic variable subset includes:
+
+* constants and status: `$true`, `$false`, `$null`, `$?`
+* error and matching state: `$Error`, `$StackTrace`, `$Matches`
+* current pipeline and function state: `$_`, `$PSItem`, `$args`, `$input`, `$PSBoundParameters`
+* culture and runtime identity: `$PSCulture`, `$PSUICulture`, `$PSEdition`, `$PSVersionTable`, `$Host`, `$ShellId`
+* virtual browser locations: `$PWD`, `$HOME`, `$PSHOME`, `$PSCommandPath`, `$PSScriptRoot`
+* browser-safe platform/runtime flags: `$IsCoreCLR`, `$IsLinux`, `$IsMacOS`, `$IsWindows`, `$EnabledExperimentalFeatures`, `$NestedPromptLevel`, `$PSDebugContext`
+
+PSWasm intentionally does not add automatic variables that imply desktop host state, profiles, native process execution, remoting, eventing, jobs, or real providers, such as `$PID`, `$PROFILE`, `$LASTEXITCODE`, `$PSEventArgs`, `$Sender`, and `$PSSenderInfo`.
 
 `Get-Command` lists the commands available in the current browser runtime. The `gcm` alias is also registered.
 

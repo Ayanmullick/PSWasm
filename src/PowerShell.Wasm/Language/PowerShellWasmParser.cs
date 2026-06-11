@@ -1013,20 +1013,25 @@ public sealed class PowerShellWasmParser
         private ExpressionAst ParsePostfix()
         {
             var expression = ParsePrimary();
-            while (Current.Kind == PowerShellWasmTokenKind.Identifier &&
-                Current.Text.StartsWith(".", StringComparison.Ordinal) &&
-                Current.Text.Length > 1)
+            while (true)
             {
-                expression = new MemberAccessExpressionAst(expression, Current.Text[1..]);
-                _position++;
-            }
+                if (Current.Kind == PowerShellWasmTokenKind.Identifier &&
+                    Current.Text.StartsWith(".", StringComparison.Ordinal) &&
+                    Current.Text.Length > 1)
+                {
+                    expression = new MemberAccessExpressionAst(expression, Current.Text[1..]);
+                    _position++;
+                    continue;
+                }
 
-            while (Current.Kind == PowerShellWasmTokenKind.LBracket)
-            {
-                expression = ParseIndex(expression);
-            }
+                if (Current.Kind == PowerShellWasmTokenKind.LBracket)
+                {
+                    expression = ParseIndex(expression);
+                    continue;
+                }
 
-            return expression;
+                return expression;
+            }
         }
 
         private ExpressionAst ParsePrimary()

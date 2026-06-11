@@ -241,6 +241,14 @@ public static class PowerShellWasmTokenizer
             var tokenStart = position;
             position++;
             var nameStart = position;
+            if (position < script.Length && script[position] is '?' or '^' or '$')
+            {
+                position++;
+                tokens.Add(new(PowerShellWasmTokenKind.Variable, script[nameStart..position], tokenStart, position - tokenStart, leadingWhitespace));
+                leadingWhitespace = false;
+                return;
+            }
+
             while (position < script.Length && IsVariableCharacter(script[position]))
             {
                 position++;
