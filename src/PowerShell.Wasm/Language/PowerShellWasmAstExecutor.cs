@@ -456,7 +456,7 @@ internal sealed class PowerShellWasmAstExecutor(
             var value = EvaluateExpression(argument.Value);
             if (argument.IsSplat)
             {
-                AddSplat(parameters, value);
+                AddSplat(parameters, arguments, value);
                 continue;
             }
 
@@ -570,17 +570,29 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    private static void AddSplat(Dictionary<string, object?> parameters, object? value)
+    private static void AddSplat(Dictionary<string, object?> parameters, List<object?> arguments, object? value)
     {
-        if (value is not Dictionary<string, object?> hashtable)
+        if (TryAsDictionary(value, out var hashtable))
         {
-            throw new InvalidOperationException("Splatting requires a hashtable variable.");
+            foreach (var item in hashtable)
+            {
+                parameters[item.Key] = item.Value;
+            }
+
+            return;
         }
 
-        foreach (var item in hashtable)
+        if (value is System.Collections.IEnumerable enumerable and not string)
         {
-            parameters[item.Key] = item.Value;
+            foreach (var item in enumerable)
+            {
+                arguments.Add(item);
+            }
+
+            return;
         }
+
+        throw new InvalidOperationException("Splatting requires a hashtable or array variable.");
     }
 
     private object? EvaluateExpression(ExpressionAst expression) =>

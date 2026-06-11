@@ -15,7 +15,7 @@ The first runtime supports:
 * variable assignment plus browser-safe automatic and preference variable subsets
 * arrays with comma literals, `@(...)`, ranges, indexing, negative indexes, and `Count` / `Length`
 * hashtable literals with key indexing and `Count` / `Keys` / `Values`
-* splatting with `@Params`
+* splatting with hashtables, arrays, `$PSBoundParameters`, and `$args`
 * expandable strings such as `"Hello $Name"`
 * PowerShell region comments such as `#region` and `#endregion`
 * script blocks with `$_` and `$PSItem` for browser-safe pipeline commands
@@ -47,6 +47,17 @@ The browser-safe variable command set includes:
 * `Set-Variable`
 
 The aliases `clv`, `gv`, `rv`, and `sv` are also registered. These commands operate only on the current PSWasm runtime's in-memory session variables.
+
+The browser-safe splatting subset includes:
+
+* hashtable splatting for named parameters, such as `Write-Output @{InputObject='value'}`
+* array splatting for positional arguments, such as `Invoke-Thing @Arguments`
+* multiple splatted objects in one command
+* explicit named parameters overriding splatted hashtable values
+* forwarding script-function parameters with `@PSBoundParameters`
+* forwarding unbound positional arguments with `@args`
+
+PSWasm does not include advanced-function metadata such as `CmdletBinding`, DSC resources, or native command splatting behavior.
 
 The browser-safe automatic variable subset includes:
 

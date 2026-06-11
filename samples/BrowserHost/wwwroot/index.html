@@ -104,6 +104,28 @@ Show-Bound -Name 'browser' -Value 42
   <hr>
 
   <script type="pwsh">
+Write-Host 'PSWasm splatting'
+function Show-Splat($Name, $Value) {
+    "$Name=$Value"
+}
+$named = @{Name='hash'; Value=1}
+Show-Splat @named
+Show-Splat @named -Value 2
+$positional = 'array', 3
+Show-Splat @positional
+function Forward-Bound($Name, $Value) {
+    Show-Splat @PSBoundParameters
+}
+Forward-Bound -Name 'bound' -Value 4
+function Forward-Args {
+    Show-Splat @args
+}
+Forward-Args 'args' 5
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
 Write-Host 'PSWasm preference variables'
 $DebugPreference
 $InformationPreference

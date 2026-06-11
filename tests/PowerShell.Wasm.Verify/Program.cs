@@ -345,10 +345,42 @@ static async ValueTask VerifySplattingAndPipelineAsync()
     var result = await ExecuteAsync("""
 $Out = @{InputObject= 'Splat works'}
 Write-Output @Out
+$Items = 'array', 'splat'
+Write-Output @Items
+function Show-Splat($Name, $Value) {
+    "$Name=$Value"
+}
+$Named = @{Name='hash'; Value=1}
+Show-Splat @Named
+Show-Splat @Named -Value 2
+$First = @{Name='multi'}
+$Second = @{Value=3}
+Show-Splat @First @Second
+$Positionals = 'array', 4
+Show-Splat @Positionals
+function Forward-Bound($Name, $Value) {
+    Show-Splat @PSBoundParameters
+}
+Forward-Bound -Name 'bound' -Value 5
+function Forward-Args {
+    Show-Splat @args
+}
+Forward-Args 'args' 6
 1 | Write-Output
 """);
 
-    ExpectLines(result, ["Splat works", "1"]);
+    ExpectLines(result, [
+        "Splat works",
+        "array",
+        "splat",
+        "hash=1",
+        "hash=2",
+        "multi=3",
+        "array=4",
+        "bound=5",
+        "args=6",
+        "1"
+    ]);
 }
 
 static async ValueTask VerifyObjectPipelineCommandsAsync()
