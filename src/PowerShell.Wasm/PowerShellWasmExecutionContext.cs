@@ -1,8 +1,11 @@
+using PSWasm.Language;
+
 namespace PSWasm;
 
 public sealed class PowerShellWasmExecutionContext
 {
     private readonly Dictionary<string, object?> _variables = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PowerShellWasmScriptFunction> _functions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _environment;
     private readonly List<object?> _output = [];
     private readonly Stack<List<object?>> _outputCaptures = [];
@@ -33,6 +36,26 @@ public sealed class PowerShellWasmExecutionContext
 
     public void RemoveVariable(string name) =>
         _variables.Remove(name);
+
+    internal void SetFunction(PowerShellWasmScriptFunction function) =>
+        _functions[function.Name] = function;
+
+    internal bool TryGetFunction(string name, out PowerShellWasmScriptFunction function) =>
+        _functions.TryGetValue(name, out function!);
+
+    internal IEnumerable<string> GetFunctionNames() =>
+        _functions.Keys;
+
+    internal IDisposable WithVariableScope(IReadOnlyDictionary<string, object?> variables)
+    {
+        var snapshot = new Dictionary<string, object?>(_variables, StringComparer.OrdinalIgnoreCase);
+        foreach (var variable in variables)
+        {
+            _variables[variable.Key] = variable.Value;
+        }
+
+        return new VariableScope(this, snapshot);
+    }
 
     internal IDisposable WithPipelineItem(object? value)
     {
@@ -103,6 +126,15 @@ public sealed class PowerShellWasmExecutionContext
         }
     }
 
+    private void RestoreVariables(Dictionary<string, object?> variables)
+    {
+        _variables.Clear();
+        foreach (var variable in variables)
+        {
+            _variables[variable.Key] = variable.Value;
+        }
+    }
+
     private static PowerShellWasmOutputRecord FormatRecord(object? value) =>
         value switch
         {
@@ -133,6 +165,12 @@ public sealed class PowerShellWasmExecutionContext
             context.ReleaseOutputCapture(output);
     }
 
+    private sealed class VariableScope(PowerShellWasmExecutionContext context, Dictionary<string, object?> variables) : IDisposable
+    {
+        public void Dispose() =>
+            context.RestoreVariables(variables);
+    }
+
     private sealed class PipelineItemScope(
         PowerShellWasmExecutionContext context,
         bool hadUnderscore,
@@ -144,3 +182,8 @@ public sealed class PowerShellWasmExecutionContext
             context.RestorePipelineItem(hadUnderscore, underscore, hadPSItem, psItem);
     }
 }
+
+internal sealed record PowerShellWasmScriptFunction(
+    string Name,
+    IReadOnlyList<string> ParameterNames,
+    ScriptAst Body);

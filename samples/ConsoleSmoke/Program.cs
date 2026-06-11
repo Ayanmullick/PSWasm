@@ -55,6 +55,39 @@ $missing ?? 'fallback'
 $Out = @{InputObject= 'Splat works'}
 Write-Output @Out
 1 | Write-Output
+$value = 3
+if ($value -gt 5) {
+    'large'
+} elseif ($value -eq 3) {
+    'matched'
+} else {
+    'small'
+}
+foreach ($item in 1..3) {
+    $item * 2
+}
+$i = 0
+while ($i -lt 3) {
+    $i = $i + 1
+    $i
+}
+function Add-Prefix($Text) {
+    "pre-$Text"
+}
+Add-Prefix -Text 'browser'
+function First-Matches($Items) {
+    foreach ($item in $Items) {
+        if ($item -lt 2) {
+            continue
+        }
+        if ($item -gt 3) {
+            break
+        }
+        $item
+    }
+    return 'done'
+}
+First-Matches @(1,2,3,4)
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |

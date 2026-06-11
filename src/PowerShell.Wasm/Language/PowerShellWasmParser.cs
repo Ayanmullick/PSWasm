@@ -42,6 +42,51 @@ public sealed class PowerShellWasmParser
             return ParseTryStatement(tokens);
         }
 
+        if (IsKeyword(tokens, 0, "if"))
+        {
+            return ParseIfStatement(tokens);
+        }
+
+        if (IsKeyword(tokens, 0, "foreach"))
+        {
+            return ParseForEachStatement(tokens);
+        }
+
+        if (IsKeyword(tokens, 0, "while"))
+        {
+            return ParseWhileStatement(tokens);
+        }
+
+        if (IsKeyword(tokens, 0, "function"))
+        {
+            return ParseFunctionDefinition(tokens);
+        }
+
+        if (IsKeyword(tokens, 0, "return"))
+        {
+            return new ReturnStatementAst(tokens.Count == 1 ? null : ParseExpression(tokens.Skip(1).ToArray()));
+        }
+
+        if (IsKeyword(tokens, 0, "break"))
+        {
+            if (tokens.Count > 1)
+            {
+                throw new InvalidOperationException("The browser-safe break statement does not accept arguments.");
+            }
+
+            return new BreakStatementAst();
+        }
+
+        if (IsKeyword(tokens, 0, "continue"))
+        {
+            if (tokens.Count > 1)
+            {
+                throw new InvalidOperationException("The browser-safe continue statement does not accept arguments.");
+            }
+
+            return new ContinueStatementAst();
+        }
+
         var pipelineChain = SplitTopLevelPipelineChain(tokens);
         if (pipelineChain.Segments.Count > 1)
         {
@@ -72,6 +117,205 @@ public sealed class PowerShellWasmParser
         }
 
         return new ExpressionStatementAst(ParseExpression(tokens));
+    }
+
+    private static IfStatementAst ParseIfStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        var clauses = new List<IfClauseAst>
+        {
+            new(ReadParenthesizedExpression(tokens, ref position, "if"), ReadScriptBlock(tokens, ref position, "if"))
+        };
+        ScriptAst? elseBlock = null;
+
+        while (position < tokens.Count)
+        {
+            SkipStatementSeparators(tokens, ref position);
+            if (position >= tokens.Count)
+            {
+                break;
+            }
+
+            if (IsKeyword(tokens, position, "elseif"))
+            {
+                position++;
+                clauses.Add(new(ReadParenthesizedExpression(tokens, ref position, "elseif"),
+                    ReadScriptBlock(tokens, ref position, "elseif")));
+                continue;
+            }
+
+            if (IsKeyword(tokens, position, "else"))
+            {
+                position++;
+                elseBlock = ReadScriptBlock(tokens, ref position, "else");
+                SkipStatementSeparators(tokens, ref position);
+                break;
+            }
+
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' in if statement.");
+        }
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after if statement.");
+        }
+
+        return new IfStatementAst(clauses, elseBlock);
+    }
+
+    private static ForEachStatementAst ParseForEachStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.LParen)
+        {
+            throw new InvalidOperationException("Expected '(' after foreach.");
+        }
+
+        position++;
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.Variable)
+        {
+            throw new InvalidOperationException("Expected a loop variable after foreach '('.");
+        }
+
+        var variableName = tokens[position++].Text;
+        if (!IsKeyword(tokens, position, "in"))
+        {
+            throw new InvalidOperationException("Expected 'in' after foreach loop variable.");
+        }
+
+        position++;
+        var collection = ReadExpressionUntilRightParen(tokens, ref position, "foreach");
+        var body = ReadScriptBlock(tokens, ref position, "foreach");
+        SkipStatementSeparators(tokens, ref position);
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after foreach statement.");
+        }
+
+        return new ForEachStatementAst(variableName, collection, body);
+    }
+
+    private static WhileStatementAst ParseWhileStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        var condition = ReadParenthesizedExpression(tokens, ref position, "while");
+        var body = ReadScriptBlock(tokens, ref position, "while");
+        SkipStatementSeparators(tokens, ref position);
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after while statement.");
+        }
+
+        return new WhileStatementAst(condition, body);
+    }
+
+    private static FunctionDefinitionStatementAst ParseFunctionDefinition(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var position = 1;
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.Identifier)
+        {
+            throw new InvalidOperationException("Expected a function name after function.");
+        }
+
+        var name = tokens[position++].Text;
+        var parameterNames = CurrentKind(tokens, position) == PowerShellWasmTokenKind.LParen
+            ? ReadFunctionParameters(tokens, ref position)
+            : [];
+        var body = ReadScriptBlock(tokens, ref position, "function");
+        SkipStatementSeparators(tokens, ref position);
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after function definition.");
+        }
+
+        return new FunctionDefinitionStatementAst(name, parameterNames, body);
+    }
+
+    private static IReadOnlyList<string> ReadFunctionParameters(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    {
+        var parameterNames = new List<string>();
+        position++;
+
+        while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.RParen)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.Comma)
+            {
+                position++;
+                continue;
+            }
+
+            if (tokens[position].Kind != PowerShellWasmTokenKind.Variable)
+            {
+                throw new InvalidOperationException("Function parameter lists currently support variable names only.");
+            }
+
+            parameterNames.Add(tokens[position++].Text);
+        }
+
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.RParen)
+        {
+            throw new InvalidOperationException("Expected ')' to close function parameter list.");
+        }
+
+        position++;
+        return parameterNames;
+    }
+
+    private static ExpressionAst ReadParenthesizedExpression(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        ref int position,
+        string statementName)
+    {
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.LParen)
+        {
+            throw new InvalidOperationException($"Expected '(' after {statementName}.");
+        }
+
+        position++;
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.RParen && depth == 0)
+            {
+                var expressionTokens = tokens.Skip(start).Take(position - start).ToArray();
+                position++;
+                return ParseExpression(expressionTokens);
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        throw new InvalidOperationException($"Expected ')' to close {statementName} condition.");
+    }
+
+    private static ExpressionAst ReadExpressionUntilRightParen(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        ref int position,
+        string statementName)
+    {
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.RParen && depth == 0)
+            {
+                var expressionTokens = tokens.Skip(start).Take(position - start).ToArray();
+                position++;
+                return ParseExpression(expressionTokens);
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        throw new InvalidOperationException($"Expected ')' to close {statementName} expression.");
     }
 
     private static TryStatementAst ParseTryStatement(IReadOnlyList<PowerShellWasmToken> tokens)
@@ -315,6 +559,9 @@ public sealed class PowerShellWasmParser
         tokens[position].Kind == PowerShellWasmTokenKind.Identifier &&
         tokens[position].Text.Equals(keyword, StringComparison.OrdinalIgnoreCase);
 
+    private static PowerShellWasmTokenKind CurrentKind(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
+        position < tokens.Count ? tokens[position].Kind : PowerShellWasmTokenKind.EndOfInput;
+
     private static bool IsSplatStart(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
         position + 1 < tokens.Count &&
         tokens[position].Kind == PowerShellWasmTokenKind.At &&
@@ -356,6 +603,12 @@ public sealed class PowerShellWasmParser
                     continue;
                 }
 
+                if (IsIfContinuation(tokens, start, position))
+                {
+                    position++;
+                    continue;
+                }
+
                 break;
             }
 
@@ -363,7 +616,26 @@ public sealed class PowerShellWasmParser
             position++;
         }
 
-        return tokens.Skip(start).Take(position - start).Where(static t => t.Kind != PowerShellWasmTokenKind.NewLine).ToArray();
+        return RemoveTopLevelNewLines(tokens.Skip(start).Take(position - start).ToArray());
+    }
+
+    private static IReadOnlyList<PowerShellWasmToken> RemoveTopLevelNewLines(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var result = new List<PowerShellWasmToken>();
+        var depth = 0;
+
+        foreach (var token in tokens)
+        {
+            if (token.Kind == PowerShellWasmTokenKind.NewLine && depth == 0)
+            {
+                continue;
+            }
+
+            result.Add(token);
+            UpdateDepth(token, ref depth);
+        }
+
+        return result;
     }
 
     private static PowerShellWasmTokenKind? LastSignificantTokenKind(
@@ -398,6 +670,27 @@ public sealed class PowerShellWasmParser
             }
 
             return IsKeyword(tokens, i, "catch") || IsKeyword(tokens, i, "finally");
+        }
+
+        return false;
+    }
+
+    private static bool IsIfContinuation(IReadOnlyList<PowerShellWasmToken> tokens, int start, int separatorPosition)
+    {
+        if (!IsKeyword(tokens, start, "if") ||
+            LastSignificantTokenKind(tokens, start, separatorPosition) != PowerShellWasmTokenKind.RBrace)
+        {
+            return false;
+        }
+
+        for (var i = separatorPosition + 1; i < tokens.Count; i++)
+        {
+            if (tokens[i].Kind is PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.Semicolon)
+            {
+                continue;
+            }
+
+            return IsKeyword(tokens, i, "elseif") || IsKeyword(tokens, i, "else");
         }
 
         return false;

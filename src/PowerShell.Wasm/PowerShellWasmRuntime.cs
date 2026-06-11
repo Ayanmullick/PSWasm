@@ -24,8 +24,10 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Format-Table", new FormatTableCommand());
         RegisterCommand("fl", new FormatListCommand());
         RegisterCommand("ft", new FormatTableCommand());
-        RegisterCommand("Get-Command", new GetCommandCommand(() => _commands.Keys));
-        RegisterCommand("gcm", new GetCommandCommand(() => _commands.Keys));
+        RegisterCommand("Get-Command", new GetCommandCommand(() =>
+            _commands.Keys.Concat(_executionContext.GetFunctionNames()).Distinct(StringComparer.OrdinalIgnoreCase)));
+        RegisterCommand("gcm", new GetCommandCommand(() =>
+            _commands.Keys.Concat(_executionContext.GetFunctionNames()).Distinct(StringComparer.OrdinalIgnoreCase)));
         RegisterCommand("Get-Culture", new GetCultureCommand());
         RegisterCommand("Get-Date", new GetDateCommand());
         RegisterCommand("Get-Time", new GetDateCommand(timeOnly: true));

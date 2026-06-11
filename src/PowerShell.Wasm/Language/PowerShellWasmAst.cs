@@ -29,6 +29,27 @@ public sealed record TryStatementAst(
     IReadOnlyList<ScriptAst> CatchBlocks,
     ScriptAst? FinallyBlock) : StatementAst;
 
+public sealed record IfStatementAst(
+    IReadOnlyList<IfClauseAst> Clauses,
+    ScriptAst? ElseBlock) : StatementAst;
+
+public sealed record IfClauseAst(ExpressionAst Condition, ScriptAst Body) : PowerShellWasmAst;
+
+public sealed record ForEachStatementAst(string VariableName, ExpressionAst Collection, ScriptAst Body) : StatementAst;
+
+public sealed record WhileStatementAst(ExpressionAst Condition, ScriptAst Body) : StatementAst;
+
+public sealed record FunctionDefinitionStatementAst(
+    string Name,
+    IReadOnlyList<string> ParameterNames,
+    ScriptAst Body) : StatementAst;
+
+public sealed record ReturnStatementAst(ExpressionAst? Expression) : StatementAst;
+
+public sealed record BreakStatementAst : StatementAst;
+
+public sealed record ContinueStatementAst : StatementAst;
+
 public abstract record PipelineElementAst : PowerShellWasmAst;
 
 public sealed record ExpressionPipelineElementAst(ExpressionAst Expression) : PipelineElementAst;

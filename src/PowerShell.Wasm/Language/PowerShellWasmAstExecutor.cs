@@ -14,12 +14,20 @@ internal sealed class PowerShellWasmAstExecutor(
     PowerShellWasmExecutionContext executionContext,
     IReadOnlyDictionary<string, IPowerShellWasmCommand> commands)
 {
+    private const int MaximumLoopIterations = 10_000;
+
     public async ValueTask ExecuteAsync(ScriptAst script, CancellationToken cancellationToken)
     {
-        foreach (var statement in script.Statements)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await ExecuteStatementAsync(statement, [], cancellationToken);
+            foreach (var statement in script.Statements)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await ExecuteStatementAsync(statement, [], cancellationToken);
+            }
+        }
+        catch (ReturnFlowException)
+        {
         }
     }
 
@@ -51,6 +59,96 @@ internal sealed class PowerShellWasmAstExecutor(
             case TryStatementAst tryStatement:
                 await ExecuteTryStatementAsync(tryStatement, cancellationToken);
                 break;
+            case IfStatementAst ifStatement:
+                await ExecuteIfStatementAsync(ifStatement, cancellationToken);
+                break;
+            case ForEachStatementAst forEachStatement:
+                await ExecuteForEachStatementAsync(forEachStatement, cancellationToken);
+                break;
+            case WhileStatementAst whileStatement:
+                await ExecuteWhileStatementAsync(whileStatement, cancellationToken);
+                break;
+            case FunctionDefinitionStatementAst functionDefinition:
+                executionContext.SetFunction(new PowerShellWasmScriptFunction(
+                    functionDefinition.Name,
+                    functionDefinition.ParameterNames,
+                    functionDefinition.Body));
+                break;
+            case ReturnStatementAst returnStatement:
+                if (returnStatement.Expression is not null)
+                {
+                    executionContext.WriteOutput(EvaluateExpression(returnStatement.Expression));
+                }
+
+                throw new ReturnFlowException();
+            case BreakStatementAst:
+                throw new LoopBreakFlowException();
+            case ContinueStatementAst:
+                throw new LoopContinueFlowException();
+        }
+    }
+
+    private async ValueTask ExecuteIfStatementAsync(IfStatementAst statement, CancellationToken cancellationToken)
+    {
+        foreach (var clause in statement.Clauses)
+        {
+            if (ToBoolean(EvaluateExpression(clause.Condition)))
+            {
+                await ExecuteScriptAsync(clause.Body, cancellationToken);
+                return;
+            }
+        }
+
+        if (statement.ElseBlock is not null)
+        {
+            await ExecuteScriptAsync(statement.ElseBlock, cancellationToken);
+        }
+    }
+
+    private async ValueTask ExecuteForEachStatementAsync(ForEachStatementAst statement, CancellationToken cancellationToken)
+    {
+        foreach (var item in Enumerate(EvaluateExpression(statement.Collection)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            executionContext.SetVariable(statement.VariableName, item);
+            try
+            {
+                await ExecuteScriptAsync(statement.Body, cancellationToken);
+            }
+            catch (LoopContinueFlowException)
+            {
+                continue;
+            }
+            catch (LoopBreakFlowException)
+            {
+                break;
+            }
+        }
+    }
+
+    private async ValueTask ExecuteWhileStatementAsync(WhileStatementAst statement, CancellationToken cancellationToken)
+    {
+        var iterations = 0;
+        while (ToBoolean(EvaluateExpression(statement.Condition)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (++iterations > MaximumLoopIterations)
+            {
+                throw new InvalidOperationException($"The browser-safe while loop exceeded {MaximumLoopIterations} iterations.");
+            }
+
+            try
+            {
+                await ExecuteScriptAsync(statement.Body, cancellationToken);
+            }
+            catch (LoopContinueFlowException)
+            {
+                continue;
+            }
+            catch (LoopBreakFlowException)
+            {
+                break;
+            }
         }
     }
 
@@ -82,6 +180,10 @@ internal sealed class PowerShellWasmAstExecutor(
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (ControlFlowException flow)
+        {
+            pending = flow;
         }
         catch (Exception error)
         {
@@ -194,11 +296,6 @@ internal sealed class PowerShellWasmAstExecutor(
         IReadOnlyList<object?> pipelineInput,
         CancellationToken cancellationToken)
     {
-        if (!commands.TryGetValue(commandAst.Name, out var command))
-        {
-            throw new InvalidOperationException($"Command '{commandAst.Name}' is not registered in this browser runtime.");
-        }
-
         var parameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var arguments = new List<object?>();
 
@@ -219,8 +316,59 @@ internal sealed class PowerShellWasmAstExecutor(
             parameters[parameter.Name] = parameter.Value is null ? true : EvaluateExpression(parameter.Value);
         }
 
+        if (executionContext.TryGetFunction(commandAst.Name, out var function))
+        {
+            await ExecuteScriptFunctionAsync(function, parameters, arguments, pipelineInput, cancellationToken);
+            return;
+        }
+
+        if (!commands.TryGetValue(commandAst.Name, out var command))
+        {
+            throw new InvalidOperationException($"Command '{commandAst.Name}' is not registered in this browser runtime.");
+        }
+
         var context = new PowerShellWasmCommandContext(executionContext, parameters, arguments, pipelineInput);
         await command.InvokeAsync(context, cancellationToken);
+    }
+
+    private async ValueTask ExecuteScriptFunctionAsync(
+        PowerShellWasmScriptFunction function,
+        IReadOnlyDictionary<string, object?> parameters,
+        IReadOnlyList<object?> arguments,
+        IReadOnlyList<object?> pipelineInput,
+        CancellationToken cancellationToken)
+    {
+        var locals = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["input"] = pipelineInput.ToArray()
+        };
+        var argumentIndex = 0;
+
+        foreach (var parameterName in function.ParameterNames)
+        {
+            if (parameters.TryGetValue(parameterName, out var parameterValue))
+            {
+                locals[parameterName] = parameterValue;
+                continue;
+            }
+
+            locals[parameterName] = argumentIndex < arguments.Count ? arguments[argumentIndex++] : null;
+        }
+
+        locals["args"] = function.ParameterNames.Count == 0
+            ? arguments.ToArray()
+            : arguments.Skip(argumentIndex).ToArray();
+
+        using (executionContext.WithVariableScope(locals))
+        {
+            try
+            {
+                await ExecuteScriptAsync(function.Body, cancellationToken);
+            }
+            catch (ReturnFlowException)
+            {
+            }
+        }
     }
 
     private static void AddSplat(Dictionary<string, object?> parameters, object? value)
@@ -291,10 +439,16 @@ internal sealed class PowerShellWasmAstExecutor(
             using (executionContext.WithPipelineItem(input))
             using (executionContext.CaptureOutput(output))
             {
-                foreach (var statement in scriptBlock.Body.Statements)
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    await ExecuteStatementAsync(statement, [], cancellationToken);
+                    foreach (var statement in scriptBlock.Body.Statements)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        await ExecuteStatementAsync(statement, [], cancellationToken);
+                    }
+                }
+                catch (ReturnFlowException)
+                {
                 }
             }
 
@@ -794,4 +948,20 @@ internal sealed class PowerShellWasmAstExecutor(
         Math.Abs(value - Math.Round(value)) < 0.0000000001 && value >= int.MinValue && value <= int.MaxValue
             ? Convert.ToInt32(value, CultureInfo.InvariantCulture)
             : value;
+
+    private abstract class ControlFlowException : Exception
+    {
+    }
+
+    private sealed class ReturnFlowException : ControlFlowException
+    {
+    }
+
+    private sealed class LoopBreakFlowException : ControlFlowException
+    {
+    }
+
+    private sealed class LoopContinueFlowException : ControlFlowException
+    {
+    }
 }

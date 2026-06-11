@@ -21,7 +21,12 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("sort and measure commands", VerifySortAndMeasureCommandsAsync),
     ("group and output commands", VerifyGroupAndOutputCommandsAsync),
     ("region comments", VerifyRegionCommentsAsync),
-    ("try catch finally", VerifyTryCatchFinallyAsync)
+    ("try catch finally", VerifyTryCatchFinallyAsync),
+    ("if elseif else", VerifyIfElseAsync),
+    ("foreach statement", VerifyForEachStatementAsync),
+    ("script functions", VerifyScriptFunctionsAsync),
+    ("return break continue", VerifyReturnBreakContinueAsync),
+    ("while statement", VerifyWhileStatementAsync)
 };
 
 foreach (var test in tests)
@@ -497,6 +502,194 @@ try {
         "cleanup",
         "ok",
         "done"
+    ]);
+}
+
+static async ValueTask VerifyIfElseAsync()
+{
+    var result = await ExecuteAsync("""
+$value = 3
+if ($value -gt 5) {
+    'large'
+} elseif ($value -eq 3) {
+    'matched'
+} else {
+    'small'
+}
+$branch = if ($false) {
+    'bad'
+} else {
+    'assigned'
+}
+$branch
+if (@()) {
+    'array true'
+} else {
+    'array false'
+}
+if ('text') {
+    'string true'
+}
+""");
+
+    ExpectLines(result, [
+        "matched",
+        "assigned",
+        "array false",
+        "string true"
+    ]);
+}
+
+static async ValueTask VerifyForEachStatementAsync()
+{
+    var result = await ExecuteAsync("""
+foreach ($number in 1..3) {
+    $number * 2
+}
+$table = @{First='one'; Second='two'}
+foreach ($key in @('First','Second')) {
+    $table[$key]
+}
+$captured = foreach ($name in @('alpha','beta')) {
+    $name + '!'
+}
+$captured.Count
+$captured[0]
+$captured[1]
+foreach ($missing in @()) {
+    'bad'
+}
+$name
+""");
+
+    ExpectLines(result, [
+        "2",
+        "4",
+        "6",
+        "one",
+        "two",
+        "2",
+        "alpha!",
+        "beta!",
+        "beta"
+    ]);
+}
+
+static async ValueTask VerifyScriptFunctionsAsync()
+{
+    var result = await ExecuteAsync("""
+function Add-Prefix($Text) {
+    "pre-$Text"
+}
+Add-Prefix 'one'
+Add-Prefix -Text 'two'
+function Join-Args {
+    $args -join ','
+}
+Join-Args 'a' 'b'
+$captured = Add-Prefix 'three'
+$captured
+Get-Command Add-Prefix | Select-Object -ExpandProperty Name
+function Use-Input {
+    foreach ($item in $input) {
+        $item * 10
+    }
+}
+1..2 | Use-Input
+$x = 'outer'
+function Scope-Test($x) {
+    $x = 'inner'
+    $x
+}
+Scope-Test 'ignored'
+$x
+""");
+
+    ExpectLines(result, [
+        "pre-one",
+        "pre-two",
+        "a,b",
+        "pre-three",
+        "Add-Prefix",
+        "10",
+        "20",
+        "inner",
+        "outer"
+    ]);
+}
+
+static async ValueTask VerifyReturnBreakContinueAsync()
+{
+    var result = await ExecuteAsync("""
+function First-Matches($Items) {
+    foreach ($item in $Items) {
+        if ($item -lt 2) {
+            continue
+        }
+        if ($item -gt 3) {
+            break
+        }
+        $item
+    }
+    return 'done'
+    'skipped'
+}
+First-Matches @(1,2,3,4)
+function Return-With-Finally {
+    try {
+        return 'from-return'
+    } finally {
+        'from-finally'
+    }
+    'after-return'
+}
+Return-With-Finally
+return 'top-level-return'
+'top-level-skipped'
+""");
+
+    ExpectLines(result, [
+        "2",
+        "3",
+        "done",
+        "from-return",
+        "from-finally",
+        "top-level-return"
+    ]);
+}
+
+static async ValueTask VerifyWhileStatementAsync()
+{
+    var result = await ExecuteAsync("""
+$i = 0
+while ($i -lt 5) {
+    $i = $i + 1
+    if ($i -eq 2) {
+        continue
+    }
+    if ($i -eq 5) {
+        break
+    }
+    $i
+}
+$captured = while ($false) {
+    'bad'
+}
+$captured ?? 'none'
+try {
+    while ($true) {
+    }
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "1",
+        "3",
+        "4",
+        "none",
+        "The browser-safe while loop exceeded 10000 iterations."
     ]);
 }
 

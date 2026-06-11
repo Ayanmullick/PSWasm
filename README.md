@@ -19,6 +19,11 @@ The first runtime supports:
 * expandable strings such as `"Hello $Name"`
 * PowerShell region comments such as `#region` and `#endregion`
 * script blocks with `$_` and `$PSItem` for browser-safe pipeline commands
+* `if` / `elseif` / `else` for browser-safe conditional execution
+* `foreach ($item in $items) { ... }` for browser-safe collection loops
+* `while ($condition) { ... }` loops with a browser-safe iteration guard
+* browser-safe script functions with positional arguments, simple named parameters, `$args`, and `$input`
+* `return`, `break`, and `continue` for browser-safe function and loop control flow
 * `try` / `catch` / `finally` for browser-safe terminating runtime errors
 * `throw` for script-level browser runtime errors
 * simple member access such as `$_.Name` against hashtable-like objects
@@ -96,6 +101,44 @@ The aliases `ForEach`, `Group`, `Measure`, `Select`, `Sort`, and `Where` are als
 The `try` / `catch` / `finally` support follows the browser-safe subset of PowerShell terminating error handling. Untyped `catch` blocks catch PSWasm runtime errors, `finally` always runs, and caught errors are available as `$_` / `$PSItem` with fields such as `Message`, `Exception`, and `FullyQualifiedErrorId`.
 
 ```powershell
+$value = 3
+if ($value -gt 5) {
+    'large'
+} elseif ($value -eq 3) {
+    'matched'
+} else {
+    'small'
+}
+
+foreach ($item in 1..3) {
+    $item * 2
+}
+
+$i = 0
+while ($i -lt 3) {
+    $i = $i + 1
+    $i
+}
+
+function Add-Prefix($Text) {
+    "pre-$Text"
+}
+Add-Prefix -Text 'browser'
+
+function First-Matches($Items) {
+    foreach ($item in $Items) {
+        if ($item -lt 2) {
+            continue
+        }
+        if ($item -gt 3) {
+            break
+        }
+        $item
+    }
+    return 'done'
+}
+First-Matches @(1,2,3,4)
+
 try {
     throw 'boom'
 } catch {
