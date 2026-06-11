@@ -4,6 +4,15 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'src/**'
+      - 'samples/BrowserHost/**'
+      - 'tests/PowerShell.Wasm.Verify/**'
+      - 'global.json'
+      - '*.sln'
+      - '*.props'
+      - '*.targets'
+      - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
 permissions:
