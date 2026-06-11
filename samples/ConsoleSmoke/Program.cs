@@ -16,6 +16,9 @@ runtime.RegisterCommand("Invoke-HostEcho", new DelegatePowerShellWasmCommand((co
 }));
 
 var script = """
+$DebugPreference = 'Continue'
+$InformationPreference = 'Continue'
+$VerbosePreference = 'Continue'
 Write-Output 'Hello PowerShell'
 Write-Debug 'Debug message'
 Write-Error 'Error message'

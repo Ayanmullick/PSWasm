@@ -1072,8 +1072,13 @@ internal sealed class PowerShellWasmAstExecutor(
                 return executionContext.GetEnvironmentVariable(name) ?? string.Empty;
             }
 
-            return executionContext.GetVariable(name)?.ToString() ?? string.Empty;
+            return ToExpandableString(executionContext.GetVariable(name));
         });
+
+    private string ToExpandableString(object? value) =>
+        value is object?[] array
+            ? string.Join(executionContext.OutputFieldSeparator, array.Select(ToInvariantString))
+            : ToInvariantString(value);
 
     private static double ToNumber(object? value) =>
         value switch

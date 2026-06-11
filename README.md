@@ -12,7 +12,7 @@ The first runtime supports:
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
-* variable assignment and a browser-safe automatic variable subset
+* variable assignment plus browser-safe automatic and preference variable subsets
 * arrays with comma literals, `@(...)`, ranges, indexing, negative indexes, and `Count` / `Length`
 * hashtable literals with key indexing and `Count` / `Keys` / `Values`
 * splatting with `@Params`
@@ -57,6 +57,14 @@ The browser-safe automatic variable subset includes:
 * browser-safe platform/runtime flags: `$IsCoreCLR`, `$IsLinux`, `$IsMacOS`, `$IsWindows`, `$EnabledExperimentalFeatures`, `$NestedPromptLevel`, `$PSDebugContext`
 
 PSWasm intentionally does not add automatic variables that imply desktop host state, profiles, native process execution, remoting, eventing, jobs, or real providers, such as `$PID`, `$PROFILE`, `$LASTEXITCODE`, `$PSEventArgs`, `$Sender`, and `$PSSenderInfo`.
+
+The browser-safe preference variable subset includes:
+
+* stream behavior: `$DebugPreference`, `$ErrorActionPreference`, `$InformationPreference`, `$ProgressPreference`, `$VerbosePreference`, `$WarningPreference`
+* string expansion: `$OFS`
+* initialized session preferences: `$ConfirmPreference`, `$ErrorView`, `$FormatEnumerationLimit`, `$OutputEncoding`, `$PSDefaultParameterValues`, `$WhatIfPreference`
+
+The stream preferences support `Continue`, `SilentlyContinue`, `Ignore`, and `Stop` for PSWasm `Write-*` commands. Interactive/debugger/workflow values such as `Inquire`, `Break`, and `Suspend` stop with a browser runtime error instead of prompting. Preferences tied to host history, logging, email, modules, native commands, remoting, styles, or transcripts are intentionally not included yet, such as `$MaximumHistoryCount`, `$PSModuleAutoLoadingPreference`, `$PSNativeCommandArgumentPassing`, `$PSSessionOption`, `$PSStyle`, and `$Transcript`.
 
 `Get-Command` lists the commands available in the current browser runtime. The `gcm` alias is also registered.
 

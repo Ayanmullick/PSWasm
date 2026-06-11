@@ -88,16 +88,48 @@ public sealed class PowerShellWasmExecutionContext
             return;
         }
 
+        var preferenceName = GetStreamPreferenceName(streamName);
+        var preference = preferenceName is null ? "Continue" : GetPreferenceValue(preferenceName, "Continue");
+        if (preference.Equals("Ignore", StringComparison.OrdinalIgnoreCase))
+        {
+            if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
+            {
+                SetLastCommandSucceeded(false);
+            }
+
+            return;
+        }
+
+        if (preference.Equals("SilentlyContinue", StringComparison.OrdinalIgnoreCase))
+        {
+            if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
+            {
+                RecordError(value);
+            }
+
+            return;
+        }
+
         if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
         {
             RecordError(value);
         }
 
         ActiveOutput.Add(new PowerShellWasmStreamRecord(streamName, value));
+
+        if (IsStoppingPreference(preference))
+        {
+            var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+            throw new InvalidOperationException(
+                $"The running command stopped because the preference variable \"{preferenceName}\" is set to {preference}: {message}");
+        }
     }
 
     internal void SetLastCommandSucceeded(bool succeeded) =>
         _variables["?"] = succeeded;
+
+    internal string OutputFieldSeparator =>
+        GetPreferenceValue("OFS", " ");
 
     internal Dictionary<string, object?> RecordException(Exception error)
     {
@@ -128,8 +160,13 @@ public sealed class PowerShellWasmExecutionContext
         var version = typeof(PowerShellWasmRuntime).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
         _variables["?"] = true;
         _variables["args"] = Array.Empty<object?>();
+        _variables["ConfirmPreference"] = "High";
+        _variables["DebugPreference"] = "SilentlyContinue";
         _variables["EnabledExperimentalFeatures"] = Array.Empty<object?>();
         _variables["Error"] = Array.Empty<object?>();
+        _variables["ErrorActionPreference"] = "Continue";
+        _variables["ErrorView"] = "ConciseView";
+        _variables["FormatEnumerationLimit"] = 4;
         _variables["HOME"] = "browser:/home";
         _variables["Host"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
@@ -138,6 +175,7 @@ public sealed class PowerShellWasmExecutionContext
             ["CurrentCulture"] = culture.Name,
             ["CurrentUICulture"] = uiCulture.Name
         };
+        _variables["InformationPreference"] = "SilentlyContinue";
         _variables["input"] = Array.Empty<object?>();
         _variables["IsCoreCLR"] = true;
         _variables["IsLinux"] = false;
@@ -145,9 +183,13 @@ public sealed class PowerShellWasmExecutionContext
         _variables["IsWindows"] = false;
         _variables["Matches"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         _variables["NestedPromptLevel"] = 0;
+        _variables["OFS"] = " ";
+        _variables["OutputEncoding"] = "utf-8";
+        _variables["ProgressPreference"] = "Continue";
         _variables["PSBoundParameters"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         _variables["PSCommandPath"] = string.Empty;
         _variables["PSCulture"] = culture.Name;
+        _variables["PSDefaultParameterValues"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         _variables["PSDebugContext"] = null;
         _variables["PSEdition"] = "Core";
         _variables["PSHOME"] = "browser:/pswasm";
@@ -170,7 +212,31 @@ public sealed class PowerShellWasmExecutionContext
         };
         _variables["ShellId"] = "PSWasm";
         _variables["StackTrace"] = null;
+        _variables["VerbosePreference"] = "SilentlyContinue";
+        _variables["WarningPreference"] = "Continue";
+        _variables["WhatIfPreference"] = false;
     }
+
+    private string GetPreferenceValue(string name, string fallback) =>
+        Convert.ToString(GetVariable(name), CultureInfo.InvariantCulture) ?? fallback;
+
+    private static bool IsStoppingPreference(string preference) =>
+        preference.Equals("Stop", StringComparison.OrdinalIgnoreCase) ||
+        preference.Equals("Break", StringComparison.OrdinalIgnoreCase) ||
+        preference.Equals("Inquire", StringComparison.OrdinalIgnoreCase) ||
+        preference.Equals("Suspend", StringComparison.OrdinalIgnoreCase);
+
+    private static string? GetStreamPreferenceName(string streamName) =>
+        streamName.ToLowerInvariant() switch
+        {
+            "debug" => "DebugPreference",
+            "error" => "ErrorActionPreference",
+            "information" => "InformationPreference",
+            "progress" => "ProgressPreference",
+            "verbose" => "VerbosePreference",
+            "warning" => "WarningPreference",
+            _ => null
+        };
 
     private void RecordError(object? value)
     {

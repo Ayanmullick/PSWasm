@@ -27,6 +27,9 @@ Get-Command Format-* | Select-Object -ExpandProperty Name
 
   <script type="pwsh">
 Write-Host 'PSWasm stream output'
+$DebugPreference = 'Continue'
+$InformationPreference = 'Continue'
+$VerbosePreference = 'Continue'
 Write-Debug 'Debug message'
 Write-Information 'Information message'
 Write-Progress -Activity 'Loading' -Status 'Halfway' -PercentComplete 50
@@ -96,6 +99,28 @@ function Show-Bound($Name, $Value) {
     $PSBoundParameters['Value']
 }
 Show-Bound -Name 'browser' -Value 42
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
+Write-Host 'PSWasm preference variables'
+$DebugPreference
+$InformationPreference
+$WarningPreference = 'SilentlyContinue'
+Write-Warning 'hidden warning'
+'warning was hidden'
+$WarningPreference = 'Continue'
+Write-Warning 'visible warning'
+$VerbosePreference = 'Continue'
+Write-Verbose 'visible verbose'
+$ErrorActionPreference = 'SilentlyContinue'
+Write-Error 'hidden error'
+$Error.Count
+$values = 1,2,3
+"$values"
+$OFS = '|'
+"$values"
   </script>
 
   <hr>

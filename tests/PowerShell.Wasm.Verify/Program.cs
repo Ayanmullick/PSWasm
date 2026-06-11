@@ -29,7 +29,8 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("while statement", VerifyWhileStatementAsync),
     ("for statement", VerifyForStatementAsync),
     ("switch statement", VerifySwitchStatementAsync),
-    ("automatic variables", VerifyAutomaticVariablesAsync)
+    ("automatic variables", VerifyAutomaticVariablesAsync),
+    ("preference variables", VerifyPreferenceVariablesAsync)
 };
 
 foreach (var test in tests)
@@ -76,6 +77,8 @@ $missing ?? 'fallback'
 static async ValueTask VerifyStreamRecordsAsync()
 {
     var result = await ExecuteAsync("""
+$DebugPreference = 'Continue'
+$InformationPreference = 'Continue'
 Write-Output 'out'
 Write-Warning 'warn'
 Write-Error 'err'
@@ -848,6 +851,73 @@ function Test-Bound($Name, $Value) {
         "42",
         "0",
         "1"
+    ]);
+}
+
+static async ValueTask VerifyPreferenceVariablesAsync()
+{
+    var result = await ExecuteAsync("""
+$ConfirmPreference
+$DebugPreference
+$ErrorActionPreference
+$ErrorView
+$FormatEnumerationLimit
+$InformationPreference
+$ProgressPreference
+$VerbosePreference
+$WarningPreference
+$WhatIfPreference
+$PSDefaultParameterValues.Count
+$OutputEncoding
+Write-Debug 'hidden debug'
+Write-Information 'hidden info'
+$VerbosePreference = 'Continue'
+Write-Verbose 'shown verbose'
+$WarningPreference = 'SilentlyContinue'
+Write-Warning 'hidden warning'
+'after hidden warning'
+$WarningPreference = 'Continue'
+Write-Warning 'shown warning'
+$ErrorActionPreference = 'SilentlyContinue'
+Write-Error 'hidden error'
+$?
+$Error.Count
+$ErrorActionPreference = 'Continue'
+$values = 1,2,3
+"$values"
+$OFS = '|'
+"$values"
+try {
+    $ErrorActionPreference = 'Stop'
+    Write-Error 'stop error'
+    'skipped'
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "High",
+        "SilentlyContinue",
+        "Continue",
+        "ConciseView",
+        "4",
+        "SilentlyContinue",
+        "Continue",
+        "SilentlyContinue",
+        "Continue",
+        "False",
+        "0",
+        "utf-8",
+        "[Verbose] shown verbose",
+        "after hidden warning",
+        "[Warning] shown warning",
+        "False",
+        "1",
+        "1 2 3",
+        "1|2|3",
+        "[Error] stop error",
+        "The running command stopped because the preference variable \"ErrorActionPreference\" is set to Stop: stop error"
     ]);
 }
 
