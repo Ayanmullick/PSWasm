@@ -22,13 +22,20 @@ Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Get-Time
 Get-TimeZone
 Get-Command Format-* | Select-Object -ExpandProperty Name
+  </script>
+
+  <script type="pwsh">
+Write-Host 'PSWasm stream output'
 Write-Debug 'Debug message'
 Write-Information 'Information message'
 Write-Progress -Activity 'Loading' -Status 'Halfway' -PercentComplete 50
 Write-Verbose 'Verbose message'
 Write-Warning 'Warning message'
 Write-Error 'Error message'
-#region expressions
+  </script>
+
+  <script type="pwsh">
+#region expressions and collections
 Write-Output (2 + 2)
 ($var = 1 + 2) -eq 3
 Write-Output 'chain-left' && Write-Output 'chain-right'
@@ -42,14 +49,23 @@ $table = @{Name='PSWasm'; Value=42}
 $table['Name']
 $table.Count
 $table.Keys | Sort-Object
+#endregion
+  </script>
+
+  <script type="pwsh">
 # Invoke-WebRequest uses browser HTTP and requires the target service to allow CORS.
 $response = Invoke-WebRequest -Uri 'https://api.github.com/zen' -Headers @{Accept='application/json'} -SkipHttpErrorCheck
 $response | Select-Object StatusCode RawContentLength
 $response.Content
-#endregion
+  </script>
+
+  <script type="pwsh">
 Set-Variable -Name BrowserName -Value 'PSWasm'
 Get-Variable BrowserName -ValueOnly
 Get-Variable BrowserName | Format-List Name Value
+  </script>
+
+  <script type="pwsh">
 try {
     throw 'Browser try/catch sample'
 } catch {
@@ -57,14 +73,23 @@ try {
 } finally {
     'finally ran'
 }
+  </script>
+
+  <script type="pwsh">
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |
     Select-Object -ExpandProperty Name
+  </script>
+
+  <script type="pwsh">
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
 '{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
 'Name,Value
 csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
+  </script>
+
+  <script type="pwsh">
 @(@{Name='table-one'; Value=1}, @{Name='table-two'; Value=2}) | Format-Table Name Value
 @{Name='list-sample'; Value=9} | Format-List
 @(@{Name='three'; Value=3}, @{Name='one'; Value=1}, @{Name='two'; Value=2}) |
