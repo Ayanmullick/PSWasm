@@ -9,6 +9,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("regular expressions", VerifyRegularExpressionsAsync),
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),
+    ("parallel assignment", VerifyParallelAssignmentAsync),
     ("variable commands", VerifyVariableCommandsAsync),
     ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
@@ -283,6 +284,47 @@ $shadow.Keys.Count
         "shadow",
         "shadow",
         "2"
+    ]);
+}
+
+static async ValueTask VerifyParallelAssignmentAsync()
+{
+    var result = await ExecuteAsync("""
+$Name,$Env,$Location = 'AzReport','Dev','NorthCentralUS'
+$Name
+$Env
+$Location
+$first,$rest = 1,2,3
+$first
+$rest.Count
+$rest[0]
+$rest[1]
+$one,$two,$three = 'left','right'
+$one
+$two
+$three ?? 'missing'
+$pipeHead,$pipeTail = 1..3 | ForEach-Object { $_ * 10 }
+$pipeHead
+$pipeTail.Count
+$pipeTail[0]
+$pipeTail[1]
+""");
+
+    ExpectLines(result, [
+        "AzReport",
+        "Dev",
+        "NorthCentralUS",
+        "1",
+        "2",
+        "2",
+        "3",
+        "left",
+        "right",
+        "missing",
+        "10",
+        "2",
+        "20",
+        "30"
     ]);
 }
 

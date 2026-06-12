@@ -13,6 +13,7 @@ The first runtime supports:
 * parsing into a small AST profile
 * AST-based expression and command execution
 * variable assignment plus browser-safe automatic and preference variable subsets
+* parallel variable assignment such as `$Name,$Env,$Location = 'AzReport','Dev','NorthCentralUS'`
 * arrays with comma literals, `@(...)`, ranges, indexing, negative indexes, and `Count` / `Length`
 * hashtable literals with key indexing and `Count` / `Keys` / `Values`
 * splatting with hashtables, arrays, `$PSBoundParameters`, and `$args`

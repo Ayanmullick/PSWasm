@@ -102,6 +102,27 @@ public sealed class PowerShellWasmParser
             return new ContinueStatementAst();
         }
 
+        var equals = FindTopLevel(tokens, PowerShellWasmTokenKind.Equals);
+        if (tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Variable && equals > 0)
+        {
+            if (!TryReadAssignmentTargets(tokens, equals, out var variableNames))
+            {
+                throw new InvalidOperationException("Expected one or more variable assignment targets before '='.");
+            }
+
+            var valueTokens = tokens.Skip(equals + 1).ToArray();
+            if (variableNames.Count == 1)
+            {
+                return IsStatementAssignmentValue(valueTokens)
+                    ? new StatementAssignmentAst(variableNames[0], ParseStatement(valueTokens))
+                    : new AssignmentStatementAst(variableNames[0], ParseExpression(valueTokens));
+            }
+
+            return IsStatementAssignmentValue(valueTokens)
+                ? new ParallelStatementAssignmentAst(variableNames, ParseStatement(valueTokens))
+                : new ParallelAssignmentStatementAst(variableNames, ParseExpression(valueTokens));
+        }
+
         var pipelineChain = SplitTopLevelPipelineChain(tokens);
         if (pipelineChain.Segments.Count > 1)
         {
@@ -115,15 +136,6 @@ public sealed class PowerShellWasmParser
         if (pipelineSegments.Count > 1)
         {
             return new PipelineStatementAst(pipelineSegments.Select(ParsePipelineElement).ToArray());
-        }
-
-        var equals = FindTopLevel(tokens, PowerShellWasmTokenKind.Equals);
-        if (tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Variable && equals > 0)
-        {
-            var valueTokens = tokens.Skip(equals + 1).ToArray();
-            return IsStatementAssignmentValue(valueTokens)
-                ? new StatementAssignmentAst(tokens[0].Text, ParseStatement(valueTokens))
-                : new AssignmentStatementAst(tokens[0].Text, ParseExpression(valueTokens));
         }
 
         if (TryParseVariableIncrementStatement(tokens, out var incrementStatement))
@@ -832,6 +844,42 @@ public sealed class PowerShellWasmParser
         IsCommandSegment(tokens) ||
         SplitTopLevelPipelineChain(tokens).Segments.Count > 1 ||
         SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe).Count > 1;
+
+    private static bool TryReadAssignmentTargets(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        int equals,
+        out IReadOnlyList<string> variableNames)
+    {
+        var names = new List<string>();
+        var expectVariable = true;
+
+        for (var i = 0; i < equals; i++)
+        {
+            if (expectVariable)
+            {
+                if (tokens[i].Kind != PowerShellWasmTokenKind.Variable)
+                {
+                    variableNames = [];
+                    return false;
+                }
+
+                names.Add(tokens[i].Text);
+                expectVariable = false;
+                continue;
+            }
+
+            if (tokens[i].Kind != PowerShellWasmTokenKind.Comma)
+            {
+                variableNames = [];
+                return false;
+            }
+
+            expectVariable = true;
+        }
+
+        variableNames = names;
+        return names.Count > 0 && !expectVariable;
+    }
 
     private static bool TryParseVariableIncrementStatement(
         IReadOnlyList<PowerShellWasmToken> tokens,

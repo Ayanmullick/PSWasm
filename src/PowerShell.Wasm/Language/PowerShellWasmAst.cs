@@ -10,9 +10,13 @@ public abstract record StatementAst : PowerShellWasmAst;
 
 public sealed record AssignmentStatementAst(string VariableName, ExpressionAst Value) : StatementAst;
 
+public sealed record ParallelAssignmentStatementAst(IReadOnlyList<string> VariableNames, ExpressionAst Value) : StatementAst;
+
 public sealed record VariableIncrementStatementAst(string VariableName, int Delta) : StatementAst;
 
 public sealed record StatementAssignmentAst(string VariableName, StatementAst Statement) : StatementAst;
+
+public sealed record ParallelStatementAssignmentAst(IReadOnlyList<string> VariableNames, StatementAst Statement) : StatementAst;
 
 public sealed record ExpressionStatementAst(ExpressionAst Expression) : StatementAst;
 

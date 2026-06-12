@@ -41,11 +41,17 @@ internal sealed class PowerShellWasmAstExecutor(
             case AssignmentStatementAst assignment:
                 executionContext.SetVariable(assignment.VariableName, EvaluateExpression(assignment.Value));
                 break;
+            case ParallelAssignmentStatementAst assignment:
+                AssignParallel(assignment.VariableNames, EvaluateExpression(assignment.Value));
+                break;
             case VariableIncrementStatementAst increment:
                 IncrementVariable(increment.VariableName, increment.Delta);
                 break;
             case StatementAssignmentAst assignment:
                 await ExecuteStatementAssignmentAsync(assignment, cancellationToken);
+                break;
+            case ParallelStatementAssignmentAst assignment:
+                await ExecuteParallelStatementAssignmentAsync(assignment, cancellationToken);
                 break;
             case ExpressionStatementAst expression:
                 executionContext.WriteOutput(EvaluateExpression(expression.Expression));
@@ -296,6 +302,19 @@ internal sealed class PowerShellWasmAstExecutor(
             _ => output.ToArray()
         };
         executionContext.SetVariable(assignment.VariableName, value);
+    }
+
+    private async ValueTask ExecuteParallelStatementAssignmentAsync(
+        ParallelStatementAssignmentAst assignment,
+        CancellationToken cancellationToken)
+    {
+        var output = new List<object?>();
+        using (executionContext.CaptureOutput(output))
+        {
+            await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
+        }
+
+        AssignParallel(assignment.VariableNames, output.ToArray());
     }
 
     private async ValueTask ExecuteStatementDiscardingOutputAsync(StatementAst statement, CancellationToken cancellationToken)
@@ -1202,6 +1221,29 @@ internal sealed class PowerShellWasmAstExecutor(
         Math.Abs(value - Math.Round(value)) < 0.0000000001 && value >= int.MinValue && value <= int.MaxValue
             ? Convert.ToInt32(value, CultureInfo.InvariantCulture)
             : value;
+
+    private void AssignParallel(IReadOnlyList<string> variableNames, object? value)
+    {
+        var values = Enumerate(value).ToArray();
+        for (var i = 0; i < variableNames.Count; i++)
+        {
+            object? assignedValue;
+            if (i >= values.Length)
+            {
+                assignedValue = null;
+            }
+            else if (i == variableNames.Count - 1 && values.Length > variableNames.Count)
+            {
+                assignedValue = values.Skip(i).ToArray();
+            }
+            else
+            {
+                assignedValue = values[i];
+            }
+
+            executionContext.SetVariable(variableNames[i], assignedValue);
+        }
+    }
 
     private void IncrementVariable(string variableName, int delta)
     {
