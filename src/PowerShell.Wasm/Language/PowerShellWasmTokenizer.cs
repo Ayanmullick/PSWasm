@@ -103,7 +103,15 @@ public static class PowerShellWasmTokenizer
                     Add(PowerShellWasmTokenKind.RBracket, "]", 1);
                     break;
                 case '+':
-                    Add(PowerShellWasmTokenKind.Plus, "+", 1);
+                    if (position + 1 < script.Length && script[position + 1] == '+')
+                    {
+                        Add(PowerShellWasmTokenKind.PlusPlus, "++", 2);
+                    }
+                    else
+                    {
+                        Add(PowerShellWasmTokenKind.Plus, "+", 1);
+                    }
+
                     break;
                 case '*':
                     Add(PowerShellWasmTokenKind.Star, "*", 1);
@@ -137,6 +145,12 @@ public static class PowerShellWasmTokenizer
 
                     break;
                 case '-':
+                    if (position + 1 < script.Length && script[position + 1] == '-')
+                    {
+                        Add(PowerShellWasmTokenKind.MinusMinus, "--", 2);
+                        break;
+                    }
+
                     if (TryReadOperator())
                     {
                         break;

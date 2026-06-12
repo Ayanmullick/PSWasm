@@ -14,6 +14,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("stream records", VerifyStreamRecordsAsync),
     ("invoke web request", VerifyInvokeWebRequestAsync),
     ("pipeline chain operators", VerifyPipelineChainOperatorsAsync),
+    ("dom session commands", VerifyDomSessionCommandsAsync),
     ("browser-safe built-ins", VerifyBuiltInsAsync),
     ("splatting and pipeline", VerifySplattingAndPipelineAsync),
     ("object pipeline commands", VerifyObjectPipelineCommandsAsync),
@@ -32,7 +33,8 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("switch statement", VerifySwitchStatementAsync),
     ("automatic variables", VerifyAutomaticVariablesAsync),
     ("preference variables", VerifyPreferenceVariablesAsync),
-    ("common parameters", VerifyCommonParametersAsync)
+    ("common parameters", VerifyCommonParametersAsync),
+    ("runtime session reuse", VerifyRuntimeSessionReuseAsync)
 };
 
 foreach (var test in tests)
@@ -313,6 +315,38 @@ try {
         "NewLineLeft",
         "NewLineRight",
         "ChainStop"
+    ]);
+}
+
+static async ValueTask VerifyDomSessionCommandsAsync()
+{
+    var result = await ExecuteAsync("""
+$dom = New-DomSession -Name Main -Target '#app'
+$dom.Id
+$dom.Name
+$dom.Target
+$dom.State
+$dom.SessionType
+Get-DomSession Main | Select-Object -ExpandProperty Target
+Get-DomSession -Id $dom.Id | Select-Object -ExpandProperty Name
+Get-Command *-DomSession | Select-Object -ExpandProperty Name
+Remove-DomSession $dom
+$remaining = Get-DomSession
+$remaining ?? 'none'
+""");
+
+    ExpectLines(result, [
+        "1",
+        "Main",
+        "#app",
+        "Opened",
+        "Dom",
+        "#app",
+        "Main",
+        "Get-DomSession",
+        "New-DomSession",
+        "Remove-DomSession",
+        "none"
     ]);
 }
 
@@ -796,6 +830,16 @@ for ($i = 0; $i -lt 5; $i = $i + 1) {
     $i
 }
 $i
+for ($k = 0; $k -lt 3; $k++) {
+    $k
+}
+$k
+$k--
+$k
+$missingIncrement++
+$missingIncrement
+$missingDecrement--
+$missingDecrement
 $captured = for ($j = 0; $j -lt 0; $j = $j + 1) {
     'bad'
 }
@@ -813,6 +857,13 @@ try {
         "2",
         "3",
         "4",
+        "0",
+        "1",
+        "2",
+        "3",
+        "2",
+        "1",
+        "-1",
         "none",
         "The browser-safe for loop exceeded 10000 iterations."
     ]);
@@ -1068,6 +1119,30 @@ try {
         "confirm accepted",
         "[Error] stop error",
         "The running command stopped because the preference variable \"ErrorActionPreference\" is set to Stop: stop error"
+    ]);
+}
+
+static async ValueTask VerifyRuntimeSessionReuseAsync()
+{
+    var runtime = new PowerShellWasmRuntime();
+    var first = await runtime.ExecuteAsync("""
+$value = 1
+function Add-One($InputValue) {
+    $InputValue + 1
+}
+$value
+""");
+
+    var second = await runtime.ExecuteAsync("""
+$value = Add-One $value
+$value
+""");
+
+    ExpectLines(first, [
+        "1"
+    ]);
+    ExpectLines(second, [
+        "2"
     ]);
 }
 

@@ -10,9 +10,11 @@ public sealed class PowerShellWasmExecutionContext
     private readonly Dictionary<string, object?> _variables = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PowerShellWasmScriptFunction> _functions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _environment;
+    private readonly Dictionary<int, Dictionary<string, object?>> _domSessions = [];
     private readonly List<object?> _errors = [];
     private readonly List<object?> _output = [];
     private readonly Stack<List<object?>> _outputCaptures = [];
+    private int _nextDomSessionId = 1;
     private int _failureSignalCount;
 
     public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null)
@@ -26,6 +28,9 @@ public sealed class PowerShellWasmExecutionContext
     public int ErrorCount => _errors.Count;
     internal int FailureSignalCount => _failureSignalCount;
 
+    internal void ClearOutput() =>
+        _output.Clear();
+
     public string? GetEnvironmentVariable(string name) =>
         _environment.TryGetValue(name, out var value) ? value : Environment.GetEnvironmentVariable(name);
 
@@ -34,6 +39,24 @@ public sealed class PowerShellWasmExecutionContext
 
     public IReadOnlyDictionary<string, object?> GetVariables() =>
         new Dictionary<string, object?>(_variables, StringComparer.OrdinalIgnoreCase);
+
+    internal Dictionary<string, object?> NewDomSession(string? name, string? target)
+    {
+        var id = _nextDomSessionId++;
+        var session = CreateDomSessionRecord(
+            id,
+            string.IsNullOrWhiteSpace(name) ? $"DomSession{id}" : name,
+            string.IsNullOrWhiteSpace(target) ? "document" : target);
+
+        _domSessions[id] = session;
+        return CloneDomSession(session);
+    }
+
+    internal IReadOnlyList<Dictionary<string, object?>> GetDomSessions() =>
+        _domSessions.Values.OrderBy(static session => session["Id"]).Select(CloneDomSession).ToArray();
+
+    internal bool RemoveDomSession(int id) =>
+        _domSessions.Remove(id);
 
     public void SetVariable(string name, object? value) =>
         _variables[name] = value;
@@ -327,6 +350,19 @@ public sealed class PowerShellWasmExecutionContext
             ["Exception"] = exception,
             ["FullyQualifiedErrorId"] = fullyQualifiedErrorId
         };
+
+    private static Dictionary<string, object?> CreateDomSessionRecord(int id, string name, string target) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Id"] = id,
+            ["Name"] = name,
+            ["Target"] = target,
+            ["State"] = "Opened",
+            ["SessionType"] = "Dom"
+        };
+
+    private static Dictionary<string, object?> CloneDomSession(Dictionary<string, object?> session) =>
+        new(session, StringComparer.OrdinalIgnoreCase);
 
     private void ReleaseOutputCapture(List<object?> output)
     {

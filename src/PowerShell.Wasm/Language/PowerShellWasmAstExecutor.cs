@@ -41,6 +41,9 @@ internal sealed class PowerShellWasmAstExecutor(
             case AssignmentStatementAst assignment:
                 executionContext.SetVariable(assignment.VariableName, EvaluateExpression(assignment.Value));
                 break;
+            case VariableIncrementStatementAst increment:
+                IncrementVariable(increment.VariableName, increment.Delta);
+                break;
             case StatementAssignmentAst assignment:
                 await ExecuteStatementAssignmentAsync(assignment, cancellationToken);
                 break;
@@ -1199,6 +1202,13 @@ internal sealed class PowerShellWasmAstExecutor(
         Math.Abs(value - Math.Round(value)) < 0.0000000001 && value >= int.MinValue && value <= int.MaxValue
             ? Convert.ToInt32(value, CultureInfo.InvariantCulture)
             : value;
+
+    private void IncrementVariable(string variableName, int delta)
+    {
+        var value = executionContext.GetVariable(variableName);
+        var number = value is null ? 0 : ToNumber(value);
+        executionContext.SetVariable(variableName, NormalizeNumber(number + delta));
+    }
 
     private abstract class ControlFlowException : Exception
     {

@@ -126,6 +126,11 @@ public sealed class PowerShellWasmParser
                 : new AssignmentStatementAst(tokens[0].Text, ParseExpression(valueTokens));
         }
 
+        if (TryParseVariableIncrementStatement(tokens, out var incrementStatement))
+        {
+            return incrementStatement;
+        }
+
         if (IsCommandSegment(tokens))
         {
             return new CommandStatementAst(ParseCommand(tokens));
@@ -779,7 +784,7 @@ public sealed class PowerShellWasmParser
 
     private static ExpressionAst ParseCommandArgumentExpression(IReadOnlyList<PowerShellWasmToken> tokens) =>
         IsBareWildcardArgument(tokens)
-            ? new BareWordExpressionAst(string.Concat(tokens.Select(static token => token.Text)))
+            ? new BareWordExpressionAst(string.Concat(tokens.Select(GetBareCommandTokenText)))
             : ParseExpression(tokens);
 
     private static ExpressionAst ParseParameterArgumentExpression(string parameterName, IReadOnlyList<PowerShellWasmToken> tokens) =>
@@ -804,12 +809,15 @@ public sealed class PowerShellWasmParser
     private static bool IsBareWildcardArgument(IReadOnlyList<PowerShellWasmToken> tokens) =>
         tokens.Count > 1 &&
         tokens.Any(static token => token.Kind == PowerShellWasmTokenKind.Star) &&
-        tokens.All(static token => token.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Star) &&
+        tokens.All(static token => token.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Parameter or PowerShellWasmTokenKind.Star) &&
         tokens.Zip(tokens.Skip(1)).All(static pair => IsContiguousBareCommandToken(pair.First, pair.Second));
+
+    private static string GetBareCommandTokenText(PowerShellWasmToken token) =>
+        token.Kind == PowerShellWasmTokenKind.Parameter ? "-" + token.Text : token.Text;
 
     private static bool IsContiguousBareCommandToken(PowerShellWasmToken left, PowerShellWasmToken right) =>
         !right.HasLeadingWhitespace && right.Offset == left.Offset + left.Length &&
-        right.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Star;
+        right.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Parameter or PowerShellWasmTokenKind.Star;
 
     private static ExpressionAst ParseExpression(IReadOnlyList<PowerShellWasmToken> tokens)
     {
@@ -824,6 +832,30 @@ public sealed class PowerShellWasmParser
         IsCommandSegment(tokens) ||
         SplitTopLevelPipelineChain(tokens).Segments.Count > 1 ||
         SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe).Count > 1;
+
+    private static bool TryParseVariableIncrementStatement(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        out VariableIncrementStatementAst statement)
+    {
+        if (tokens.Count == 2 &&
+            tokens[0].Kind == PowerShellWasmTokenKind.Variable)
+        {
+            if (tokens[1].Kind == PowerShellWasmTokenKind.PlusPlus)
+            {
+                statement = new VariableIncrementStatementAst(tokens[0].Text, 1);
+                return true;
+            }
+
+            if (tokens[1].Kind == PowerShellWasmTokenKind.MinusMinus)
+            {
+                statement = new VariableIncrementStatementAst(tokens[0].Text, -1);
+                return true;
+            }
+        }
+
+        statement = null!;
+        return false;
+    }
 
     private static bool IsKeyword(IReadOnlyList<PowerShellWasmToken> tokens, int position, string keyword) =>
         position < tokens.Count &&

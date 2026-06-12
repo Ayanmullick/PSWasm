@@ -24,6 +24,7 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Format-Table", new FormatTableCommand());
         RegisterCommand("fl", new FormatListCommand());
         RegisterCommand("ft", new FormatTableCommand());
+        RegisterCommand("Get-DomSession", new GetDomSessionCommand());
         RegisterCommand("Get-Command", new GetCommandCommand(() =>
             _commands.Keys.Concat(_executionContext.GetFunctionNames()).Distinct(StringComparer.OrdinalIgnoreCase)));
         RegisterCommand("gcm", new GetCommandCommand(() =>
@@ -55,6 +56,8 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("throw", new ThrowCommand());
         RegisterCommand("Measure-Object", new MeasureObjectCommand());
         RegisterCommand("Measure", new MeasureObjectCommand());
+        RegisterCommand("New-DomSession", new NewDomSessionCommand());
+        RegisterCommand("Remove-DomSession", new RemoveDomSessionCommand());
         RegisterCommand("Where-Object", new WhereObjectCommand());
         RegisterCommand("Where", new WhereObjectCommand());
         RegisterCommand("Write-Debug", new WriteStreamCommand("Debug", "Message"));
@@ -75,6 +78,7 @@ public sealed class PowerShellWasmRuntime
 
     public async ValueTask<PowerShellWasmResult> ExecuteAsync(string script, CancellationToken cancellationToken = default)
     {
+        _executionContext.ClearOutput();
         var ast = Parse(script);
         var executor = new PowerShellWasmAstExecutor(_executionContext, _commands);
         await executor.ExecuteAsync(ast, cancellationToken);

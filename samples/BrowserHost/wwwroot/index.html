@@ -220,7 +220,7 @@ while ($i -lt 3) {
   <hr>
 
   <script type="pwsh">
-for ($j = 0; $j -lt 3; $j = $j + 1) {
+for ($j = 0; $j -lt 3; $j++) {
     $j
 }
   </script>
@@ -309,6 +309,34 @@ csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
     Select-Object Count Name |
     ConvertTo-Json -Compress
 @{Name='one'; Value=1} | Out-String
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
+Write-Host 'PSWasm DOM session commands'
+$Dom = New-DomSession -Name Main -Target '#app'
+$Dom | Select-Object Id Name Target State
+Get-DomSession Main | Select-Object -ExpandProperty SessionType
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
+Write-Host 'PSWasm shared PowerShell session'
+$SharedValue = 'from an earlier script block'
+function Use-SharedValue {
+    $SharedValue
+}
+  </script>
+
+  <hr>
+
+  <script type="pwsh">
+Use-SharedValue
+Remove-DomSession Main
+$remaining = Get-DomSession
+$remaining ?? 'DOM session removed'
   </script>
 
   <script>

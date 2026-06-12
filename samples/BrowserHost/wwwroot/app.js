@@ -5,7 +5,7 @@ let runtimeExports;
 /**
  * Execute PowerShell text and return the traditional joined text output.
  * @param {string} script
- * @param {{ environment?: Record<string, string> }} [options]
+ * @param {{ environment?: Record<string, string>, session?: string | { id: string } }} [options]
  * @returns {Promise<string>}
  */
 export async function executePowerShell(script, options = {}) {
@@ -16,53 +16,112 @@ export async function executePowerShell(script, options = {}) {
 /**
  * Execute PowerShell text and return stream-aware records for DOM rendering.
  * @param {string} script
- * @param {{ environment?: Record<string, string> }} [options]
+ * @param {{ environment?: Record<string, string>, session?: string | { id: string } }} [options]
  * @returns {Promise<{ text: string, records: Array<{ stream: string, text: string }> }>}
  */
 export async function executePowerShellResult(script, options = {}) {
+  if (options.session !== undefined) {
+    return executePowerShellSessionResult(options.session, script);
+  }
+
   const exports = await getRuntimeExports();
-  const environment = JSON.stringify(options.environment ?? window.pswasmEnvironment ?? {});
-  const json = await exports.PSWasm.BrowserHost.Interop.ExecuteJsonAsync(script, environment);
+  const json = await exports.PSWasm.BrowserHost.Interop.ExecuteJsonAsync(script, getEnvironmentJson(options));
   return normalizeResult(JSON.parse(json));
 }
 
 /**
+ * Create a reusable browser PowerShell session. Variables and functions persist until dispose().
+ * @param {{ environment?: Record<string, string> }} [options]
+ * @returns {Promise<{ id: string, execute(script: string): Promise<string>, executeResult(script: string): Promise<{ text: string, records: Array<{ stream: string, text: string }> }>, dispose(): Promise<boolean> }>}
+ */
+export async function createPowerShellSession(options = {}) {
+  const exports = await getRuntimeExports();
+  const id = exports.PSWasm.BrowserHost.Interop.CreateSession(getEnvironmentJson(options));
+
+  return {
+    id,
+    execute: script => executePowerShellSession(id, script),
+    executeResult: script => executePowerShellSessionResult(id, script),
+    dispose: () => disposePowerShellSession(id)
+  };
+}
+
+/**
+ * Execute PowerShell text in an existing session and return joined text output.
+ * @param {string | { id: string }} session
+ * @param {string} script
+ * @returns {Promise<string>}
+ */
+export async function executePowerShellSession(session, script) {
+  const result = await executePowerShellSessionResult(session, script);
+  return result.text;
+}
+
+/**
+ * Execute PowerShell text in an existing session and return stream-aware records.
+ * @param {string | { id: string }} session
+ * @param {string} script
+ * @returns {Promise<{ text: string, records: Array<{ stream: string, text: string }> }>}
+ */
+export async function executePowerShellSessionResult(session, script) {
+  const exports = await getRuntimeExports();
+  const json = await exports.PSWasm.BrowserHost.Interop.ExecuteSessionJsonAsync(getSessionId(session), script);
+  return normalizeResult(JSON.parse(json));
+}
+
+/**
+ * Dispose an existing browser PowerShell session.
+ * @param {string | { id: string }} session
+ * @returns {Promise<boolean>}
+ */
+export async function disposePowerShellSession(session) {
+  const exports = await getRuntimeExports();
+  return exports.PSWasm.BrowserHost.Interop.DisposeSession(getSessionId(session));
+}
+
+/**
  * Find and execute browser script blocks. Auto-run creates one output block per script.
+ * Script blocks share one PowerShell session by default. Pass session: false to isolate blocks.
  * Pass options.output to render all scripts into one combined output target.
- * @param {{ environment?: Record<string, string>, output?: Element | string, selector?: string }} [options]
+ * @param {{ environment?: Record<string, string>, output?: Element | string, selector?: string, session?: boolean | string | { id: string } }} [options]
  * @returns {Promise<void>}
  */
 export async function runPowerShellScripts(options = {}) {
   const scripts = Array.from(document.querySelectorAll(options.selector ?? 'script[type="pwsh"]'))
     .filter(script => script.textContent.trim());
+  const shouldCreateSession = options.session === undefined || options.session === true;
+  const ownedSession = shouldCreateSession ? await createPowerShellSession(options) : undefined;
+  const session = ownedSession ?? (options.session === false ? undefined : options.session);
+  const executeOptions = session === undefined ? options : { ...options, session };
 
-  if (options.output !== undefined) {
-    const output = resolveOutputElement(options.output);
-    const results = [];
+  try {
+    if (options.output !== undefined) {
+      const output = resolveOutputElement(options.output);
+      const results = [];
 
-    try {
       for (const script of scripts) {
-        results.push(await executePowerShellResult(script.textContent.trim(), options));
+        results.push(await executePowerShellResult(script.textContent.trim(), executeOptions));
       }
 
       renderPowerShellResult(mergeResults(results), output);
-    } catch (error) {
-      console.error(error);
-      renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
+      return;
     }
 
-    return;
-  }
+    for (const script of scripts) {
+      const output = getOrCreateScriptOutputElement(script);
 
-  for (const script of scripts) {
-    const output = getOrCreateScriptOutputElement(script);
-
-    try {
-      renderPowerShellResult(await executePowerShellResult(script.textContent.trim(), options), output);
-    } catch (error) {
-      console.error(error);
-      renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
+      try {
+        renderPowerShellResult(await executePowerShellResult(script.textContent.trim(), executeOptions), output);
+      } catch (error) {
+        console.error(error);
+        renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
+      }
     }
+  } catch (error) {
+    console.error(error);
+    renderPowerShellOutput("[Error] Runtime error. Check the browser console.", options.output);
+  } finally {
+    await ownedSession?.dispose();
   }
 }
 
@@ -117,6 +176,22 @@ function normalizeResult(result) {
       text: record.Text ?? record.text ?? ""
     }))
   };
+}
+
+function getEnvironmentJson(options = {}) {
+  return JSON.stringify(options.environment ?? globalThis.pswasmEnvironment ?? {});
+}
+
+function getSessionId(session) {
+  if (typeof session === "string" && session.length > 0) {
+    return session;
+  }
+
+  if (session?.id) {
+    return session.id;
+  }
+
+  throw new Error("A PSWasm session id or session object is required.");
 }
 
 async function getRuntimeExports() {
@@ -209,6 +284,6 @@ function installDefaultStyles() {
   document.head.append(style);
 }
 
-if (!window.pswasmDisableAutoRun) {
+if (!globalThis.pswasmDisableAutoRun) {
   await runPowerShellScripts();
 }

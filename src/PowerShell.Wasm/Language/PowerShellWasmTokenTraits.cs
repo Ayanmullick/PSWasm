@@ -120,6 +120,8 @@ internal static class PowerShellWasmTokenTraits
         kind switch
         {
             PowerShellWasmTokenKind.Remainder => "%",
+            PowerShellWasmTokenKind.PlusPlus => "++",
+            PowerShellWasmTokenKind.MinusMinus => "--",
             PowerShellWasmTokenKind.DotDot => "..",
             PowerShellWasmTokenKind.QuestionQuestion => "??",
             PowerShellWasmTokenKind.Format => "-f",

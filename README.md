@@ -8,7 +8,7 @@ The goal is to execute PowerShell text in a static web page without a build-time
 
 The first runtime supports:
 
-* browser-safe built-in commands: `Clear-Variable`, `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Command`, `Get-Culture`, `Get-Date`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Get-Variable`, `Invoke-WebRequest`, `Remove-Variable`, `Select-String`, `Set-Variable`, `Write-*`
+* browser-safe built-in commands: `Clear-Variable`, `ConvertFrom-Csv`, `ConvertFrom-Json`, `ConvertTo-Json`, `Format-List`, `Format-Table`, `Get-Command`, `Get-Culture`, `Get-Date`, `Get-DomSession`, `Get-Time`, `Get-TimeZone`, `Get-UICulture`, `Get-Variable`, `Invoke-WebRequest`, `New-DomSession`, `Remove-DomSession`, `Remove-Variable`, `Select-String`, `Set-Variable`, `Write-*`
 * tokenization into a browser-safe PowerShell token stream
 * parsing into a small AST profile
 * AST-based expression and command execution
@@ -34,6 +34,7 @@ The first runtime supports:
 * browser-safe common parameter handling for stream preferences and variable capture
 * arithmetic expressions with PowerShell-style precedence and parentheses
 * grouped assignment expressions such as `($var = 1 + 2)`
+* postfix variable statements such as `$i++` and `$i--`
 * pipeline chain operators `&&` and `||`
 * browser-safe operators adapted from PowerShell `TokenTraits`
 * a basic object pipeline for registered browser commands
@@ -90,6 +91,14 @@ The browser-safe common parameter subset includes:
 
 `Get-Command` lists the commands available in the current browser runtime. The `gcm` alias is also registered.
 
+The browser-safe DOM session command set includes:
+
+* `New-DomSession`
+* `Get-DomSession`
+* `Remove-DomSession`
+
+These commands create and manage in-memory browser DOM session handles with `Id`, `Name`, `Target`, `State`, and `SessionType` fields. They are modeled as a browser-safe session concept for PowerShell users; they do not expose unrestricted DOM APIs or desktop/session remoting.
+
 The browser-safe web command set includes:
 
 * `Invoke-WebRequest`
@@ -101,7 +110,7 @@ Browser security still applies. Cross-origin calls require the target service to
 The browser-safe operator set currently includes:
 
 * arithmetic/range: `+`, `-`, `*`, `/`, `%`, `..`
-* grouped assignment and null coalescing: `($var = value)`, `??`
+* grouped assignment, postfix variable statements, and null coalescing: `($var = value)`, `$var++`, `$var--`, `??`
 * logical and bitwise: `-not`, `-and`, `-or`, `-xor`, `-bnot`, `-band`, `-bor`, `-bxor`, `-shl`, `-shr`
 * comparisons: `-eq`, `-ne`, `-gt`, `-ge`, `-lt`, `-le` and case-sensitive `-c*` variants
 * wildcard/regex/string: `-like`, `-notlike`, `-match`, `-notmatch`, `-replace` and case-sensitive `-c*` variants
@@ -312,70 +321,32 @@ dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.cspro
 
 ## Browser POC
 
-The browser sample reads inline PowerShell blocks like this at runtime. Importing `app.js` automatically runs every `<script type="pwsh">` block on the page and inserts a `<pre class="pswasm-output">` output block after each script. Normal HTML between scripts, such as `<hr>`, is still rendered by the browser.
+The browser host is intended to be PowerShell-first. Static pages write PowerShell in `<script type="pwsh">` blocks and import `app.js` once at the end of the page. The import runs the PowerShell blocks at runtime and inserts a `<pre class="pswasm-output">` output block after each script. Normal HTML between scripts, such as `<hr>`, is still rendered by the browser.
 
-Static pages and browser playgrounds such as CodePen should import `app.js`. The `app.d.ts` file is only a TypeScript declaration file for editors and build tools; browsers do not execute it.
+Inline PowerShell blocks share one PSWasm runtime session by default. Variables, functions, preferences, `$Error`, and DOM session handles created in an earlier block are available to later blocks.
 
 ```html
 <script type="pwsh">
-Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-Write-Warning 'Browser-visible warning'
-Write-Output (2 + 2)
+$Dom = New-DomSession -Name Main -Target '#app'
+function Write-BrowserSummary {
+    Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    'Target=' + $Dom.Target
+    Get-Command *-DomSession | Select-Object -ExpandProperty Name
+}
 </script>
 
 <hr>
 
 <script type="pwsh">
-1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
-@{Name='browser'; Value=42} | ConvertTo-Json -Compress
+Write-BrowserSummary
+Get-DomSession Main | Select-Object Id Name Target State
+Remove-DomSession Main
 </script>
 
 <script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
 ```
 
-If a page needs one combined output area instead, set `window.pswasmDisableAutoRun = true` before importing `app.js`, then call `runPowerShellScripts({ output: "#output" })` explicitly.
-
-Static apps can also call the browser API directly:
-
-```html
-<pre id="output">Starting...</pre>
-
-<script type="module">
-  window.pswasmDisableAutoRun = true;
-
-  const { executePowerShell, renderPowerShellOutput } =
-    await import("https://ayanmullick.github.io/PSWasm/app.js");
-
-  const output = await executePowerShell(`
-Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-Write-Information 'Executed from JavaScript'
-Write-Output (2 + 2)
-  `);
-
-  renderPowerShellOutput(output, "#output");
-</script>
-```
-
-For stream-aware rendering, use the structured result API:
-
-```javascript
-const { executePowerShellResult, renderPowerShellResult } =
-  await import("https://ayanmullick.github.io/PSWasm/app.js");
-
-const result = await executePowerShellResult("Write-Warning 'Check this'");
-// result.records: [{ stream: "Warning", text: "Check this" }]
-renderPowerShellResult(result, "#output");
-```
-
-The published browser module includes `app.d.ts` beside `app.js` for editors and static-app tooling. The public API shape is:
-
-```typescript
-executePowerShell(script, options)       // Promise<string>
-executePowerShellResult(script, options) // Promise<PowerShellWasmResult>
-runPowerShellScripts(options)            // Promise<void>
-renderPowerShellResult(result, target)   // void
-renderPowerShellOutput(text, target)     // void
-```
+The published browser module includes `app.d.ts` beside `app.js` for editors and static-app tooling. The JavaScript API is still available for custom hosts, but the default static-page path does not require creating JavaScript sessions.
 
 If a static host or CodePen keeps an old browser bundle in cache after a new deployment, add a version query string:
 
@@ -385,12 +356,14 @@ If a static host or CodePen keeps an old browser bundle in cache after a new dep
 
 The published browser host is intentionally generic and does not include app-specific commands. If an application needs custom C# commands, build a custom host that registers those commands before executing scripts.
 
-For browser POCs, environment values can be passed from JavaScript:
+For browser POCs, environment values can be passed with one browser global before importing `app.js` and read from PowerShell with `$env:Name`:
 
-```javascript
+```html
+<script>
 window.pswasmEnvironment = {
   DemoValue: "..."
 };
+</script>
 ```
 
 Do not treat this as a production secret boundary. Any value sent to a static browser app is visible to the browser user.
