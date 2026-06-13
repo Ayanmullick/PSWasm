@@ -115,8 +115,8 @@ The browser-safe .NET type/member subset includes:
 * `[Convert]::FromBase64String(...)` and `[Convert]::ToBase64String(...)`
 * `[Text.Encoding]::UTF8.GetBytes(...)` and `[System.Text.Encoding]::UTF8.GetBytes(...)`
 * `[System.Security.Cryptography.HMACSHA256]::HashData(...)`
-* `[Uri]::EscapeDataString(...)` and `[System.Uri]::EscapeDataString(...)`
-* string instance methods `.ToLowerInvariant()`, `.ToUpperInvariant()`, and `.ToString()`
+* `[Uri]::EscapeDataString(...)`, `[Uri]::UnescapeDataString(...)`, and the `[System.Uri]` equivalents
+* string instance methods `.ToLowerInvariant()`, `.ToUpperInvariant()`, `.ToString()`, and `.Trim()`
 
 This is an allowlist, not arbitrary reflection. PSWasm does not expose unrestricted .NET type lookup, constructors, instance creation with `New-Object`, or desktop/server APIs.
 

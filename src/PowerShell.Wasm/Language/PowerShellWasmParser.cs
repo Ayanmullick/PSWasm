@@ -1156,13 +1156,32 @@ public sealed class PowerShellWasmParser
                     break;
                 }
 
+                var operatorKind = Current.Kind;
                 _position++;
-                var op = MapBinaryOperator(tokens[_position - 1].Kind);
-                expression = new BinaryExpressionAst(expression, op, ParseBinaryExpression(precedence + 1));
+                var op = MapBinaryOperator(operatorKind);
+                var right = IsReplaceOperator(operatorKind)
+                    ? ParseReplaceRightOperand(precedence + 1)
+                    : ParseBinaryExpression(precedence + 1);
+                expression = new BinaryExpressionAst(expression, op, right);
             }
 
             return expression;
         }
+
+        private ExpressionAst ParseReplaceRightOperand(int minimumPrecedence)
+        {
+            var items = new List<ExpressionAst> { ParseBinaryExpression(minimumPrecedence) };
+            while (Current.Kind == PowerShellWasmTokenKind.Comma)
+            {
+                _position++;
+                items.Add(ParseBinaryExpression(minimumPrecedence));
+            }
+
+            return items.Count == 1 ? items[0] : new ArrayExpressionAst(items);
+        }
+
+        private static bool IsReplaceOperator(PowerShellWasmTokenKind kind) =>
+            kind is PowerShellWasmTokenKind.Ireplace or PowerShellWasmTokenKind.Creplace;
 
         private ExpressionAst ParseUnary()
         {

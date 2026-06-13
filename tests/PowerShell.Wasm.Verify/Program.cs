@@ -53,6 +53,7 @@ static async ValueTask VerifyOperatorsAsync()
 $var
 1..3
 'abc' -replace @('b','x')
+'abc' -replace 'b','x'
 @('red','blue') -contains 'blue'
 'blue' -in @('red','blue')
 @('a','b') -join '-'
@@ -68,6 +69,7 @@ $missing ?? 'fallback'
         "1",
         "2",
         "3",
+        "axc",
         "axc",
         "True",
         "True",
@@ -341,6 +343,11 @@ $Signature = [Convert]::ToBase64String($SignatureBytes)
 $Authorization = [Uri]::EscapeDataString("type=${KeyType}&ver=${TokenVer}&sig=$Signature")
 $EscapedKey = [Uri]::EscapeDataString('+/8=')
 $NormalizedKey = [Uri]::UnescapeDataString("  $EscapedKey  ").Trim()
+$ConnectionKey = [Uri]::EscapeDataString('AccountEndpoint=https://acct.documents.azure.com:443/;AccountKey=+/8=;')
+$ConnectionKey = [Uri]::UnescapeDataString($ConnectionKey).Trim() -replace '^["'']+|["'']+$',''
+if ($ConnectionKey -match '(?:^|;)\s*AccountKey\s*=\s*([^;]+)') { $ConnectionKey = $Matches[1] }
+$ConnectionKey = [Uri]::UnescapeDataString($ConnectionKey).Trim() -replace '^["'']+|["'']+$',''
+$ConnectionKey = $ConnectionKey -replace '\s+',''
 $KeyBytes.Length
 $SignatureBytes.Length
 $SignatureBytes[0]
@@ -348,6 +355,8 @@ $Signature
 $Authorization
 $NormalizedKey
 [Convert]::ToBase64String([Convert]::FromBase64String($NormalizedKey))
+$ConnectionKey
+[Convert]::ToBase64String([Convert]::FromBase64String($ConnectionKey))
 'MIXED'.ToLowerInvariant()
 '  padded  '.Trim()
 """);
@@ -358,6 +367,8 @@ $NormalizedKey
         "47",
         "L9Jxlb3LXlKXW6cjwKQ4cTNmGIIPB6c0+bKeinhORis=",
         "type%3Dmaster%26ver%3D1.0%26sig%3DL9Jxlb3LXlKXW6cjwKQ4cTNmGIIPB6c0%2BbKeinhORis%3D",
+        "+/8=",
+        "+/8=",
         "+/8=",
         "+/8=",
         "mixed",
