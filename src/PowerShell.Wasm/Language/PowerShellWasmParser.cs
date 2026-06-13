@@ -1190,6 +1190,26 @@ public sealed class PowerShellWasmParser
                     continue;
                 }
 
+                if (Current.Kind == PowerShellWasmTokenKind.DoubleColon)
+                {
+                    _position++;
+                    var memberPath = ReadMemberPath("::");
+                    expression = new StaticMemberAccessExpressionAst(expression, memberPath[0]);
+                    foreach (var memberName in memberPath.Skip(1))
+                    {
+                        expression = new MemberAccessExpressionAst(expression, memberName);
+                    }
+
+                    continue;
+                }
+
+                if (Current.Kind == PowerShellWasmTokenKind.LParen &&
+                    expression is MemberAccessExpressionAst or StaticMemberAccessExpressionAst)
+                {
+                    expression = new MethodInvocationExpressionAst(expression, ParseArgumentList());
+                    continue;
+                }
+
                 if (Current.Kind == PowerShellWasmTokenKind.LBracket)
                 {
                     expression = ParseIndex(expression);
@@ -1217,6 +1237,7 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.LBrace => ParseScriptBlock(),
                 PowerShellWasmTokenKind.AtLBrace => ParseHashtable(),
                 PowerShellWasmTokenKind.AtLParen => ParseArray(),
+                PowerShellWasmTokenKind.LBracket => ParseTypeLiteral(),
                 _ => new BareWordExpressionAst(token.Text)
             };
         }
@@ -1226,6 +1247,47 @@ public sealed class PowerShellWasmParser
             var expression = ParseAssignment();
             Consume(PowerShellWasmTokenKind.RParen);
             return new ParenthesizedExpressionAst(expression);
+        }
+
+        private TypeLiteralExpressionAst ParseTypeLiteral()
+        {
+            var typeName = string.Empty;
+            while (Current.Kind is not PowerShellWasmTokenKind.RBracket and not PowerShellWasmTokenKind.EndOfInput)
+            {
+                typeName += Current.Text;
+                _position++;
+            }
+
+            Consume(PowerShellWasmTokenKind.RBracket);
+            if (string.IsNullOrWhiteSpace(typeName))
+            {
+                throw new InvalidOperationException("Expected a type name inside '[]'.");
+            }
+
+            return new TypeLiteralExpressionAst(typeName);
+        }
+
+        private IReadOnlyList<ExpressionAst> ParseArgumentList()
+        {
+            Consume(PowerShellWasmTokenKind.LParen);
+            var arguments = new List<ExpressionAst>();
+            while (Current.Kind is not PowerShellWasmTokenKind.RParen and not PowerShellWasmTokenKind.EndOfInput)
+            {
+                if (Current.Kind == PowerShellWasmTokenKind.Comma)
+                {
+                    _position++;
+                    continue;
+                }
+
+                arguments.Add(ParseAssignment());
+                if (Current.Kind == PowerShellWasmTokenKind.Comma)
+                {
+                    _position++;
+                }
+            }
+
+            Consume(PowerShellWasmTokenKind.RParen);
+            return arguments;
         }
 
         private IndexExpressionAst ParseIndex(ExpressionAst target)
@@ -1250,6 +1312,20 @@ public sealed class PowerShellWasmParser
             Consume(PowerShellWasmTokenKind.RBracket);
             var index = indexes.Count == 1 ? indexes[0] : new ArrayExpressionAst(indexes);
             return new IndexExpressionAst(target, index);
+        }
+
+        private IReadOnlyList<string> ReadMemberPath(string operatorText)
+        {
+            if (Current.Kind != PowerShellWasmTokenKind.Identifier ||
+                Current.Text.Length == 0 ||
+                Current.Text.StartsWith(".", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Expected a member name after '{operatorText}'.");
+            }
+
+            var memberPath = Current.Text.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            _position++;
+            return memberPath;
         }
 
         private ScriptBlockExpressionAst ParseScriptBlock()

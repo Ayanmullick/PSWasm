@@ -84,6 +84,17 @@ public static class PowerShellWasmTokenizer
                 case ',':
                     Add(PowerShellWasmTokenKind.Comma, ",", 1);
                     break;
+                case ':':
+                    if (position + 1 < script.Length && script[position + 1] == ':')
+                    {
+                        Add(PowerShellWasmTokenKind.DoubleColon, "::", 2);
+                    }
+                    else
+                    {
+                        ReadIdentifier();
+                    }
+
+                    break;
                 case '(':
                     Add(PowerShellWasmTokenKind.LParen, "(", 1);
                     break;
@@ -282,7 +293,7 @@ public static class PowerShellWasmTokenizer
                 var current = script[position++];
                 if (current == '`' && quote == '"' && position < script.Length)
                 {
-                    value.Append(script[position++]);
+                    value.Append(ReadEscapedCharacter(script[position++]));
                     continue;
                 }
 
@@ -373,6 +384,20 @@ public static class PowerShellWasmTokenizer
 
     private static bool IsVariableCharacter(char ch) =>
         char.IsLetterOrDigit(ch) || ch is '_' or ':';
+
+    private static char ReadEscapedCharacter(char ch) =>
+        ch switch
+        {
+            '0' => '\0',
+            'a' => '\a',
+            'b' => '\b',
+            'e' => '\u001b',
+            'f' => '\f',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            _ => ch
+        };
 
     private static bool IsBareWordCharacter(char ch) =>
         !char.IsWhiteSpace(ch) && ch is not ';' and not '|' and not '=' and not ',' and not '(' and not ')' and not '{' and not '}'

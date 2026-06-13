@@ -412,6 +412,12 @@ public sealed class PowerShellWasmExecutionContext
             yield break;
         }
 
+        if (value is byte[])
+        {
+            yield return value;
+            yield break;
+        }
+
         if (value is System.Collections.IEnumerable enumerable)
         {
             foreach (var item in enumerable)

@@ -10,6 +10,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),
     ("parallel assignment", VerifyParallelAssignmentAsync),
+    ("browser-safe dotnet interop", VerifyBrowserSafeDotNetInteropAsync),
     ("variable commands", VerifyVariableCommandsAsync),
     ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
@@ -325,6 +326,34 @@ $pipeTail[1]
         "2",
         "20",
         "30"
+    ]);
+}
+
+static async ValueTask VerifyBrowserSafeDotNetInteropAsync()
+{
+    var result = await ExecuteAsync("""
+$Key = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('secret'))
+$StringToSign = "post`ndocs`ndbs/db/colls/cont`nSat, 13 Jun 2026 00:00:00 GMT`n`n"
+$KeyType,$TokenVer = 'master','1.0'
+$KeyBytes,$DataBytes = [Convert]::FromBase64String($Key),[Text.Encoding]::UTF8.GetBytes($StringToSign)
+$SignatureBytes = [System.Security.Cryptography.HMACSHA256]::HashData($KeyBytes,$DataBytes)
+$Signature = [Convert]::ToBase64String($SignatureBytes)
+$Authorization = [Uri]::EscapeDataString("type=${KeyType}&ver=${TokenVer}&sig=$Signature")
+$KeyBytes.Length
+$SignatureBytes.Length
+$SignatureBytes[0]
+$Signature
+$Authorization
+'MIXED'.ToLowerInvariant()
+""");
+
+    ExpectLines(result, [
+        "6",
+        "32",
+        "47",
+        "L9Jxlb3LXlKXW6cjwKQ4cTNmGIIPB6c0+bKeinhORis=",
+        "type%3Dmaster%26ver%3D1.0%26sig%3DL9Jxlb3LXlKXW6cjwKQ4cTNmGIIPB6c0%2BbKeinhORis%3D",
+        "mixed"
     ]);
 }
 

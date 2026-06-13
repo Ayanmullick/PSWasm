@@ -17,7 +17,7 @@ The first runtime supports:
 * arrays with comma literals, `@(...)`, ranges, indexing, negative indexes, and `Count` / `Length`
 * hashtable literals with key indexing and `Count` / `Keys` / `Values`
 * splatting with hashtables, arrays, `$PSBoundParameters`, and `$args`
-* expandable strings such as `"Hello $Name"`
+* expandable strings such as `"Hello $Name"` and `"Hello ${Name}"`, plus common PowerShell backtick escapes such as `` `n``
 * PowerShell region comments such as `#region` and `#endregion`
 * script blocks with `$_` and `$PSItem` for browser-safe pipeline commands
 * `if` / `elseif` / `else` for browser-safe conditional execution
@@ -30,6 +30,8 @@ The first runtime supports:
 * `try` / `catch` / `finally` for browser-safe terminating runtime errors
 * `throw` for script-level browser runtime errors
 * simple member access such as `$_.Name` against hashtable-like objects
+* allowlisted type literals, static member access, and method invocation for browser-safe .NET cryptography/text helpers
+* `byte[]` values preserved across variable assignment, method calls, indexing, and `Count` / `Length`
 * `$env:Name` lookup through a browser-provided environment map
 * simple named parameters
 * browser-safe common parameter handling for stream preferences and variable capture
@@ -107,6 +109,26 @@ The browser-safe web command set includes:
 The `iwr` alias is also registered. `Invoke-WebRequest` uses .NET `HttpClient`, which maps to the browser HTTP stack in browser-wasm. The browser-safe subset supports `-Uri`, `-Method`, `-CustomMethod`, `-Headers`, `-Body`, `-ContentType`, and `-SkipHttpErrorCheck`. It returns a hashtable-like response object with `StatusCode`, `StatusDescription`, `Headers`, `Content`, `RawContent`, and `RawContentLength`.
 
 Browser security still applies. Cross-origin calls require the target service to allow the page's origin with CORS headers. PSWasm does not include desktop/server features such as `-OutFile`, `-InFile`, proxy configuration, certificate options, web sessions, local cookie containers, or CORS bypasses.
+
+The browser-safe .NET type/member subset includes:
+
+* `[Convert]::FromBase64String(...)` and `[Convert]::ToBase64String(...)`
+* `[Text.Encoding]::UTF8.GetBytes(...)` and `[System.Text.Encoding]::UTF8.GetBytes(...)`
+* `[System.Security.Cryptography.HMACSHA256]::HashData(...)`
+* `[Uri]::EscapeDataString(...)` and `[System.Uri]::EscapeDataString(...)`
+* string instance methods `.ToLowerInvariant()`, `.ToUpperInvariant()`, and `.ToString()`
+
+This is an allowlist, not arbitrary reflection. PSWasm does not expose unrestricted .NET type lookup, constructors, instance creation with `New-Object`, or desktop/server APIs.
+
+```powershell
+$Key = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('secret'))
+$StringToSign = "verb`npath`ndate`n"
+$KeyType,$TokenVer = 'master','1.0'
+$KeyBytes,$DataBytes = [Convert]::FromBase64String($Key),[Text.Encoding]::UTF8.GetBytes($StringToSign)
+$SignatureBytes = [System.Security.Cryptography.HMACSHA256]::HashData($KeyBytes,$DataBytes)
+$Signature = [Convert]::ToBase64String($SignatureBytes)
+$Authorization = [Uri]::EscapeDataString("type=${KeyType}&ver=${TokenVer}&sig=$Signature")
+```
 
 The browser-safe operator set currently includes:
 

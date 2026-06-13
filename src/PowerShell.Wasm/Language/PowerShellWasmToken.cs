@@ -29,6 +29,7 @@ public enum PowerShellWasmTokenKind
     Slash,
     Remainder,
     DotDot,
+    DoubleColon,
     QuestionQuestion,
     Format,
     Not,

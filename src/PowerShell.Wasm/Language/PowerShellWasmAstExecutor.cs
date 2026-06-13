@@ -636,7 +636,10 @@ internal sealed class PowerShellWasmAstExecutor(
             ArrayExpressionAst array => array.Items.Select(EvaluateExpression).ToArray(),
             ScriptBlockExpressionAst scriptBlock => CreateScriptBlock(scriptBlock),
             ParenthesizedExpressionAst parenthesized => EvaluateExpression(parenthesized.Expression),
+            TypeLiteralExpressionAst typeLiteral => PowerShellWasmDotNetBridge.ResolveType(typeLiteral.TypeName),
             MemberAccessExpressionAst member => EvaluateMemberAccess(member),
+            StaticMemberAccessExpressionAst member => EvaluateStaticMemberAccess(member),
+            MethodInvocationExpressionAst invocation => EvaluateMethodInvocation(invocation),
             IndexExpressionAst index => EvaluateIndex(index),
             UnaryExpressionAst unary => EvaluateUnary(unary),
             BinaryExpressionAst binary => EvaluateBinary(binary),
@@ -725,12 +728,40 @@ internal sealed class PowerShellWasmAstExecutor(
             }
         }
 
+        if (PowerShellWasmDotNetBridge.TryGetInstanceMember(target, member.MemberName, out var dotNetMember))
+        {
+            return dotNetMember;
+        }
+
         if (TryGetCollectionProperty(target, member.MemberName, out var collectionValue))
         {
             return collectionValue;
         }
 
         return null;
+    }
+
+    private object? EvaluateStaticMemberAccess(StaticMemberAccessExpressionAst member)
+    {
+        var target = EvaluateExpression(member.Target);
+        if (PowerShellWasmDotNetBridge.TryGetStaticMember(target, member.MemberName, out var value))
+        {
+            return value;
+        }
+
+        throw new InvalidOperationException($"Static member '{member.MemberName}' is not available on '{target}'.");
+    }
+
+    private object? EvaluateMethodInvocation(MethodInvocationExpressionAst invocation)
+    {
+        var target = EvaluateExpression(invocation.Target);
+        var arguments = invocation.Arguments.Select(EvaluateExpression).ToArray();
+        if (PowerShellWasmDotNetBridge.TryInvoke(target, arguments, out var value))
+        {
+            return value;
+        }
+
+        throw new InvalidOperationException("Only allowlisted browser-safe .NET methods can be invoked.");
     }
 
     private object? EvaluateIndex(IndexExpressionAst index)
@@ -1007,6 +1038,12 @@ internal sealed class PowerShellWasmAstExecutor(
             yield break;
         }
 
+        if (value is byte[])
+        {
+            yield return value;
+            yield break;
+        }
+
         if (value is System.Collections.IDictionary or IReadOnlyDictionary<string, object?>)
         {
             yield return value;
@@ -1141,10 +1178,21 @@ internal sealed class PowerShellWasmAstExecutor(
         dictionary.TryGetValue(key, out value);
 
     private string ExpandString(string value) =>
-        Regex.Replace(value, @"\$(env:)?([A-Za-z_][A-Za-z0-9_]*)", match =>
+        Regex.Replace(value, @"\$\{(?<braced>(?:env:)?[A-Za-z_][A-Za-z0-9_:]*)\}|\$(?<env>env:)?(?<name>[A-Za-z_][A-Za-z0-9_]*)", match =>
         {
-            var name = match.Groups[2].Value;
-            if (match.Groups[1].Success)
+            if (match.Groups["braced"].Success)
+            {
+                var bracedName = match.Groups["braced"].Value;
+                if (bracedName.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+                {
+                    return executionContext.GetEnvironmentVariable(bracedName[4..]) ?? string.Empty;
+                }
+
+                return ToExpandableString(executionContext.GetVariable(bracedName));
+            }
+
+            var name = match.Groups["name"].Value;
+            if (match.Groups["env"].Success)
             {
                 return executionContext.GetEnvironmentVariable(name) ?? string.Empty;
             }
