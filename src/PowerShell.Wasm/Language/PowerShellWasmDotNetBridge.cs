@@ -11,6 +11,7 @@ namespace PSWasm.Language;
 // - https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Text/UTF8Encoding.cs
 // - https://github.com/dotnet/runtime/blob/main/src/libraries/System.Security.Cryptography/src/System/Security/Cryptography/HMACSHA256.cs
 // - https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.Uri/src/System/UriExt.cs
+// - https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs
 // Browser note: this delegates to platform .NET APIs behind an allowlist instead of exposing arbitrary reflection.
 internal static class PowerShellWasmDotNetBridge
 {
@@ -73,7 +74,7 @@ internal static class PowerShellWasmDotNetBridge
         }
 
         if (type.FullName.Equals(UriType, StringComparison.OrdinalIgnoreCase) &&
-            memberName.Equals("EscapeDataString", StringComparison.OrdinalIgnoreCase))
+            IsMember(memberName, "EscapeDataString", "UnescapeDataString"))
         {
             value = new PowerShellWasmDotNetMethod(type.FullName, memberName, null, IsStatic: true);
             return true;
@@ -91,7 +92,7 @@ internal static class PowerShellWasmDotNetBridge
             return true;
         }
 
-        if (target is string && IsMember(memberName, "ToLowerInvariant", "ToUpperInvariant", "ToString"))
+        if (target is string && IsMember(memberName, "ToLowerInvariant", "ToUpperInvariant", "ToString", "Trim"))
         {
             value = new PowerShellWasmDotNetMethod(StringType, memberName, target, IsStatic: false);
             return true;
@@ -151,6 +152,13 @@ internal static class PowerShellWasmDotNetBridge
             return Uri.EscapeDataString(ToInvariantString(arguments[0]));
         }
 
+        if (method.DeclaringType.Equals(UriType, StringComparison.OrdinalIgnoreCase) &&
+            method.Name.Equals("UnescapeDataString", StringComparison.OrdinalIgnoreCase))
+        {
+            RequireArgumentCount(method, arguments, 1);
+            return Uri.UnescapeDataString(ToInvariantString(arguments[0]));
+        }
+
         if (method.DeclaringType.Equals(StringType, StringComparison.OrdinalIgnoreCase) &&
             method.Target is string text)
         {
@@ -160,6 +168,7 @@ internal static class PowerShellWasmDotNetBridge
                 "tolowerinvariant" => text.ToLowerInvariant(),
                 "toupperinvariant" => text.ToUpperInvariant(),
                 "tostring" => text,
+                "trim" => text.Trim(),
                 _ => throw new InvalidOperationException($"Method '{method.Name}' is not available in this browser-safe runtime.")
             };
         }

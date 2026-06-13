@@ -339,12 +339,17 @@ $KeyBytes,$DataBytes = [Convert]::FromBase64String($Key),[Text.Encoding]::UTF8.G
 $SignatureBytes = [System.Security.Cryptography.HMACSHA256]::HashData($KeyBytes,$DataBytes)
 $Signature = [Convert]::ToBase64String($SignatureBytes)
 $Authorization = [Uri]::EscapeDataString("type=${KeyType}&ver=${TokenVer}&sig=$Signature")
+$EscapedKey = [Uri]::EscapeDataString('+/8=')
+$NormalizedKey = [Uri]::UnescapeDataString("  $EscapedKey  ").Trim()
 $KeyBytes.Length
 $SignatureBytes.Length
 $SignatureBytes[0]
 $Signature
 $Authorization
+$NormalizedKey
+[Convert]::ToBase64String([Convert]::FromBase64String($NormalizedKey))
 'MIXED'.ToLowerInvariant()
+'  padded  '.Trim()
 """);
 
     ExpectLines(result, [
@@ -353,7 +358,10 @@ $Authorization
         "47",
         "L9Jxlb3LXlKXW6cjwKQ4cTNmGIIPB6c0+bKeinhORis=",
         "type%3Dmaster%26ver%3D1.0%26sig%3DL9Jxlb3LXlKXW6cjwKQ4cTNmGIIPB6c0%2BbKeinhORis%3D",
-        "mixed"
+        "+/8=",
+        "+/8=",
+        "mixed",
+        "padded"
     ]);
 }
 
