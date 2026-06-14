@@ -33,6 +33,7 @@ The detailed documentation lives in the GitHub Wiki:
 * [Runtime Scope](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Scope)
 * [Language Support](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support)
 * [Browser Commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands)
+* [DOM Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlets)
 * [Browser Usage](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Usage)
 * [Build and Validation](https://github.com/Ayanmullick/PSWasm/wiki/Build-and-Validation)
 * [Architecture and Direction](https://github.com/Ayanmullick/PSWasm/wiki/Architecture-and-Direction)
@@ -44,7 +45,7 @@ PSWasm currently includes:
 * browser-safe parser, AST profile, executor, session state, command dispatch, and object pipeline support
 * variables, parallel assignment, arrays, hashtables, splatting, expandable strings, script blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
 * common PowerShell-style operators, including arithmetic, comparisons, wildcard/regex operators, `-replace`, `-split`, `-join`, `-f`, `&&`, `||`, `$i++`, `$i--`, and `??`
-* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/object pipeline commands, `Invoke-WebRequest`, and DOM session handle commands
+* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/object pipeline commands, `Invoke-WebRequest`, and DOM session/interaction commands
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods
 * a browser host that auto-runs `<script type="pwsh">` blocks and exposes JavaScript helpers for custom hosts
 

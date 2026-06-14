@@ -15,14 +15,17 @@ public sealed class PowerShellWasmExecutionContext
     private readonly List<object?> _output = [];
     private readonly Stack<List<object?>> _outputCaptures = [];
     private int _nextDomSessionId = 1;
+    private int _nextDomEventRegistrationId = 1;
     private int _failureSignalCount;
 
-    public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null)
+    public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null, IPowerShellWasmDomHost? domHost = null)
     {
         _environment = environment is null ? new(StringComparer.OrdinalIgnoreCase) : new(environment, StringComparer.OrdinalIgnoreCase);
+        DomHost = domHost;
         InitializeAutomaticVariables();
     }
 
+    public IPowerShellWasmDomHost? DomHost { get; }
     public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Select(FormatRecord).ToArray();
     public IReadOnlyList<string> Output => Records.Select(FormatRecordLine).ToArray();
     public int ErrorCount => _errors.Count;
@@ -57,6 +60,12 @@ public sealed class PowerShellWasmExecutionContext
 
     internal bool RemoveDomSession(int id) =>
         _domSessions.Remove(id);
+
+    internal int GetNextDomEventRegistrationId() =>
+        _nextDomEventRegistrationId++;
+
+    internal PowerShellWasmResult CreateResult(IEnumerable<object?> output) =>
+        new(output.Select(FormatRecord).ToArray());
 
     public void SetVariable(string name, object? value) =>
         _variables[name] = value;

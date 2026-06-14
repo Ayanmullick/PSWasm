@@ -17,6 +17,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("invoke web request", VerifyInvokeWebRequestAsync),
     ("pipeline chain operators", VerifyPipelineChainOperatorsAsync),
     ("dom session commands", VerifyDomSessionCommandsAsync),
+    ("dom interaction commands", VerifyDomInteractionCommandsAsync),
     ("browser-safe built-ins", VerifyBuiltInsAsync),
     ("splatting and pipeline", VerifySplattingAndPipelineAsync),
     ("object pipeline commands", VerifyObjectPipelineCommandsAsync),
@@ -438,6 +439,67 @@ $remaining ?? 'none'
         "Remove-DomSession",
         "none"
     ]);
+}
+
+static async ValueTask VerifyDomInteractionCommandsAsync()
+{
+    var domHost = new FakeDomHost();
+    domHost.Values["#account-name"] = "acct";
+    domHost.Values["#database-name"] = "db";
+
+    var runtime = new PowerShellWasmRuntime(domHost: domHost);
+    var result = await runtime.ExecuteAsync("""
+$dom = New-DomSession -Name Main -Target document
+Set-DomText '#status' 'Ready'
+Get-DomText '#status'
+$account,$database = Get-DomValue '#account-name','#database-name'
+$account
+$database
+$registration = Register-DomEvent -Session $dom -Selector '#query-form' -Event Submit -PreventDefault -ScriptBlock {
+    $AccountName,$DatabaseName = Get-DomValue '#account-name','#database-name'
+    Set-DomProperty '#query-button' Disabled $false
+    Set-DomText '#status' ($EventData.Type + ':' + $AccountName + ':' + $DatabaseName)
+}
+$registration.RegistrationType
+$registration.Selector
+$registration.Event
+$registration.PreventDefault
+Get-Command *-Dom* | Select-Object -ExpandProperty Name
+""");
+
+    ExpectLines(result, [
+        "Ready",
+        "acct",
+        "db",
+        "DomEvent",
+        "#query-form",
+        "Submit",
+        "True",
+        "Get-DomSession",
+        "Get-DomText",
+        "Get-DomValue",
+        "New-DomSession",
+        "Register-DomEvent",
+        "Remove-DomSession",
+        "Set-DomProperty",
+        "Set-DomText"
+    ]);
+
+    await domHost.TriggerAsync("#query-form", "Submit", new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Type"] = "Submit"
+    });
+
+    ExpectLines(await runtime.ExecuteAsync("""
+Get-DomText '#status'
+"""), [
+        "Submit:acct:db"
+    ]);
+
+    if (!domHost.Properties.TryGetValue(("#query-button", "disabled"), out var disabled) || disabled is not bool boolValue || boolValue)
+    {
+        Fail("Expected Set-DomProperty to set #query-button.disabled to false.");
+    }
 }
 
 static async ValueTask VerifyCommandDiscoveryAsync()
@@ -1275,4 +1337,49 @@ sealed class FakeHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, 
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
         handler(request, cancellationToken);
+}
+
+sealed class FakeDomHost : IPowerShellWasmDomHost
+{
+    private readonly Dictionary<int, PowerShellWasmDomEventRegistration> _registrations = [];
+
+    public Dictionary<string, string> Text { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<(string Selector, string PropertyName), object?> Properties { get; } = [];
+
+    public ValueTask<string> GetTextAsync(string selector, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(Text.TryGetValue(selector, out var value) ? value : string.Empty);
+
+    public ValueTask SetTextAsync(string selector, string text, CancellationToken cancellationToken)
+    {
+        Text[selector] = text;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<string> GetValueAsync(string selector, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(Values.TryGetValue(selector, out var value) ? value : string.Empty);
+
+    public ValueTask SetPropertyAsync(string selector, string propertyName, object? value, CancellationToken cancellationToken)
+    {
+        Properties[(selector, propertyName.ToLowerInvariant())] = value;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask RegisterEventAsync(PowerShellWasmDomEventRegistration registration, CancellationToken cancellationToken)
+    {
+        _registrations[registration.Id] = registration;
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask TriggerAsync(string selector, string eventName, Dictionary<string, object?> eventData)
+    {
+        var registration = _registrations.Values.Single(item =>
+            item.Selector.Equals(selector, StringComparison.OrdinalIgnoreCase) &&
+            item.Event.Equals(eventName, StringComparison.OrdinalIgnoreCase));
+        var variables = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["EventData"] = eventData
+        };
+        await registration.ScriptBlock.InvokeResultAsync(eventData, variables);
+    }
 }

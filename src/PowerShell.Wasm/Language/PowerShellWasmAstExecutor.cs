@@ -673,28 +673,41 @@ internal sealed class PowerShellWasmAstExecutor(
         return result;
     }
 
-    private PowerShellWasmScriptBlock CreateScriptBlock(ScriptBlockExpressionAst scriptBlock) =>
-        new(async (input, cancellationToken) =>
+    private PowerShellWasmScriptBlock CreateScriptBlock(ScriptBlockExpressionAst scriptBlock)
+    {
+        async ValueTask<IReadOnlyList<object?>> InvokeAsync(
+            object? input,
+            IReadOnlyDictionary<string, object?>? variables,
+            CancellationToken cancellationToken)
         {
             var output = new List<object?>();
-            using (executionContext.WithPipelineItem(input))
-            using (executionContext.CaptureOutput(output))
+            using var variableScope = variables is null ? null : executionContext.WithTemporaryVariables(variables);
+            using var pipelineScope = executionContext.WithPipelineItem(input);
+            using var outputScope = executionContext.CaptureOutput(output);
+
+            try
             {
-                try
+                foreach (var statement in scriptBlock.Body.Statements)
                 {
-                    foreach (var statement in scriptBlock.Body.Statements)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        await ExecuteStatementAsync(statement, [], cancellationToken);
-                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await ExecuteStatementAsync(statement, [], cancellationToken);
                 }
-                catch (ReturnFlowException)
-                {
-                }
+            }
+            catch (ReturnFlowException)
+            {
             }
 
             return output;
-        });
+        }
+
+        async ValueTask<PowerShellWasmResult> InvokeResultAsync(
+            object? input,
+            IReadOnlyDictionary<string, object?>? variables,
+            CancellationToken cancellationToken) =>
+            executionContext.CreateResult(await InvokeAsync(input, variables, cancellationToken));
+
+        return new PowerShellWasmScriptBlock(InvokeAsync, InvokeResultAsync);
+    }
 
     private object? EvaluateMemberAccess(MemberAccessExpressionAst member)
     {

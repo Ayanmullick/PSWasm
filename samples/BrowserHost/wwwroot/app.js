@@ -1,6 +1,53 @@
 import { dotnet } from "./_framework/dotnet.js";
 
 let runtimeExports;
+const domEventRegistrations = new Map();
+
+globalThis.pswasmDom = {
+  getText: selector => resolveDomElement(selector).textContent ?? "",
+  setText: (selector, text) => {
+    resolveDomElement(selector).textContent = text ?? "";
+  },
+  getValue: selector => {
+    const element = resolveDomElement(selector);
+    return getElementValue(element);
+  },
+  setProperty: (selector, propertyName, valueJson) => {
+    const element = resolveDomElement(selector);
+    element[normalizeDomPropertyName(propertyName)] = JSON.parse(valueJson);
+  },
+  registerEvent: (registrationId, selector, eventName, preventDefault) => {
+    const key = `${registrationId}`;
+    const previous = domEventRegistrations.get(key);
+    if (previous) {
+      previous.element.removeEventListener(previous.eventName, previous.handler);
+    }
+
+    const element = resolveDomElement(selector);
+    const normalizedEventName = normalizeDomEventName(eventName);
+    const handler = async event => {
+      if (preventDefault) {
+        event.preventDefault();
+      }
+
+      try {
+        const exports = await getRuntimeExports();
+        const json = await exports.PSWasm.BrowserHost.Interop.InvokeDomEventJsonAsync(
+          registrationId,
+          JSON.stringify(createDomEventData(event)));
+        const result = normalizeResult(JSON.parse(json));
+        if (result.text) {
+          console.log(result.text);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    element.addEventListener(normalizedEventName, handler);
+    domEventRegistrations.set(key, { element, eventName: normalizedEventName, handler });
+  }
+};
 
 /**
  * Execute PowerShell text and return the traditional joined text output.
@@ -313,6 +360,81 @@ function installDefaultStyles() {
     .pswasm-stream-progress { color: #7c3aed; }
   `;
   document.head.append(style);
+}
+
+function resolveDomElement(selector) {
+  if (selector === "document") {
+    return document.documentElement;
+  }
+
+  const element = document.querySelector(selector);
+  if (!element) {
+    throw new Error(`No DOM element matches selector '${selector}'.`);
+  }
+
+  return element;
+}
+
+function getElementValue(element) {
+  if ("value" in element) {
+    return element.value ?? "";
+  }
+
+  return element.textContent ?? "";
+}
+
+function normalizeDomPropertyName(propertyName) {
+  if (!propertyName) {
+    throw new Error("A DOM property name is required.");
+  }
+
+  return propertyName.charAt(0).toLowerCase() + propertyName.slice(1);
+}
+
+function normalizeDomEventName(eventName) {
+  if (!eventName) {
+    throw new Error("A DOM event name is required.");
+  }
+
+  return eventName.toLowerCase();
+}
+
+function createDomEventData(event) {
+  return {
+    type: event.type,
+    target: describeElement(event.target),
+    currentTarget: describeElement(event.currentTarget),
+    value: event.target instanceof Element ? getElementValue(event.target) : "",
+    values: collectNamedValues(event.currentTarget)
+  };
+}
+
+function describeElement(element) {
+  if (!(element instanceof Element)) {
+    return {};
+  }
+
+  return {
+    id: element.id ?? "",
+    name: element.getAttribute("name") ?? "",
+    tagName: element.tagName.toLowerCase()
+  };
+}
+
+function collectNamedValues(root) {
+  if (!(root instanceof Element)) {
+    return {};
+  }
+
+  const values = {};
+  for (const element of root.querySelectorAll("input, select, textarea")) {
+    const key = element.getAttribute("name") || element.id;
+    if (key) {
+      values[key] = getElementValue(element);
+    }
+  }
+
+  return values;
 }
 
 if (!globalThis.pswasmDisableAutoRun) {
