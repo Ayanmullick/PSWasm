@@ -80,7 +80,7 @@ export async function disposePowerShellSession(session) {
 }
 
 /**
- * Find and execute browser script blocks. Auto-run creates one output block per script.
+ * Find and execute browser script blocks or external PowerShell scripts. Auto-run creates one output block per script.
  * Script blocks share one PowerShell session by default. Pass session: false to isolate blocks.
  * Pass options.output to render all scripts into one combined output target.
  * @param {{ environment?: Record<string, string>, output?: Element | string, selector?: string, session?: boolean | string | { id: string } }} [options]
@@ -88,7 +88,7 @@ export async function disposePowerShellSession(session) {
  */
 export async function runPowerShellScripts(options = {}) {
   const scripts = Array.from(document.querySelectorAll(options.selector ?? 'script[type="pwsh"]'))
-    .filter(script => script.textContent.trim());
+    .filter(hasPowerShellScriptText);
   const shouldCreateSession = options.session === undefined || options.session === true;
   const ownedSession = shouldCreateSession ? await createPowerShellSession(options) : undefined;
   const session = ownedSession ?? (options.session === false ? undefined : options.session);
@@ -100,7 +100,7 @@ export async function runPowerShellScripts(options = {}) {
       const results = [];
 
       for (const script of scripts) {
-        results.push(await executePowerShellResult(script.textContent.trim(), executeOptions));
+        results.push(await executePowerShellResult(await getPowerShellScriptText(script), executeOptions));
       }
 
       renderPowerShellResult(mergeResults(results), output);
@@ -111,7 +111,7 @@ export async function runPowerShellScripts(options = {}) {
       const output = getOrCreateScriptOutputElement(script);
 
       try {
-        renderPowerShellResult(await executePowerShellResult(script.textContent.trim(), executeOptions), output);
+        renderPowerShellResult(await executePowerShellResult(await getPowerShellScriptText(script), executeOptions), output);
       } catch (error) {
         console.error(error);
         renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
@@ -123,6 +123,28 @@ export async function runPowerShellScripts(options = {}) {
   } finally {
     await ownedSession?.dispose();
   }
+}
+
+function hasPowerShellScriptText(script) {
+  return getPowerShellScriptSource(script) !== "" || script.textContent.trim() !== "";
+}
+
+async function getPowerShellScriptText(script) {
+  const source = getPowerShellScriptSource(script);
+  if (source === "") {
+    return script.textContent.trim();
+  }
+
+  const response = await fetch(new URL(source, document.baseURI));
+  if (!response.ok) {
+    throw new Error(`Failed to load PowerShell script '${source}' (${response.status} ${response.statusText}).`);
+  }
+
+  return (await response.text()).trim();
+}
+
+function getPowerShellScriptSource(script) {
+  return script.getAttribute("src")?.trim() ?? "";
 }
 
 /**

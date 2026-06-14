@@ -369,6 +369,15 @@ Remove-DomSession Main
 <script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
 ```
 
+PowerShell can also live in a same-origin `.ps1` file referenced from the page. External and inline `type="pwsh"` scripts run in document order and share the same default session:
+
+```html
+<script type="pwsh" src="./sample.ps1"></script>
+<script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
+```
+
+The browser fetches external scripts relative to the page URL. Normal browser fetch rules apply, including CORS for cross-origin `.ps1` files.
+
 The published browser module includes `app.d.ts` beside `app.js` for editors and static-app tooling. The JavaScript API is still available for custom hosts, but the default static-page path does not require creating JavaScript sessions.
 
 If a static host or CodePen keeps an old browser bundle in cache after a new deployment, add a version query string:

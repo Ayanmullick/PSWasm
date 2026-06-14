@@ -11,4 +11,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\PowerShell.Wasm\PowerShell.Wasm.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="wwwroot\**\*.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
