@@ -92,7 +92,7 @@ export async function runPowerShellScripts(options = {}) {
   const shouldCreateSession = options.session === undefined || options.session === true;
   const ownedSession = shouldCreateSession ? await createPowerShellSession(options) : undefined;
   const session = ownedSession ?? (options.session === false ? undefined : options.session);
-  const executeOptions = session === undefined ? options : { ...options, session };
+  const executeOptions = getPowerShellExecutionOptions(options, session);
 
   try {
     if (options.output !== undefined) {
@@ -145,6 +145,15 @@ async function getPowerShellScriptText(script) {
 
 function getPowerShellScriptSource(script) {
   return script.getAttribute("src")?.trim() ?? "";
+}
+
+function getPowerShellExecutionOptions(options, session) {
+  if (session !== undefined) {
+    return { ...options, session };
+  }
+
+  const { session: _session, ...executionOptions } = options;
+  return executionOptions;
 }
 
 /**
