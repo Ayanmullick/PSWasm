@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>PSWasm Browser DOM Smoke</title>
+</head>
+<body>
+  <form id="dom-sample-form">
+    <label for="dom-sample-name">Name</label>
+    <input id="dom-sample-name" name="Name" value="PSWasm" />
+    <button id="dom-sample-button" type="submit">Update text</button>
+  </form>
+  <p id="dom-sample-status"></p>
+
+  <script type="pwsh">
+$Dom = New-DomSession -Name Smoke -Target document
+Set-DomText '#dom-sample-status' 'DOM event handler ready.'
+Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -PreventDefault -ScriptBlock {
+    Set-DomProperty '#dom-sample-button' Disabled $true
+    $Name = Get-DomValue '#dom-sample-name'
+    Set-DomText '#dom-sample-status' "Hello $Name from a PowerShell DOM event."
+    Set-DomProperty '#dom-sample-button' Disabled $false
+}
+  </script>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -91,6 +91,18 @@ Publish-check the browser host:
 dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r browser-wasm -o .\artifacts\BrowserHost /p:UseAppHost=false --no-restore
 ```
 
+Run the real browser DOM smoke test after DOM command or browser DOM bridge changes:
+
+```powershell
+.\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1
+```
+
+If headless Edge or Chrome cannot be launched in the current environment, run the manual smoke server and open the printed URL in Microsoft Edge Tools for VS Code or the VS Code integrated browser:
+
+```powershell
+.\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1 -Manual
+```
+
 ## GitHub Pages
 
 This repo deploys the browser host with GitHub Actions. After the workflow succeeds, the static loader is available at:

@@ -20,5 +20,22 @@ Use the verification project before considering runtime changes complete:
 
 ```pwsh
 dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.csproj --configuration Release
+```
 
+For browser host or browser-wasm interop changes, also publish the browser host:
+
+```pwsh
+dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r browser-wasm -o .\artifacts\BrowserHost /p:UseAppHost=false --no-restore
+```
+
+For DOM command or browser DOM bridge changes, run the browser DOM smoke test:
+
+```pwsh
+.\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1
+```
+
+If headless Edge/Chrome cannot be launched in the current environment, run the manual smoke server and open the printed URL in Microsoft Edge Tools for VS Code or the VS Code integrated browser:
+
+```pwsh
+.\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1 -Manual
 ```
