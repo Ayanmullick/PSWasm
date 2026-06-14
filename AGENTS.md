@@ -28,6 +28,14 @@ For browser host or browser-wasm interop changes, also publish the browser host:
 dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r browser-wasm -o .\artifacts\BrowserHost /p:UseAppHost=false --no-restore
 ```
 
+For manual BrowserHost validation, prefer `dotnet serve` over ad hoc static servers:
+
+```pwsh
+dotnet serve -d .\artifacts\BrowserHost\wwwroot -p 5010
+```
+
+If port 5010 is already in use, choose another free port and state the URL used.
+
 For DOM command or browser DOM bridge changes, run the browser DOM smoke test:
 
 ```pwsh
@@ -39,3 +47,13 @@ If headless Edge/Chrome cannot be launched in the current environment, run the m
 ```pwsh
 .\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1 -Manual
 ```
+
+## Documentation Updates
+
+After successful validation for future feature changes, update the relevant documentation and samples when behavior, commands, APIs, or user-facing workflow changed:
+
+* Update `README.md` with short entry-point guidance and links to the detailed wiki page.
+* Update the GitHub Wiki page, sidebar, or validation page when the detailed behavior belongs outside the README.
+* Update `samples/BrowserHost/wwwroot/index.html` when a generic browser-safe feature needs a runnable browser sample.
+
+Keep documentation generic. Do not add app-specific examples or product-specific flavor such as Cosmos DB to this repository.
