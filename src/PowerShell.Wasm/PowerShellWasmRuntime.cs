@@ -1,6 +1,8 @@
 using PSWasm.Commands;
 using PSWasm.Language;
+#if PSWASM_WEB
 using System.Net.Http;
+#endif
 
 namespace PSWasm;
 
@@ -12,11 +14,15 @@ public sealed class PowerShellWasmRuntime
 
     public PowerShellWasmRuntime(
         IDictionary<string, string>? environment = null,
+#if PSWASM_WEB
         HttpMessageHandler? httpMessageHandler = null,
+#endif
         IPowerShellWasmDomHost? domHost = null)
     {
         _executionContext = new PowerShellWasmExecutionContext(environment, domHost);
+#if PSWASM_WEB
         var httpClient = httpMessageHandler is null ? new HttpClient() : new HttpClient(httpMessageHandler);
+#endif
 
         RegisterCommand("Clear-Variable", new ClearVariableCommand());
         RegisterCommand("clv", new ClearVariableCommand());
@@ -27,9 +33,11 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Format-Table", new FormatTableCommand());
         RegisterCommand("fl", new FormatListCommand());
         RegisterCommand("ft", new FormatTableCommand());
+#if PSWASM_DOM
         RegisterCommand("Get-DomSession", new GetDomSessionCommand());
         RegisterCommand("Get-DomText", new GetDomTextCommand());
         RegisterCommand("Get-DomValue", new GetDomValueCommand());
+#endif
         RegisterCommand("Get-Command", new GetCommandCommand(() =>
             _commands.Keys.Concat(_executionContext.GetFunctionNames()).Distinct(StringComparer.OrdinalIgnoreCase)));
         RegisterCommand("gcm", new GetCommandCommand(() =>
@@ -45,8 +53,10 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Group", new GroupObjectCommand());
         RegisterCommand("Get-Variable", new GetVariableCommand());
         RegisterCommand("gv", new GetVariableCommand());
+#if PSWASM_WEB
         RegisterCommand("Invoke-WebRequest", new InvokeWebRequestCommand(httpClient));
         RegisterCommand("iwr", new InvokeWebRequestCommand(httpClient));
+#endif
         RegisterCommand("Out-String", new OutStringCommand());
         RegisterCommand("Remove-Variable", new RemoveVariableCommand());
         RegisterCommand("rv", new RemoveVariableCommand());
@@ -54,8 +64,10 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Select", new SelectObjectCommand());
         RegisterCommand("Select-String", new SelectStringCommand());
         RegisterCommand("sls", new SelectStringCommand());
+#if PSWASM_DOM
         RegisterCommand("Set-DomProperty", new SetDomPropertyCommand());
         RegisterCommand("Set-DomText", new SetDomTextCommand());
+#endif
         RegisterCommand("Set-Variable", new SetVariableCommand());
         RegisterCommand("sv", new SetVariableCommand());
         RegisterCommand("Sort-Object", new SortObjectCommand());
@@ -63,9 +75,11 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("throw", new ThrowCommand());
         RegisterCommand("Measure-Object", new MeasureObjectCommand());
         RegisterCommand("Measure", new MeasureObjectCommand());
+#if PSWASM_DOM
         RegisterCommand("New-DomSession", new NewDomSessionCommand());
         RegisterCommand("Register-DomEvent", new RegisterDomEventCommand());
         RegisterCommand("Remove-DomSession", new RemoveDomSessionCommand());
+#endif
         RegisterCommand("Where-Object", new WhereObjectCommand());
         RegisterCommand("Where", new WhereObjectCommand());
         RegisterCommand("Write-Debug", new WriteStreamCommand("Debug", "Message"));

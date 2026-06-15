@@ -6,5 +6,19 @@
     <LangVersion>latest</LangVersion>
     <PackageId>PowerShell.Wasm</PackageId>
     <Description>Small browser-safe PowerShell runtime prototype for WebAssembly.</Description>
+    <PSWasmEnableDom Condition="'$(PSWasmEnableDom)' == ''">true</PSWasmEnableDom>
+    <PSWasmEnableCrypto Condition="'$(PSWasmEnableCrypto)' == ''">true</PSWasmEnableCrypto>
+    <PSWasmEnableWeb Condition="'$(PSWasmEnableWeb)' == ''">true</PSWasmEnableWeb>
+    <DefineConstants Condition="'$(PSWasmEnableDom)' == 'true'">$(DefineConstants);PSWASM_DOM</DefineConstants>
+    <DefineConstants Condition="'$(PSWasmEnableCrypto)' == 'true'">$(DefineConstants);PSWASM_CRYPTO</DefineConstants>
+    <DefineConstants Condition="'$(PSWasmEnableWeb)' == 'true'">$(DefineConstants);PSWASM_WEB</DefineConstants>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(PSWasmEnableDom)' != 'true'">
+    <Compile Remove="Commands\Dom\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PSWasmEnableWeb)' != 'true'">
+    <Compile Remove="Commands\InvokeWebRequestCommand.cs" />
+  </ItemGroup>
 </Project>

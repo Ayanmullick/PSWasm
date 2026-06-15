@@ -28,6 +28,19 @@ For browser host or browser-wasm interop changes, also publish the browser host:
 dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r browser-wasm -o .\artifacts\BrowserHost /p:UseAppHost=false --no-restore
 ```
 
+When browser package size or feature gating changes, publish clean browser flavors and measure the payload:
+
+```pwsh
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom,crypto,web,dom-web-crypto -NoRestore
+.\tools\Measure-BrowserPayload.ps1 -Path .\artifacts\BrowserFlavors\dom-web-crypto\wwwroot -SummaryOnly
+```
+
+Also run the browser flavor smoke test when browser package size, publish shape, or feature gating changes:
+
+```pwsh
+.\tests\BrowserFlavorSmoke\Invoke-BrowserFlavorSmoke.ps1 -NoRestore
+```
+
 For manual BrowserHost validation, prefer `dotnet serve` over ad hoc static servers:
 
 ```pwsh

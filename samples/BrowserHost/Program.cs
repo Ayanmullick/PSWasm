@@ -62,10 +62,12 @@ public static partial class Interop
     public static bool DisposeSession(string sessionId) =>
         s_sessions.Remove(sessionId);
 
+#if PSWASM_DOM
     [SupportedOSPlatform("browser")]
     [JSExport]
     public static Task<string> InvokeDomEventJsonAsync(int registrationId, string eventJson) =>
         BrowserDomHost.InvokeEventJsonAsync(registrationId, eventJson);
+#endif
 
     public static void Main()
     {
@@ -75,7 +77,11 @@ public static partial class Interop
     [SupportedOSPlatform("browser")]
     private static PowerShellWasmRuntime CreateRuntime(IDictionary<string, string> environment)
     {
+#if PSWASM_DOM
         return new PowerShellWasmRuntime(environment, domHost: new BrowserDomHost());
+#else
+        return new PowerShellWasmRuntime(environment);
+#endif
     }
 
     private static PowerShellWasmRuntime GetSession(string sessionId)

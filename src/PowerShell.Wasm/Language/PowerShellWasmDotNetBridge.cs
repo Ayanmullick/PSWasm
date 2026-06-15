@@ -1,6 +1,8 @@
 using System.Globalization;
+#if PSWASM_CRYPTO
 using System.Security.Cryptography;
 using System.Text;
+#endif
 
 namespace PSWasm.Language;
 
@@ -15,24 +17,32 @@ namespace PSWasm.Language;
 // Browser note: this delegates to platform .NET APIs behind an allowlist instead of exposing arbitrary reflection.
 internal static class PowerShellWasmDotNetBridge
 {
+#if PSWASM_CRYPTO
     private const string ConvertType = "System.Convert";
     private const string EncodingType = "System.Text.Encoding";
     private const string HmacSha256Type = "System.Security.Cryptography.HMACSHA256";
     private const string UriType = "System.Uri";
+#endif
     private const string StringType = "System.String";
 
-    private static readonly IReadOnlyDictionary<string, string> TypeAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    private static readonly IReadOnlyDictionary<string, string> TypeAliases = CreateTypeAliases();
+
+    private static IReadOnlyDictionary<string, string> CreateTypeAliases()
     {
-        ["Convert"] = ConvertType,
-        ["System.Convert"] = ConvertType,
-        ["Text.Encoding"] = EncodingType,
-        ["System.Text.Encoding"] = EncodingType,
-        ["HMACSHA256"] = HmacSha256Type,
-        ["Security.Cryptography.HMACSHA256"] = HmacSha256Type,
-        ["System.Security.Cryptography.HMACSHA256"] = HmacSha256Type,
-        ["Uri"] = UriType,
-        ["System.Uri"] = UriType
-    };
+        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+#if PSWASM_CRYPTO
+        aliases["Convert"] = ConvertType;
+        aliases["System.Convert"] = ConvertType;
+        aliases["Text.Encoding"] = EncodingType;
+        aliases["System.Text.Encoding"] = EncodingType;
+        aliases["HMACSHA256"] = HmacSha256Type;
+        aliases["Security.Cryptography.HMACSHA256"] = HmacSha256Type;
+        aliases["System.Security.Cryptography.HMACSHA256"] = HmacSha256Type;
+        aliases["Uri"] = UriType;
+        aliases["System.Uri"] = UriType;
+#endif
+        return aliases;
+    }
 
     internal static PowerShellWasmDotNetType ResolveType(string typeName)
     {
@@ -52,6 +62,7 @@ internal static class PowerShellWasmDotNetBridge
             return false;
         }
 
+#if PSWASM_CRYPTO
         if (type.FullName.Equals(ConvertType, StringComparison.OrdinalIgnoreCase) &&
             IsMember(memberName, "FromBase64String", "ToBase64String"))
         {
@@ -79,6 +90,7 @@ internal static class PowerShellWasmDotNetBridge
             value = new PowerShellWasmDotNetMethod(type.FullName, memberName, null, IsStatic: true);
             return true;
         }
+#endif
 
         return false;
     }
@@ -86,11 +98,13 @@ internal static class PowerShellWasmDotNetBridge
     internal static bool TryGetInstanceMember(object target, string memberName, out object? value)
     {
         value = null;
+#if PSWASM_CRYPTO
         if (target is Encoding && memberName.Equals("GetBytes", StringComparison.OrdinalIgnoreCase))
         {
             value = new PowerShellWasmDotNetMethod(EncodingType, memberName, target, IsStatic: false);
             return true;
         }
+#endif
 
         if (target is string && IsMember(memberName, "ToLowerInvariant", "ToUpperInvariant", "ToString", "Trim"))
         {
@@ -115,6 +129,7 @@ internal static class PowerShellWasmDotNetBridge
 
     private static object Invoke(PowerShellWasmDotNetMethod method, IReadOnlyList<object?> arguments)
     {
+#if PSWASM_CRYPTO
         if (method.DeclaringType.Equals(ConvertType, StringComparison.OrdinalIgnoreCase))
         {
             if (method.Name.Equals("FromBase64String", StringComparison.OrdinalIgnoreCase))
@@ -158,6 +173,7 @@ internal static class PowerShellWasmDotNetBridge
             RequireArgumentCount(method, arguments, 1);
             return Uri.UnescapeDataString(ToInvariantString(arguments[0]));
         }
+#endif
 
         if (method.DeclaringType.Equals(StringType, StringComparison.OrdinalIgnoreCase) &&
             method.Target is string text)

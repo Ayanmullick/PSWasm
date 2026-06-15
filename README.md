@@ -35,12 +35,13 @@ The detailed documentation lives in the GitHub Wiki:
 * [Browser Commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands)
 * [DOM Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlets)
 * [Browser Usage](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Usage)
+* [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization)
 * [Build and Validation](https://github.com/Ayanmullick/PSWasm/wiki/Build-and-Validation)
 * [Architecture and Direction](https://github.com/Ayanmullick/PSWasm/wiki/Architecture-and-Direction)
 
 ## Current Highlights
 
-PSWasm currently includes:
+The default/full PSWasm browser host currently includes:
 
 * browser-safe parser, AST profile, executor, session state, command dispatch, and object pipeline support
 * variables, parallel assignment, arrays, hashtables, splatting, expandable strings, script blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
@@ -48,6 +49,8 @@ PSWasm currently includes:
 * stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/object pipeline commands, `Invoke-WebRequest`, and DOM session/interaction commands
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods
 * a browser host that auto-runs `<script type="pwsh">` blocks and exposes JavaScript helpers for custom hosts
+
+Trimmed browser flavors can omit optional DOM, web request, or crypto/text helper groups. See [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization).
 
 PSWasm intentionally does not expose the full desktop/server PowerShell host. Providers, native process execution, profiles, remoting, jobs, unrestricted filesystem access, module autoloading, and arbitrary .NET reflection are outside the browser-safe scope.
 
@@ -77,6 +80,15 @@ The static files are emitted under:
 publish/wwwroot
 ```
 
+Publish clean browser flavors for payload comparison:
+
+```powershell
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom,crypto,web,dom-web-crypto
+```
+
+Use `dom-web-crypto` for static pages that need DOM event binding, `Invoke-WebRequest`, and browser-safe HMAC/Base64/URI helper coverage.
+Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `artifacts/BrowserFlavors/<flavor>/wwwroot` into your static app.
+
 ## Maintainer Checks
 
 Run assertion-based runtime verification:
@@ -89,6 +101,18 @@ Publish-check the browser host:
 
 ```powershell
 dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r browser-wasm -o .\artifacts\BrowserHost /p:UseAppHost=false --no-restore
+```
+
+Measure a published browser payload:
+
+```powershell
+.\tools\Measure-BrowserPayload.ps1 -Path .\artifacts\BrowserHost\wwwroot -SummaryOnly
+```
+
+Run package-shape and flavor-gating smoke checks:
+
+```powershell
+.\tests\BrowserFlavorSmoke\Invoke-BrowserFlavorSmoke.ps1 -NoRestore
 ```
 
 Run the real browser DOM smoke test after DOM command or browser DOM bridge changes:

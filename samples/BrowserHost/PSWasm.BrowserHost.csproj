@@ -6,10 +6,22 @@
     <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
     <WasmMainJSPath>wwwroot\app.js</WasmMainJSPath>
     <RunAOTCompilation>false</RunAOTCompilation>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <BlazorEnableTimeZoneSupport>false</BlazorEnableTimeZoneSupport>
+    <BlazorWebAssemblyPreserveCollationData>false</BlazorWebAssemblyPreserveCollationData>
+    <PSWasmEnableDom Condition="'$(PSWasmEnableDom)' == ''">true</PSWasmEnableDom>
+    <PSWasmEnableCrypto Condition="'$(PSWasmEnableCrypto)' == ''">true</PSWasmEnableCrypto>
+    <PSWasmEnableWeb Condition="'$(PSWasmEnableWeb)' == ''">true</PSWasmEnableWeb>
+    <DefineConstants Condition="'$(PSWasmEnableDom)' == 'true'">$(DefineConstants);PSWASM_DOM</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\PowerShell.Wasm\PowerShell.Wasm.csproj" />
+    <ProjectReference Include="..\..\src\PowerShell.Wasm\PowerShell.Wasm.csproj"
+      AdditionalProperties="PSWasmEnableDom=$(PSWasmEnableDom);PSWasmEnableCrypto=$(PSWasmEnableCrypto);PSWasmEnableWeb=$(PSWasmEnableWeb)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PSWasmEnableDom)' != 'true'">
+    <Compile Remove="BrowserDomHost.cs" />
   </ItemGroup>
 
   <ItemGroup>
