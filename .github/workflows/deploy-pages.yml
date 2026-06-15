@@ -8,12 +8,20 @@ on:
       - 'src/**'
       - 'samples/BrowserHost/**'
       - 'tests/PowerShell.Wasm.Verify/**'
+      - 'tests/PowerShell.Wasm.FlavorVerify/**'
+      - 'tests/BrowserFlavorSmoke/**'
+      - 'tools/**'
       - 'global.json'
       - '*.sln'
       - '*.props'
       - '*.targets'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
+    inputs:
+      hosted_version:
+        description: 'Optional versioned hosted folder, such as v0.1.0'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -51,6 +59,21 @@ jobs:
 
       - name: Publish browser host
         run: dotnet publish samples/BrowserHost/PSWasm.BrowserHost.csproj --configuration Release --runtime browser-wasm --output publish /p:UseAppHost=false
+
+      - name: Publish hosted browser flavors
+        shell: pwsh
+        run: |
+          $Params = @{
+            Flavor = @('core','dom','crypto','web','dom-crypto','dom-web','web-crypto','dom-web-crypto','full')
+            OutputRoot = 'artifacts/BrowserFlavors'
+            HostedRoot = 'publish/wwwroot'
+            NoRestore = $true
+          }
+          $HostedVersion = '${{ github.event.inputs.hosted_version }}'
+          if ($HostedVersion -ne '') {
+            $Params.HostedVersion = $HostedVersion
+          }
+          ./tools/Publish-BrowserFlavors.ps1 @Params
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

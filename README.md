@@ -17,6 +17,13 @@ Write-Output "Hello $Name"
 <script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
 ```
 
+Use a hosted trimmed flavor when the page only needs a specific browser-safe feature set:
+
+```html
+<script type="pwsh" src="./sample.ps1"></script>
+<script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-crypto/app.js"></script>
+```
+
 PowerShell can also live in a same-origin `.ps1` file:
 
 ```html
@@ -89,6 +96,14 @@ Publish clean browser flavors for payload comparison:
 Use `dom-web-crypto` for static pages that need DOM event binding, `Invoke-WebRequest`, and browser-safe HMAC/Base64/URI helper coverage.
 Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `artifacts/BrowserFlavors/<flavor>/wwwroot` into your static app.
 
+Publish host-ready flavor folders for static hosting:
+
+```powershell
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom-web-crypto -HostedRoot .\artifacts\HostedBrowserFlavors -HostedVersion v0.1.0
+```
+
+That creates `artifacts/HostedBrowserFlavors/<flavor>/app.js` and `artifacts/HostedBrowserFlavors/v0.1.0/<flavor>/app.js`, with each `app.js` loading its own sibling `_framework/**` folder.
+
 ## Maintainer Checks
 
 Run assertion-based runtime verification:
@@ -133,4 +148,16 @@ This repo deploys the browser host with GitHub Actions. After the workflow succe
 
 ```html
 <script type="module" src="https://ayanmullick.github.io/PSWasm/app.js"></script>
+```
+
+The Pages artifact also publishes hosted flavor folders:
+
+```html
+<script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-crypto/app.js"></script>
+```
+
+Manual Pages workflow runs can provide a version folder, such as `v0.1.0`, for stable consumption:
+
+```html
+<script type="module" src="https://ayanmullick.github.io/PSWasm/v0.1.0/dom-web-crypto/app.js"></script>
 ```

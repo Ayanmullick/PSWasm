@@ -4,23 +4,65 @@ param(
 
     [string]$OutputRoot = '.\artifacts\BrowserFlavors',
 
+    [string]$HostedRoot = '',
+
+    [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9._-]*$')]
+    [string]$HostedVersion = '',
+
     [switch]$IncludeSampleHost,
 
     [switch]$NoRestore
 )
 
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$OutputRoot = if ([IO.Path]::IsPathRooted($OutputRoot)) {
-    [IO.Path]::GetFullPath($OutputRoot)
-} else {
-    [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $OutputRoot))
-}
-if (-not $OutputRoot.StartsWith($RepoRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "OutputRoot must stay inside the repository: $OutputRoot"
+
+function Resolve-InRepoPath {
+    param([string]$Path, [string]$Name)
+
+    $FullPath = if ([IO.Path]::IsPathRooted($Path)) {
+        [IO.Path]::GetFullPath($Path)
+    } else {
+        [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Path))
+    }
+
+    if (-not $FullPath.StartsWith($RepoRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Name must stay inside the repository: $FullPath"
+    }
+
+    $FullPath
 }
 
-$Project = Join-Path $RepoRoot 'samples\BrowserHost\PSWasm.BrowserHost.csproj'
-$Measure = Join-Path $PSScriptRoot 'Measure-BrowserPayload.ps1'
+function Copy-BrowserPackage {
+    param([string]$SourceRoot, [string]$DestinationRoot)
+
+    $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
+    $DestinationRoot = [IO.Path]::GetFullPath($DestinationRoot)
+
+    if (-not $DestinationRoot.StartsWith($RepoRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Hosted destination must stay inside the repository: $DestinationRoot"
+    }
+    if ($SourceRoot.Equals($DestinationRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $SourceRoot.StartsWith($DestinationRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+        $DestinationRoot.StartsWith($SourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Hosted destination must not overlap the source package: $DestinationRoot"
+    }
+
+    if (Test-Path -LiteralPath $DestinationRoot) {
+        Remove-Item -LiteralPath $DestinationRoot -Recurse -Force
+    }
+
+    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    Get-ChildItem -LiteralPath $SourceRoot -Force | Copy-Item -Destination $DestinationRoot -Recurse -Force
+}
+
+$OutputRoot = Resolve-InRepoPath $OutputRoot 'OutputRoot'
+$HostedRoot = if ($HostedRoot -ne '') { Resolve-InRepoPath $HostedRoot 'HostedRoot' } else { '' }
+if ($HostedRoot -eq '' -and $HostedVersion -ne '') {
+    throw 'HostedVersion requires HostedRoot.'
+}
+
+$Project = [IO.Path]::Combine($RepoRoot, 'samples', 'BrowserHost', 'PSWasm.BrowserHost.csproj')
+$Measure = [IO.Path]::Combine($PSScriptRoot, 'Measure-BrowserPayload.ps1')
 
 foreach ($Name in $Flavor) {
     $Dom,$Crypto,$Web = switch ($Name) {
@@ -60,5 +102,18 @@ foreach ($Name in $Flavor) {
         }
     }
 
-    & $Measure -Path (Join-Path $Out 'wwwroot') -SummaryOnly
+    $PackageRoot = Join-Path $Out 'wwwroot'
+    if ($HostedRoot -ne '') {
+        $HostedFlavorRoot = Join-Path $HostedRoot $Name
+        Copy-BrowserPackage -SourceRoot $PackageRoot -DestinationRoot $HostedFlavorRoot
+        Write-Host "Hosted PSWasm browser flavor '$Name' at $HostedFlavorRoot."
+
+        if ($HostedVersion -ne '') {
+            $HostedVersionRoot = Join-Path (Join-Path $HostedRoot $HostedVersion) $Name
+            Copy-BrowserPackage -SourceRoot $PackageRoot -DestinationRoot $HostedVersionRoot
+            Write-Host "Hosted versioned PSWasm browser flavor '$Name' at $HostedVersionRoot."
+        }
+    }
+
+    & $Measure -Path $PackageRoot -SummaryOnly
 }

@@ -7,7 +7,7 @@ param(
     [switch]$NoRestore
 )
 
-$RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$RepoRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
 $OutputRoot = if ([IO.Path]::IsPathRooted($OutputRoot)) {
     [IO.Path]::GetFullPath($OutputRoot)
 } else {
@@ -29,7 +29,7 @@ function Assert-Condition {
 function Get-FrameworkFiles {
     param([string]$FlavorName)
 
-    $Root = Join-Path $OutputRoot "$FlavorName\wwwroot"
+    $Root = [IO.Path]::Combine($OutputRoot, $FlavorName, 'wwwroot')
     $Framework = Join-Path $Root '_framework'
 
     Assert-Condition (Test-Path -LiteralPath $Root -PathType Container) "Missing flavor wwwroot: $Root"
@@ -46,7 +46,27 @@ function Get-FrameworkFiles {
     return $Files
 }
 
-$FlavorVerifyArgs = @('run','--project',(Join-Path $RepoRoot 'tests\PowerShell.Wasm.FlavorVerify\PowerShell.Wasm.FlavorVerify.csproj'),
+function Assert-HostedFlavor {
+    param([string]$Root, [string]$FlavorName)
+
+    $FlavorRoot = Join-Path $Root $FlavorName
+    $Framework = Join-Path $FlavorRoot '_framework'
+    Assert-Condition (Test-Path -LiteralPath $FlavorRoot -PathType Container) "Missing hosted flavor folder: $FlavorRoot"
+    Assert-Condition (Test-Path -LiteralPath (Join-Path $FlavorRoot 'app.js') -PathType Leaf) "Missing hosted app.js for $FlavorName"
+    Assert-Condition (Test-Path -LiteralPath (Join-Path $FlavorRoot 'app.d.ts') -PathType Leaf) "Missing hosted app.d.ts for $FlavorName"
+    Assert-Condition (Test-Path -LiteralPath $Framework -PathType Container) "Missing hosted _framework for $FlavorName"
+    Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $FlavorRoot 'index.html') -PathType Leaf)) "Hosted flavor $FlavorName should not include BrowserHost index.html."
+    Assert-Condition (-not (Get-ChildItem -LiteralPath $FlavorRoot -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) "Hosted flavor $FlavorName should not include sample .ps1 files."
+
+    $AppJs = Get-Content -LiteralPath (Join-Path $FlavorRoot 'app.js') -Raw
+    Assert-Condition ($AppJs.Contains('from "./_framework/dotnet.js"')) "Hosted flavor $FlavorName must load its own sibling _framework folder."
+}
+
+$FlavorVerifyProject = [IO.Path]::Combine($RepoRoot, 'tests', 'PowerShell.Wasm.FlavorVerify', 'PowerShell.Wasm.FlavorVerify.csproj')
+$PublishBrowserFlavors = [IO.Path]::Combine($RepoRoot, 'tools', 'Publish-BrowserFlavors.ps1')
+$MeasureBrowserPayload = [IO.Path]::Combine($RepoRoot, 'tools', 'Measure-BrowserPayload.ps1')
+
+$FlavorVerifyArgs = @('run','--project',$FlavorVerifyProject,
     '--configuration','Release')
 if ($NoRestore) {
     $FlavorVerifyArgs += '--no-restore'
@@ -58,19 +78,21 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$PublishParams = @{ Flavor = $Flavor; OutputRoot = $OutputRoot }
+$HostedRoot = Join-Path $OutputRoot 'hosted'
+$HostedVersion = 'v-smoke'
+$PublishParams = @{ Flavor = $Flavor; OutputRoot = $OutputRoot; HostedRoot = $HostedRoot; HostedVersion = $HostedVersion }
 if ($NoRestore) {
     $PublishParams.NoRestore = $true
 }
 
-& (Join-Path $RepoRoot 'tools\Publish-BrowserFlavors.ps1') @PublishParams
+& $PublishBrowserFlavors @PublishParams
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
 foreach ($Name in $Flavor) {
     $Files = Get-FrameworkFiles $Name
-    $Summary = & (Join-Path $RepoRoot 'tools\Measure-BrowserPayload.ps1') -Path (Join-Path $OutputRoot "$Name\wwwroot") -SummaryOnly
+    $Summary = & $MeasureBrowserPayload -Path ([IO.Path]::Combine($OutputRoot, $Name, 'wwwroot')) -SummaryOnly
     Assert-Condition ($Summary.TransferBytes -gt 0) "Flavor $Name did not report positive transfer bytes."
     Write-Host ("PASS {0} package shape: {1} raw, {2} transfer" -f $Name, $Summary.RawSize, $Summary.TransferSize)
 
@@ -87,4 +109,8 @@ foreach ($Name in $Flavor) {
         Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Security.Cryptography*.wasm')) 'dom-web-crypto should include System.Security.Cryptography wasm.'
         Write-Host 'PASS dom-web-crypto package includes web and crypto framework assets.'
     }
+
+    Assert-HostedFlavor -Root $HostedRoot -FlavorName $Name
+    Assert-HostedFlavor -Root (Join-Path $HostedRoot $HostedVersion) -FlavorName $Name
+    Write-Host "PASS $Name hosted package aliases."
 }
