@@ -67,6 +67,12 @@ try {
     timeout,
     `DOM event did not update status text to '${expected}'.`);
 
+  await waitFor(
+    () => evaluate(cdp, sessionId, "localStorage.getItem('pswasm.domSmokeName')"),
+    value => value === "Browser Smoke",
+    timeout,
+    "DOM storage binding did not persist the input value.");
+
   if (browserErrors.length > 0) {
     throw new Error(`Browser console errors were reported:${SystemLineBreak}${browserErrors.join(SystemLineBreak)}`);
   }

@@ -332,6 +332,7 @@ Get-DomSession Main | Select-Object -ExpandProperty SessionType
 
   <script type="pwsh">
 $Dom = New-DomSession -Name Ui -Target document
+$StorageBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSampleName'}
 Set-DomText '#dom-sample-status' 'DOM event handler ready.'
 $Registration = Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -PreventDefault -ScriptBlock {
     Set-DomProperty '#dom-sample-button' Disabled $true

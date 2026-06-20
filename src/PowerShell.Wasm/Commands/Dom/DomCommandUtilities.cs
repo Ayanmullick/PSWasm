@@ -69,6 +69,43 @@ internal static class DomCommandUtilities
 
         throw new InvalidOperationException($"{parameterName} is required.");
     }
+
+    public static string GetStorage(PowerShellWasmCommandContext context)
+    {
+        var storage = context.Parameters.TryGetValue("Storage", out var value)
+            ? PowerShellWasmCommandUtilities.ToInvariantString(value)
+            : "Local";
+
+        return storage.Equals("Session", StringComparison.OrdinalIgnoreCase)
+            ? "Session"
+            : storage.Equals("Local", StringComparison.OrdinalIgnoreCase)
+                ? "Local"
+                : throw new InvalidOperationException("Storage must be Local or Session.");
+    }
+
+    public static IReadOnlyList<string> GetKeys(PowerShellWasmCommandContext context)
+    {
+        var keys = new List<string>();
+        if (context.Parameters.TryGetValue("Key", out var key))
+        {
+            AddValues(key);
+        }
+
+        foreach (var argument in context.Arguments)
+        {
+            AddValues(argument);
+        }
+
+        return keys.Where(static item => !string.IsNullOrWhiteSpace(item)).ToArray();
+
+        void AddValues(object? value)
+        {
+            foreach (var item in PowerShellWasmCommandUtilities.EnumerateInput([value]))
+            {
+                keys.Add(PowerShellWasmCommandUtilities.ToInvariantString(item));
+            }
+        }
+    }
 }
 
 internal static class DomSessionCommandUtilities

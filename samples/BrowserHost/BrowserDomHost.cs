@@ -45,6 +45,40 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<string?> GetStorageItemAsync(string storage, string key, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(ParseStorageItem(GetStorageItem(storage, key)));
+    }
+
+    public ValueTask SetStorageItemAsync(string storage, string key, string value, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        SetStorageItem(storage, key, value);
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask RemoveStorageItemAsync(string storage, string key, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        RemoveStorageItem(storage, key);
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask ClearStorageAsync(string storage, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ClearStorage(storage);
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask RegisterStorageBindingAsync(PowerShellWasmDomStorageBindingRegistration registration, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        RegisterStorageBinding(registration.Id, registration.Storage, SerializeMap(registration.Map), registration.Event, registration.Property);
+        return ValueTask.CompletedTask;
+    }
+
     public static async Task<string> InvokeEventJsonAsync(int registrationId, string eventJson)
     {
         if (!s_eventRegistrations.TryGetValue(registrationId, out var registration))
@@ -112,6 +146,18 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
     private static string ToJsonString(string value) =>
         "\"" + JsonEncodedText.Encode(value).ToString() + "\"";
 
+    private static string SerializeMap(IReadOnlyDictionary<string, string> map) =>
+        "{" + string.Join(",", map.Select(static item => $"{ToJsonString(item.Key)}:{ToJsonString(item.Value)}")) + "}";
+
+    private static string? ParseStorageItem(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("exists", out var exists) &&
+            exists.ValueKind == JsonValueKind.True
+                ? document.RootElement.GetProperty("value").GetString() ?? string.Empty
+                : null;
+    }
+
     [JSImport("globalThis.pswasmDom.getText")]
     private static partial string GetText(string selector);
 
@@ -126,4 +172,19 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
 
     [JSImport("globalThis.pswasmDom.registerEvent")]
     private static partial void RegisterEvent(int registrationId, string selector, string eventName, bool preventDefault);
+
+    [JSImport("globalThis.pswasmDom.getStorageItem")]
+    private static partial string GetStorageItem(string storage, string key);
+
+    [JSImport("globalThis.pswasmDom.setStorageItem")]
+    private static partial void SetStorageItem(string storage, string key, string value);
+
+    [JSImport("globalThis.pswasmDom.removeStorageItem")]
+    private static partial void RemoveStorageItem(string storage, string key);
+
+    [JSImport("globalThis.pswasmDom.clearStorage")]
+    private static partial void ClearStorage(string storage);
+
+    [JSImport("globalThis.pswasmDom.registerStorageBinding")]
+    private static partial void RegisterStorageBinding(int registrationId, string storage, string mapJson, string eventName, string propertyName);
 }

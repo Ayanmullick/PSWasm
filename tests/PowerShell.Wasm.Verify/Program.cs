@@ -509,6 +509,16 @@ Get-DomText '#status'
 $account,$database = Get-DomValue '#account-name','#database-name'
 $account
 $database
+Set-DomStorageItem -Storage Local -Key tenantId -Value 'tenant-one'
+Get-DomStorageItem -Storage Local -Key tenantId
+Remove-DomStorageItem -Storage Local -Key tenantId
+Set-DomStorageItem -Storage Local -Key tenantId -Value 'stored-tenant'
+$storageBinding = Register-DomStorageBinding -Session $dom -Storage Local -Map @{'#tenant-id'='tenantId'; '#client-id'='clientId'}
+$storageBinding.RegistrationType
+$storageBinding.Storage
+$storageBinding.Event
+$storageBinding.Property
+Get-DomValue '#tenant-id'
 $registration = Register-DomEvent -Session $dom -Selector '#query-form' -Event Submit -PreventDefault -ScriptBlock {
     $AccountName,$DatabaseName = Get-DomValue '#account-name','#database-name'
     Set-DomProperty '#query-button' Disabled $false
@@ -525,18 +535,39 @@ Get-Command *-Dom* | Select-Object -ExpandProperty Name
         "Ready",
         "acct",
         "db",
+        "tenant-one",
+        "DomStorageBinding",
+        "Local",
+        "Input",
+        "Value",
+        "stored-tenant",
         "DomEvent",
         "#query-form",
         "Submit",
         "True",
+        "Clear-DomStorage",
         "Get-DomSession",
+        "Get-DomStorageItem",
         "Get-DomText",
         "Get-DomValue",
         "New-DomSession",
         "Register-DomEvent",
+        "Register-DomStorageBinding",
         "Remove-DomSession",
+        "Remove-DomStorageItem",
         "Set-DomProperty",
+        "Set-DomStorageItem",
         "Set-DomText"
+    ]);
+
+    domHost.Values["#tenant-id"] = "typed-tenant";
+    await domHost.TriggerStorageBindingAsync("#tenant-id", "Input");
+    ExpectLines(await runtime.ExecuteAsync("""
+Get-DomStorageItem -Storage Local -Key tenantId
+Clear-DomStorage -Storage Local
+Get-DomStorageItem -Storage Local -Key tenantId
+"""), [
+        "typed-tenant"
     ]);
 
     await domHost.TriggerAsync("#query-form", "Submit", new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
@@ -1458,6 +1489,8 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
     public Dictionary<string, string> Text { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<(string Selector, string PropertyName), object?> Properties { get; } = [];
+    public Dictionary<string, string> LocalStorage { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> SessionStorage { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public ValueTask<string> GetTextAsync(string selector, CancellationToken cancellationToken) =>
         ValueTask.FromResult(Text.TryGetValue(selector, out var value) ? value : string.Empty);
@@ -1483,6 +1516,45 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<string?> GetStorageItemAsync(string storage, string key, CancellationToken cancellationToken)
+    {
+        var store = GetStorage(storage);
+        return ValueTask.FromResult(store.TryGetValue(key, out var value) ? value : null);
+    }
+
+    public ValueTask SetStorageItemAsync(string storage, string key, string value, CancellationToken cancellationToken)
+    {
+        GetStorage(storage)[key] = value;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask RemoveStorageItemAsync(string storage, string key, CancellationToken cancellationToken)
+    {
+        GetStorage(storage).Remove(key);
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask ClearStorageAsync(string storage, CancellationToken cancellationToken)
+    {
+        GetStorage(storage).Clear();
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask RegisterStorageBindingAsync(PowerShellWasmDomStorageBindingRegistration registration, CancellationToken cancellationToken)
+    {
+        _storageBindings[registration.Id] = registration;
+        var store = GetStorage(registration.Storage);
+        foreach (var item in registration.Map)
+        {
+            if (store.TryGetValue(item.Value, out var value))
+            {
+                Values[item.Key] = value;
+            }
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
     public async ValueTask TriggerAsync(string selector, string eventName, Dictionary<string, object?> eventData)
     {
         var registration = _registrations.Values.Single(item =>
@@ -1494,4 +1566,22 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
         };
         await registration.ScriptBlock.InvokeResultAsync(eventData, variables);
     }
+
+    public ValueTask TriggerStorageBindingAsync(string selector, string eventName)
+    {
+        foreach (var registration in _storageBindings.Values.Where(item =>
+            item.Event.Equals(eventName, StringComparison.OrdinalIgnoreCase) &&
+            item.Map.ContainsKey(selector)))
+        {
+            GetStorage(registration.Storage)[registration.Map[selector]] =
+                Values.TryGetValue(selector, out var value) ? value : string.Empty;
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    private readonly Dictionary<int, PowerShellWasmDomStorageBindingRegistration> _storageBindings = [];
+
+    private Dictionary<string, string> GetStorage(string storage) =>
+        storage.Equals("Session", StringComparison.OrdinalIgnoreCase) ? SessionStorage : LocalStorage;
 }

@@ -2,6 +2,7 @@ import { dotnet } from "./_framework/dotnet.js";
 
 let runtimeExports;
 const domEventRegistrations = new Map();
+const domStorageRegistrations = new Map();
 const azureAuthState = {
   app: undefined,
   configKey: "",
@@ -22,6 +23,49 @@ globalThis.pswasmDom = {
   setProperty: (selector, propertyName, valueJson) => {
     const element = resolveDomElement(selector);
     element[normalizeDomPropertyName(propertyName)] = JSON.parse(valueJson);
+  },
+  getStorageItem: (storage, key) => {
+    const item = resolveDomStorage(storage).getItem(key);
+    return JSON.stringify({ exists: item !== null, value: item ?? "" });
+  },
+  setStorageItem: (storage, key, value) => {
+    resolveDomStorage(storage).setItem(key, value ?? "");
+  },
+  removeStorageItem: (storage, key) => {
+    resolveDomStorage(storage).removeItem(key);
+  },
+  clearStorage: storage => {
+    resolveDomStorage(storage).clear();
+  },
+  registerStorageBinding: (registrationId, storage, mapJson, eventName, propertyName) => {
+    const key = `${registrationId}`;
+    const previous = domStorageRegistrations.get(key);
+    if (previous) {
+      for (const binding of previous.bindings) {
+        binding.element.removeEventListener(binding.eventName, binding.handler);
+      }
+    }
+
+    const storageArea = resolveDomStorage(storage);
+    const normalizedEventName = normalizeDomEventName(eventName || "Input");
+    const normalizedPropertyName = normalizeDomPropertyName(propertyName || "Value");
+    const map = JSON.parse(mapJson);
+    const bindings = [];
+    for (const [selector, storageKey] of Object.entries(map)) {
+      const element = resolveDomElement(selector);
+      const storedValue = storageArea.getItem(storageKey);
+      if (storedValue !== null) {
+        setElementBoundValue(element, normalizedPropertyName, storedValue);
+      }
+
+      const handler = () => {
+        storageArea.setItem(storageKey, getElementBoundValue(element, normalizedPropertyName));
+      };
+      element.addEventListener(normalizedEventName, handler);
+      bindings.push({ element, eventName: normalizedEventName, handler });
+    }
+
+    domStorageRegistrations.set(key, { storage, map, bindings });
   },
   registerEvent: (registrationId, selector, eventName, preventDefault) => {
     const key = `${registrationId}`;
@@ -395,6 +439,45 @@ function getElementValue(element) {
   }
 
   return element.textContent ?? "";
+}
+
+function getElementBoundValue(element, propertyName) {
+  if (propertyName in element) {
+    const value = element[propertyName];
+    return value === undefined || value === null ? "" : String(value);
+  }
+
+  return element.getAttribute(propertyName) ?? "";
+}
+
+function setElementBoundValue(element, propertyName, value) {
+  if (propertyName in element) {
+    if (typeof element[propertyName] === "boolean") {
+      element[propertyName] = value === "true";
+      return;
+    }
+
+    element[propertyName] = value ?? "";
+    return;
+  }
+
+  element.setAttribute(propertyName, value ?? "");
+}
+
+function resolveDomStorage(storage) {
+  if (typeof storage !== "string") {
+    throw new Error("Storage must be Local or Session.");
+  }
+
+  if (storage.toLowerCase() === "local") {
+    return localStorage;
+  }
+
+  if (storage.toLowerCase() === "session") {
+    return sessionStorage;
+  }
+
+  throw new Error("Storage must be Local or Session.");
 }
 
 function normalizeDomPropertyName(propertyName) {
