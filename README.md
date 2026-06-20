@@ -36,6 +36,8 @@ $Token = Get-AzAccessToken -ResourceUrl 'https://management.azure.com/'
 <script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-azure-auth/app.js"></script>
 ```
 
+After the first sign-in, `Get-AzContext` and `Get-AzAccessToken` can recover the cached browser auth context. See [Azure Auth Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/Azure-Auth-Cmdlets).
+
 PowerShell can also live in a same-origin `.ps1` file:
 
 ```html

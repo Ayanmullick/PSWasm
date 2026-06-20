@@ -115,6 +115,7 @@ foreach ($Name in $Flavor) {
         Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Private.Uri*.wasm')) 'dom-web-azure-auth should include System.Private.Uri wasm.'
         $AppJs = Get-Content -LiteralPath ([IO.Path]::Combine($OutputRoot, $Name, 'wwwroot', 'app.js')) -Raw
         Assert-Condition ($AppJs.Contains('pswasmAzureAuth')) 'dom-web-azure-auth should include the browser Azure auth JS bridge.'
+        Assert-Condition ($AppJs.Contains('pswasm.azureAuth')) 'dom-web-azure-auth should include browser auth state recovery.'
         Write-Host 'PASS dom-web-azure-auth package includes web and browser auth bridge assets.'
     }
 

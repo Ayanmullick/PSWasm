@@ -8,6 +8,7 @@ const azureAuthState = {
   redirectPromise: undefined,
   msalLoad: undefined
 };
+const azureAuthStorageKey = "pswasm.azureAuth";
 
 globalThis.pswasmDom = {
   getText: selector => resolveDomElement(selector).textContent ?? "",
@@ -57,7 +58,7 @@ globalThis.pswasmDom = {
 
 globalThis.pswasmAzureAuth = {
   connect: async optionsJson => JSON.stringify(await connectAzureAuth(parseAzureAuthOptions(optionsJson))),
-  getContext: async () => JSON.stringify(getAzureAuthContext()),
+  getContext: async () => JSON.stringify(await getAzureAuthContext()),
   getAccessToken: async optionsJson => JSON.stringify(await getAzureAccessToken(parseAzureAuthOptions(optionsJson))),
   disconnect: async () => JSON.stringify(await disconnectAzureAuth())
 };
@@ -474,18 +475,19 @@ async function connectAzureAuth(options) {
   throw new Error("Redirecting to Microsoft Entra sign-in.");
 }
 
-function getAzureAuthContext() {
-  const app = azureAuthState.app;
+async function getAzureAuthContext() {
+  const app = azureAuthState.app ?? await getStoredAzureMsalApp();
   if (!app) {
     return createEmptyAzureAccountRecord();
   }
 
+  await handleAzureAuthRedirect(app);
   const account = getActiveAzureAccount(app);
   return account ? createAzureAccountRecord(account, app.pswasmClientId ?? "") : createEmptyAzureAccountRecord();
 }
 
 async function getAzureAccessToken(options) {
-  const app = azureAuthState.app;
+  const app = azureAuthState.app ?? await getStoredAzureMsalApp();
   if (!app) {
     throw new Error("Connect-AzAccount must be called before Get-AzAccessToken.");
   }
@@ -519,6 +521,7 @@ async function getAzureAccessToken(options) {
 
 async function disconnectAzureAuth() {
   const app = azureAuthState.app;
+  clearAzureAuthOptions();
   if (!app) {
     return createEmptyAzureAccountRecord();
   }
@@ -541,13 +544,14 @@ async function getAzureMsalApp(options) {
   }
 
   const tenant = normalizeAzureText(options.Tenant ?? options.tenant) || "organizations";
-  const key = `${tenant}|${clientId}|${location.origin}`;
+  const cacheLocation = getAzureAuthCacheLocation(options);
+  const key = `${tenant}|${clientId}|${location.origin}|${cacheLocation}`;
   if (!azureAuthState.app || azureAuthState.configKey !== key) {
     azureAuthState.configKey = key;
     azureAuthState.redirectPromise = undefined;
     azureAuthState.app = new globalThis.msal.PublicClientApplication({
       auth: { clientId, authority: `https://login.microsoftonline.com/${tenant}`, redirectUri: location.origin },
-      cache: { cacheLocation: "sessionStorage" }
+      cache: { cacheLocation }
     });
     azureAuthState.app.pswasmClientId = clientId;
     if (typeof azureAuthState.app.initialize === "function") {
@@ -560,7 +564,13 @@ async function getAzureMsalApp(options) {
     }
   }
 
+  persistAzureAuthOptions({ tenant, clientId, cacheLocation });
   return azureAuthState.app;
+}
+
+async function getStoredAzureMsalApp() {
+  const options = readAzureAuthOptions();
+  return options ? getAzureMsalApp(options) : undefined;
 }
 
 async function handleAzureAuthRedirect(app) {
@@ -636,6 +646,41 @@ function loadScript(source) {
   });
 }
 
+function persistAzureAuthOptions(options) {
+  try {
+    localStorage.setItem(azureAuthStorageKey, JSON.stringify({
+      Tenant: options.tenant,
+      ClientId: options.clientId,
+      CacheLocation: options.cacheLocation
+    }));
+  } catch {
+    // Browser storage can be disabled; the current in-memory runtime still works.
+  }
+}
+
+function readAzureAuthOptions() {
+  try {
+    const json = localStorage.getItem(azureAuthStorageKey);
+    if (!json) {
+      return undefined;
+    }
+
+    const options = JSON.parse(json);
+    return normalizeAzureText(options.ClientId ?? options.clientId) ? options : undefined;
+  } catch {
+    clearAzureAuthOptions();
+    return undefined;
+  }
+}
+
+function clearAzureAuthOptions() {
+  try {
+    localStorage.removeItem(azureAuthStorageKey);
+  } catch {
+    // Ignore storage cleanup failures; sign-out still proceeds for the current MSAL app.
+  }
+}
+
 function getAzureSignInScopes(options) {
   const scopes = normalizeAzureScopes(options.Scopes ?? options.scopes);
   return scopes.length > 0 ? scopes : ["openid", "profile"];
@@ -651,6 +696,11 @@ function normalizeAzureScopes(scopes) {
 
 function normalizeAzureText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function getAzureAuthCacheLocation(options) {
+  const value = normalizeAzureText(options.CacheLocation ?? options.cacheLocation);
+  return value === "sessionStorage" ? "sessionStorage" : "localStorage";
 }
 
 function getActiveAzureAccount(app) {

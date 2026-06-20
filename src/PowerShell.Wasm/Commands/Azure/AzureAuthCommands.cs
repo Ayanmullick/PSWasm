@@ -1,5 +1,16 @@
 namespace PSWasm.Commands;
 
+// Browser-safe subset modeled after Az.Accounts command surfaces:
+// - Connect-AzAccount:
+//   https://github.com/Azure/azure-powershell/blob/main/src/Accounts/Accounts/Account/ConnectAzureRmAccount.cs
+// - Get-AzAccessToken:
+//   https://github.com/Azure/azure-powershell/blob/main/src/Accounts/Accounts/Token/GetAzureRmAccessToken.cs
+// - Get-AzContext:
+//   https://github.com/Azure/azure-powershell/blob/main/src/Accounts/Accounts/Context/GetAzureRMContext.cs
+// - Disconnect-AzAccount:
+//   https://github.com/Azure/azure-powershell/blob/main/src/Accounts/Accounts/Account/DisconnectAzureRmAccount.cs
+// The desktop implementation owns encrypted profile/token persistence through Az.Accounts.
+// PSWasm delegates the equivalent browser-safe account recovery to the browser auth host.
 internal sealed class ConnectAzAccountCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
