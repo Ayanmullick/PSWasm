@@ -837,8 +837,45 @@ public sealed class PowerShellWasmParser
         return parser.Parse();
     }
 
+    private static ExpressionAst ParseParenthesizedExpressionValue(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var normalized = RemoveTopLevelNewLines(tokens);
+        return IsStatementExpressionValue(normalized)
+            ? new StatementExpressionAst(ParseStatement(normalized))
+            : ParseExpression(normalized);
+    }
+
     private static bool IsCommandSegment(IReadOnlyList<PowerShellWasmToken> tokens) =>
         tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Identifier;
+
+    private static bool IsStatementExpressionValue(IReadOnlyList<PowerShellWasmToken> tokens) =>
+        tokens.Count > 0 &&
+        (SplitTopLevelPipelineChain(tokens).Segments.Count > 1 ||
+            SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe).Count > 1 ||
+            IsCommandExpressionSegment(tokens));
+
+    private static bool IsCommandExpressionSegment(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        if (!IsCommandSegment(tokens))
+        {
+            return false;
+        }
+
+        if (tokens.Count == 1)
+        {
+            return tokens[0].Text.Contains('-', StringComparison.Ordinal);
+        }
+
+        var second = tokens[1];
+        if (second.Kind.IsBinaryOperator() || second.Kind == PowerShellWasmTokenKind.Comma)
+        {
+            return false;
+        }
+
+        return second.HasLeadingWhitespace ||
+            second.Kind is not PowerShellWasmTokenKind.Identifier ||
+            !second.Text.StartsWith(".", StringComparison.Ordinal);
+    }
 
     private static bool IsStatementAssignmentValue(IReadOnlyList<PowerShellWasmToken> tokens) =>
         IsCommandSegment(tokens) ||
@@ -1263,8 +1300,23 @@ public sealed class PowerShellWasmParser
 
         private ExpressionAst ParseParenthesized()
         {
-            var expression = ParseAssignment();
+            var start = _position;
+            var depth = 0;
+
+            while (Current.Kind is not PowerShellWasmTokenKind.EndOfInput)
+            {
+                if (Current.Kind == PowerShellWasmTokenKind.RParen && depth == 0)
+                {
+                    break;
+                }
+
+                UpdateDepth(Current, ref depth);
+                _position++;
+            }
+
+            var expressionTokens = tokens.Skip(start).Take(_position - start).ToArray();
             Consume(PowerShellWasmTokenKind.RParen);
+            var expression = ParseParenthesizedExpressionValue(expressionTokens);
             return new ParenthesizedExpressionAst(expression);
         }
 

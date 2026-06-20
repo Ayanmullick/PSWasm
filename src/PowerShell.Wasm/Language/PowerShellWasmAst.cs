@@ -116,6 +116,8 @@ public sealed record ScriptBlockExpressionAst(ScriptAst Body) : ExpressionAst;
 
 public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : ExpressionAst;
 
+public sealed record StatementExpressionAst(StatementAst Statement) : ExpressionAst;
+
 public sealed record TypeLiteralExpressionAst(string TypeName) : ExpressionAst;
 
 public sealed record MemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;

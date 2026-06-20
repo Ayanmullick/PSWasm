@@ -689,6 +689,8 @@ function Forward-Args {
 }
 Forward-Args 'args' 6
 1 | Write-Output
+if ((Write-Output 'x') -eq 'x') { 'parenthesized command ok' }
+if (('pipe' | Write-Output) -eq 'pipe') { 'parenthesized pipeline ok' }
 """);
 
     ExpectLines(result, [
@@ -701,7 +703,9 @@ Forward-Args 'args' 6
         "array=4",
         "bound=5",
         "args=6",
-        "1"
+        "1",
+        "parenthesized command ok",
+        "parenthesized pipeline ok"
     ]);
 }
 
