@@ -24,6 +24,18 @@ Use a hosted trimmed flavor when the page only needs a specific browser-safe fea
 <script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-crypto/app.js"></script>
 ```
 
+Use the Azure-auth flavor when a static page needs browser-safe user-delegated Entra tokens:
+
+```html
+<script type="pwsh">
+$TenantId,$ClientId = '<tenant-id>','<spa-client-id>'
+Connect-AzAccount -Tenant $TenantId -ClientId $ClientId
+$Token = Get-AzAccessToken -ResourceUrl 'https://management.azure.com/'
+</script>
+
+<script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-azure-auth/app.js"></script>
+```
+
 PowerShell can also live in a same-origin `.ps1` file:
 
 ```html
@@ -41,6 +53,7 @@ The detailed documentation lives in the GitHub Wiki:
 * [Language Support](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support)
 * [Browser Commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands)
 * [DOM Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlets)
+* [Azure Auth Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/Azure-Auth-Cmdlets)
 * [Browser Usage](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Usage)
 * [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization)
 * [Build and Validation](https://github.com/Ayanmullick/PSWasm/wiki/Build-and-Validation)
@@ -53,11 +66,11 @@ The default/full PSWasm browser host currently includes:
 * browser-safe parser, AST profile, executor, session state, command dispatch, and object pipeline support
 * variables, parallel assignment, arrays, hashtables, splatting, expandable strings, script blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
 * common PowerShell-style operators, including arithmetic, comparisons, wildcard/regex operators, `-replace`, `-split`, `-join`, `-f`, `&&`, `||`, `$i++`, `$i--`, and `??`
-* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/object pipeline commands, `Invoke-WebRequest`, and DOM session/interaction commands
+* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/object pipeline commands, `Invoke-WebRequest`, DOM session/interaction commands, and user-delegated browser Azure auth commands
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods
 * a browser host that auto-runs `<script type="pwsh">` blocks and exposes JavaScript helpers for custom hosts
 
-Trimmed browser flavors can omit optional DOM, web request, or crypto/text helper groups. See [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization).
+Trimmed browser flavors can omit optional DOM, web request, crypto/text helper, or Azure auth groups. See [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization).
 
 PSWasm intentionally does not expose the full desktop/server PowerShell host. Providers, native process execution, profiles, remoting, jobs, unrestricted filesystem access, module autoloading, and arbitrary .NET reflection are outside the browser-safe scope.
 
@@ -90,10 +103,11 @@ publish/wwwroot
 Publish clean browser flavors for payload comparison:
 
 ```powershell
-.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom,crypto,web,dom-web-crypto
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom,crypto,web,dom-web-crypto,dom-web-azure-auth
 ```
 
 Use `dom-web-crypto` for static pages that need DOM event binding, `Invoke-WebRequest`, and browser-safe HMAC/Base64/URI helper coverage.
+Use `dom-web-azure-auth` for static pages that need DOM event binding, `Invoke-WebRequest`, and user-delegated Entra access tokens.
 Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `artifacts/BrowserFlavors/<flavor>/wwwroot` into your static app.
 
 Publish host-ready flavor folders for static hosting:

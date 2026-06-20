@@ -8,6 +8,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PowerShell.Wasm\PowerShell.Wasm.csproj"
-      AdditionalProperties="PSWasmEnableDom=false;PSWasmEnableWeb=false;PSWasmEnableCrypto=false" />
+      AdditionalProperties="PSWasmEnableDom=false;PSWasmEnableWeb=false;PSWasmEnableCrypto=false;PSWasmEnableAzureAuth=false" />
   </ItemGroup>
 </Project>

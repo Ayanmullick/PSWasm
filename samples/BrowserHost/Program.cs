@@ -77,11 +77,15 @@ public static partial class Interop
     [SupportedOSPlatform("browser")]
     private static PowerShellWasmRuntime CreateRuntime(IDictionary<string, string> environment)
     {
+        IPowerShellWasmDomHost? domHost = null;
+        IPowerShellWasmAzureAuthHost? azureAuthHost = null;
 #if PSWASM_DOM
-        return new PowerShellWasmRuntime(environment, domHost: new BrowserDomHost());
-#else
-        return new PowerShellWasmRuntime(environment);
+        domHost = new BrowserDomHost();
 #endif
+#if PSWASM_AZURE_AUTH
+        azureAuthHost = new BrowserAzureAuthHost();
+#endif
+        return new PowerShellWasmRuntime(environment, domHost: domHost, azureAuthHost: azureAuthHost);
     }
 
     private static PowerShellWasmRuntime GetSession(string sessionId)

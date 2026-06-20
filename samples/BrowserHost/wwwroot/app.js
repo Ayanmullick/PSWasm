@@ -2,6 +2,12 @@ import { dotnet } from "./_framework/dotnet.js";
 
 let runtimeExports;
 const domEventRegistrations = new Map();
+const azureAuthState = {
+  app: undefined,
+  configKey: "",
+  redirectPromise: undefined,
+  msalLoad: undefined
+};
 
 globalThis.pswasmDom = {
   getText: selector => resolveDomElement(selector).textContent ?? "",
@@ -47,6 +53,13 @@ globalThis.pswasmDom = {
     element.addEventListener(normalizedEventName, handler);
     domEventRegistrations.set(key, { element, eventName: normalizedEventName, handler });
   }
+};
+
+globalThis.pswasmAzureAuth = {
+  connect: async optionsJson => JSON.stringify(await connectAzureAuth(parseAzureAuthOptions(optionsJson))),
+  getContext: async () => JSON.stringify(getAzureAuthContext()),
+  getAccessToken: async optionsJson => JSON.stringify(await getAzureAccessToken(parseAzureAuthOptions(optionsJson))),
+  disconnect: async () => JSON.stringify(await disconnectAzureAuth())
 };
 
 /**
@@ -435,6 +448,251 @@ function collectNamedValues(root) {
   }
 
   return values;
+}
+
+function parseAzureAuthOptions(optionsJson) {
+  if (!optionsJson || optionsJson.trim() === "") {
+    return {};
+  }
+
+  return JSON.parse(optionsJson);
+}
+
+async function connectAzureAuth(options) {
+  const app = await getAzureMsalApp(options);
+  const redirectResult = await handleAzureAuthRedirect(app);
+  const account = redirectResult?.account || getActiveAzureAccount(app);
+  if (account) {
+    app.setActiveAccount(account);
+    return createAzureAccountRecord(account, options.ClientId ?? options.clientId ?? "");
+  }
+
+  await app.loginRedirect({
+    scopes: getAzureSignInScopes(options),
+    redirectStartPage: location.href
+  });
+  throw new Error("Redirecting to Microsoft Entra sign-in.");
+}
+
+function getAzureAuthContext() {
+  const app = azureAuthState.app;
+  if (!app) {
+    return createEmptyAzureAccountRecord();
+  }
+
+  const account = getActiveAzureAccount(app);
+  return account ? createAzureAccountRecord(account, app.pswasmClientId ?? "") : createEmptyAzureAccountRecord();
+}
+
+async function getAzureAccessToken(options) {
+  const app = azureAuthState.app;
+  if (!app) {
+    throw new Error("Connect-AzAccount must be called before Get-AzAccessToken.");
+  }
+
+  await handleAzureAuthRedirect(app);
+  const scopes = normalizeAzureScopes(options.Scopes ?? options.scopes);
+  if (scopes.length === 0) {
+    throw new Error("Get-AzAccessToken requires a ResourceUrl or Scope.");
+  }
+
+  let account = getActiveAzureAccount(app);
+  if (!account) {
+    await app.loginRedirect({ scopes, redirectStartPage: location.href });
+    throw new Error("Redirecting to Microsoft Entra sign-in.");
+  }
+
+  try {
+    const result = await app.acquireTokenSilent({ account, scopes });
+    account = result.account || account;
+    app.setActiveAccount(account);
+    return createAzureAccessTokenRecord(result, account);
+  } catch (error) {
+    if (!isAzureInteractionRequired(error)) {
+      throw error;
+    }
+
+    await app.acquireTokenRedirect({ account, scopes, redirectStartPage: location.href });
+    throw new Error("Redirecting to acquire a user access token.");
+  }
+}
+
+async function disconnectAzureAuth() {
+  const app = azureAuthState.app;
+  if (!app) {
+    return createEmptyAzureAccountRecord();
+  }
+
+  const account = getActiveAzureAccount(app);
+  if (!account) {
+    return createEmptyAzureAccountRecord();
+  }
+
+  await app.logoutRedirect({ account, postLogoutRedirectUri: location.origin });
+  throw new Error("Redirecting to Microsoft Entra sign-out.");
+}
+
+async function getAzureMsalApp(options) {
+  await loadAzureMsal();
+
+  const clientId = normalizeAzureText(options.ClientId ?? options.clientId);
+  if (!clientId) {
+    throw new Error("Connect-AzAccount requires -ClientId for browser public-client authentication.");
+  }
+
+  const tenant = normalizeAzureText(options.Tenant ?? options.tenant) || "organizations";
+  const key = `${tenant}|${clientId}|${location.origin}`;
+  if (!azureAuthState.app || azureAuthState.configKey !== key) {
+    azureAuthState.configKey = key;
+    azureAuthState.redirectPromise = undefined;
+    azureAuthState.app = new globalThis.msal.PublicClientApplication({
+      auth: { clientId, authority: `https://login.microsoftonline.com/${tenant}`, redirectUri: location.origin },
+      cache: { cacheLocation: "sessionStorage" }
+    });
+    azureAuthState.app.pswasmClientId = clientId;
+    if (typeof azureAuthState.app.initialize === "function") {
+      await azureAuthState.app.initialize();
+    }
+
+    const account = azureAuthState.app.getAllAccounts()[0];
+    if (account) {
+      azureAuthState.app.setActiveAccount(account);
+    }
+  }
+
+  return azureAuthState.app;
+}
+
+async function handleAzureAuthRedirect(app) {
+  if (!azureAuthState.redirectPromise) {
+    azureAuthState.redirectPromise = app.handleRedirectPromise().then(result => {
+      if (result?.account) {
+        app.setActiveAccount(result.account);
+      }
+
+      return result;
+    });
+  }
+
+  return azureAuthState.redirectPromise;
+}
+
+async function loadAzureMsal() {
+  if (globalThis.msal) {
+    return;
+  }
+
+  if (azureAuthState.msalLoad) {
+    return azureAuthState.msalLoad;
+  }
+
+  const sources = [
+    "https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js",
+    "https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js",
+    "https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"
+  ];
+
+  azureAuthState.msalLoad = (async () => {
+    const failures = [];
+    for (const source of sources) {
+      try {
+        await loadScript(source);
+        if (globalThis.msal) {
+          return;
+        }
+
+        failures.push(`${source}: loaded but window.msal was not created`);
+      } catch (error) {
+        failures.push(`${source}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    throw new Error(`MSAL.js did not load.\n${failures.join("\n")}`);
+  })();
+
+  return azureAuthState.msalLoad;
+}
+
+function loadScript(source) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    const timer = setTimeout(() => {
+      script.remove();
+      reject(new Error("timed out"));
+    }, 10000);
+
+    script.src = source;
+    script.async = true;
+    script.onload = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    script.onerror = () => {
+      clearTimeout(timer);
+      script.remove();
+      reject(new Error("failed to load"));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+function getAzureSignInScopes(options) {
+  const scopes = normalizeAzureScopes(options.Scopes ?? options.scopes);
+  return scopes.length > 0 ? scopes : ["openid", "profile"];
+}
+
+function normalizeAzureScopes(scopes) {
+  if (!Array.isArray(scopes)) {
+    return [];
+  }
+
+  return scopes.map(scope => normalizeAzureText(scope)).filter(Boolean);
+}
+
+function normalizeAzureText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getActiveAzureAccount(app) {
+  return app.getActiveAccount() || app.getAllAccounts()[0];
+}
+
+function isAzureInteractionRequired(error) {
+  return error instanceof globalThis.msal.InteractionRequiredAuthError ||
+    ["interaction_required", "login_required", "consent_required"].includes(error?.errorCode);
+}
+
+function createAzureAccountRecord(account, clientId) {
+  return {
+    Authenticated: true,
+    UserName: account.username ?? "",
+    Name: account.name ?? "",
+    TenantId: account.tenantId ?? account.idTokenClaims?.tid ?? "",
+    UserId: account.localAccountId ?? account.homeAccountId ?? "",
+    ClientId: clientId
+  };
+}
+
+function createEmptyAzureAccountRecord() {
+  return {
+    Authenticated: false,
+    UserName: "",
+    Name: "",
+    TenantId: "",
+    UserId: "",
+    ClientId: ""
+  };
+}
+
+function createAzureAccessTokenRecord(result, account) {
+  return {
+    AccessToken: result.accessToken ?? "",
+    ExpiresOn: result.expiresOn instanceof Date ? result.expiresOn.toISOString() : "",
+    TenantId: result.tenantId ?? account.tenantId ?? account.idTokenClaims?.tid ?? "",
+    UserId: account.localAccountId ?? account.homeAccountId ?? "",
+    Account: account.username ?? account.name ?? "",
+    TokenType: result.tokenType ?? "Bearer"
+  };
 }
 
 if (!globalThis.pswasmDisableAutoRun) {

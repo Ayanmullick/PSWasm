@@ -4,6 +4,8 @@ var runtime = new PowerShellWasmRuntime();
 
 await ExpectLinesAsync(runtime, """
 Get-Command Invoke-WebRequest
+Get-Command Connect-AzAccount
+Get-Command Get-AzAccessToken
 Get-Command New-DomSession
 Get-Command Register-DomEvent
 'optional commands excluded'
@@ -15,6 +17,16 @@ await ExpectRuntimeErrorAsync(
     runtime,
     "Invoke-WebRequest -Uri 'https://example.test/'",
     "Command 'Invoke-WebRequest' is not registered in this browser runtime.");
+
+await ExpectRuntimeErrorAsync(
+    runtime,
+    "Connect-AzAccount -ClientId 'client'",
+    "Command 'Connect-AzAccount' is not registered in this browser runtime.");
+
+await ExpectRuntimeErrorAsync(
+    runtime,
+    "Get-AzAccessToken -ResourceUrl 'https://cosmos.azure.com/'",
+    "Command 'Get-AzAccessToken' is not registered in this browser runtime.");
 
 await ExpectRuntimeErrorAsync(
     runtime,
@@ -34,7 +46,7 @@ await ExpectLinesAsync(runtime, """
     "padded"
 ]);
 
-Console.WriteLine("PASS core flavor excludes optional DOM, web, and crypto bridge features");
+Console.WriteLine("PASS core flavor excludes optional DOM, web, crypto bridge, and Azure auth features");
 
 static async ValueTask ExpectLinesAsync(PowerShellWasmRuntime runtime, string script, string[] expected)
 {

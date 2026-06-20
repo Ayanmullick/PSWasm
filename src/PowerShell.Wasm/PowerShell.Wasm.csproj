@@ -9,10 +9,16 @@
     <PSWasmEnableDom Condition="'$(PSWasmEnableDom)' == ''">true</PSWasmEnableDom>
     <PSWasmEnableCrypto Condition="'$(PSWasmEnableCrypto)' == ''">true</PSWasmEnableCrypto>
     <PSWasmEnableWeb Condition="'$(PSWasmEnableWeb)' == ''">true</PSWasmEnableWeb>
+    <PSWasmEnableAzureAuth Condition="'$(PSWasmEnableAzureAuth)' == ''">true</PSWasmEnableAzureAuth>
     <DefineConstants Condition="'$(PSWasmEnableDom)' == 'true'">$(DefineConstants);PSWASM_DOM</DefineConstants>
     <DefineConstants Condition="'$(PSWasmEnableCrypto)' == 'true'">$(DefineConstants);PSWASM_CRYPTO</DefineConstants>
     <DefineConstants Condition="'$(PSWasmEnableWeb)' == 'true'">$(DefineConstants);PSWASM_WEB</DefineConstants>
+    <DefineConstants Condition="'$(PSWasmEnableAzureAuth)' == 'true'">$(DefineConstants);PSWASM_AZURE_AUTH</DefineConstants>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(PSWasmEnableAzureAuth)' != 'true'">
+    <Compile Remove="Commands\Azure\**\*.cs" />
+  </ItemGroup>
 
   <ItemGroup Condition="'$(PSWasmEnableDom)' != 'true'">
     <Compile Remove="Commands\Dom\**\*.cs" />

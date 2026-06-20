@@ -64,7 +64,7 @@ jobs:
         shell: pwsh
         run: |
           $Params = @{
-            Flavor = @('core','dom','crypto','web','dom-crypto','dom-web','web-crypto','dom-web-crypto','full')
+            Flavor = @('core','dom','crypto','web','azure-auth','dom-crypto','dom-web','web-crypto','web-azure-auth','dom-web-crypto','dom-web-azure-auth','dom-web-crypto-azure-auth','full')
             OutputRoot = 'artifacts/BrowserFlavors'
             HostedRoot = 'publish/wwwroot'
             NoRestore = $true

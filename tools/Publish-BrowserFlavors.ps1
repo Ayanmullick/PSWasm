@@ -1,6 +1,6 @@
 param(
-    [ValidateSet('core','dom','crypto','web','dom-crypto','dom-web','web-crypto','dom-web-crypto','full')]
-    [string[]]$Flavor = @('core','dom','crypto','web','dom-web-crypto','full'),
+    [ValidateSet('core','dom','crypto','web','azure-auth','dom-crypto','dom-web','web-crypto','web-azure-auth','dom-web-crypto','dom-web-azure-auth','dom-web-crypto-azure-auth','full')]
+    [string[]]$Flavor = @('core','dom','crypto','web','dom-web-crypto','dom-web-azure-auth','full'),
 
     [string]$OutputRoot = '.\artifacts\BrowserFlavors',
 
@@ -65,16 +65,20 @@ $Project = [IO.Path]::Combine($RepoRoot, 'samples', 'BrowserHost', 'PSWasm.Brows
 $Measure = [IO.Path]::Combine($PSScriptRoot, 'Measure-BrowserPayload.ps1')
 
 foreach ($Name in $Flavor) {
-    $Dom,$Crypto,$Web = switch ($Name) {
-        'core'           { 'false','false','false'; break }
-        'dom'            { 'true','false','false'; break }
-        'crypto'         { 'false','true','false'; break }
-        'web'            { 'false','false','true'; break }
-        'dom-crypto'     { 'true','true','false'; break }
-        'dom-web'        { 'true','false','true'; break }
-        'web-crypto'     { 'false','true','true'; break }
-        'dom-web-crypto' { 'true','true','true'; break }
-        'full'           { 'true','true','true'; break }
+    $Dom,$Crypto,$Web,$AzureAuth = switch ($Name) {
+        'core'                      { 'false','false','false','false'; break }
+        'dom'                       { 'true','false','false','false'; break }
+        'crypto'                    { 'false','true','false','false'; break }
+        'web'                       { 'false','false','true','false'; break }
+        'azure-auth'                { 'false','false','false','true'; break }
+        'dom-crypto'                { 'true','true','false','false'; break }
+        'dom-web'                   { 'true','false','true','false'; break }
+        'web-crypto'                { 'false','true','true','false'; break }
+        'web-azure-auth'            { 'false','false','true','true'; break }
+        'dom-web-crypto'            { 'true','true','true','false'; break }
+        'dom-web-azure-auth'        { 'true','false','true','true'; break }
+        'dom-web-crypto-azure-auth' { 'true','true','true','true'; break }
+        'full'                      { 'true','true','true','true'; break }
     }
 
     $Out = Join-Path $OutputRoot $Name
@@ -83,12 +87,12 @@ foreach ($Name in $Flavor) {
     }
 
     $Args = @('publish', $Project, '-c', 'Release', '-r', 'browser-wasm', '-o', $Out,
-        '/p:UseAppHost=false', "/p:PSWasmEnableDom=$Dom", "/p:PSWasmEnableCrypto=$Crypto", "/p:PSWasmEnableWeb=$Web")
+        '/p:UseAppHost=false', "/p:PSWasmEnableDom=$Dom", "/p:PSWasmEnableCrypto=$Crypto", "/p:PSWasmEnableWeb=$Web", "/p:PSWasmEnableAzureAuth=$AzureAuth")
     if ($NoRestore) {
         $Args += '--no-restore'
     }
 
-    Write-Host "Publishing PSWasm browser flavor '$Name' (DOM=$Dom, Web=$Web, Crypto=$Crypto)."
+    Write-Host "Publishing PSWasm browser flavor '$Name' (DOM=$Dom, Web=$Web, Crypto=$Crypto, AzureAuth=$AzureAuth)."
     & dotnet @Args
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE

@@ -15,6 +15,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("command discovery", VerifyCommandDiscoveryAsync),
     ("stream records", VerifyStreamRecordsAsync),
     ("invoke web request", VerifyInvokeWebRequestAsync),
+    ("azure auth commands", VerifyAzureAuthCommandsAsync),
     ("pipeline chain operators", VerifyPipelineChainOperatorsAsync),
     ("dom session commands", VerifyDomSessionCommandsAsync),
     ("dom interaction commands", VerifyDomInteractionCommandsAsync),
@@ -211,6 +212,59 @@ try {
         "404",
         "Invoke-WebRequest failed with HTTP 404 Not Found."
     ]);
+}
+
+static async ValueTask VerifyAzureAuthCommandsAsync()
+{
+    var authHost = new FakeAzureAuthHost();
+    var runtime = new PowerShellWasmRuntime(azureAuthHost: authHost);
+    var result = await runtime.ExecuteAsync("""
+$Context = Connect-AzAccount -ClientId 'client-123' -Tenant 'tenant-abc'
+$Context.AuthType
+$Context.ContextType
+$Context.Account
+$Context.TenantId
+$Context.ClientId
+$Token = Get-AzAccessToken -ResourceUrl 'https://cosmos.azure.com/'
+$Token.Token
+$Token.ResourceUrl
+$Token.Scopes[0]
+$Token.AuthType
+$ScopedToken = Get-AzAccessToken -Scope 'https://storage.azure.com/user_impersonation'
+$ScopedToken.Scopes[0]
+$ScopedToken.ResourceUrl -eq ''
+$Current = Get-AzContext
+$Current.Authenticated
+Disconnect-AzAccount
+$AfterDisconnect = Get-AzContext
+$AfterDisconnect.Authenticated
+""");
+
+    ExpectLines(result, [
+        "User",
+        "Browser",
+        "ada@example.test",
+        "tenant-abc",
+        "client-123",
+        "token:https://cosmos.azure.com/user_impersonation",
+        "https://cosmos.azure.com/",
+        "https://cosmos.azure.com/user_impersonation",
+        "User",
+        "https://storage.azure.com/user_impersonation",
+        "True",
+        "True",
+        "False"
+    ]);
+
+    try
+    {
+        await runtime.ExecuteAsync("Connect-AzAccount -Identity -ClientId 'client-123'");
+        Fail("Expected Connect-AzAccount -Identity to fail in the browser-safe runtime.");
+    }
+    catch (InvalidOperationException error) when (
+        error.Message.Equals("Identity is not supported by browser-safe Azure authentication.", StringComparison.Ordinal))
+    {
+    }
 }
 
 static async ValueTask VerifyArrayBasicsAsync()
@@ -1337,6 +1391,64 @@ sealed class FakeHttpMessageHandler(Func<HttpRequestMessage, CancellationToken, 
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
         handler(request, cancellationToken);
+}
+
+sealed class FakeAzureAuthHost : IPowerShellWasmAzureAuthHost
+{
+    private Dictionary<string, object?> _context = CreateContext(authenticated: false, tenant: string.Empty, clientId: string.Empty);
+
+    public ValueTask<IReadOnlyDictionary<string, object?>> ConnectAsync(
+        PowerShellWasmAzureAuthConnectRequest request,
+        CancellationToken cancellationToken)
+    {
+        _context = CreateContext(authenticated: true, request.Tenant, request.ClientId);
+        return ValueTask.FromResult<IReadOnlyDictionary<string, object?>>(_context);
+    }
+
+    public ValueTask<IReadOnlyDictionary<string, object?>> GetContextAsync(CancellationToken cancellationToken) =>
+        ValueTask.FromResult<IReadOnlyDictionary<string, object?>>(_context);
+
+    public ValueTask<IReadOnlyDictionary<string, object?>> GetAccessTokenAsync(
+        PowerShellWasmAzureAuthTokenRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scopes = request.Scopes.ToArray();
+        IReadOnlyDictionary<string, object?> token = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Token"] = "token:" + string.Join(",", scopes),
+            ["ExpiresOn"] = "2030-01-01T00:00:00Z",
+            ["TenantId"] = _context["TenantId"],
+            ["UserId"] = _context["UserId"],
+            ["Account"] = _context["Account"],
+            ["ResourceUrl"] = request.ResourceUrl,
+            ["Scopes"] = scopes,
+            ["TokenType"] = "Bearer",
+            ["AuthType"] = "User",
+            ["ContextType"] = "Browser"
+        };
+
+        return ValueTask.FromResult(token);
+    }
+
+    public ValueTask DisconnectAsync(CancellationToken cancellationToken)
+    {
+        _context = CreateContext(authenticated: false, tenant: string.Empty, clientId: string.Empty);
+        return ValueTask.CompletedTask;
+    }
+
+    private static Dictionary<string, object?> CreateContext(bool authenticated, string tenant, string clientId) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Account"] = authenticated ? "ada@example.test" : string.Empty,
+            ["UserName"] = authenticated ? "ada@example.test" : string.Empty,
+            ["Name"] = authenticated ? "Ada Example" : string.Empty,
+            ["TenantId"] = tenant,
+            ["UserId"] = authenticated ? "user-123" : string.Empty,
+            ["ClientId"] = clientId,
+            ["Authenticated"] = authenticated,
+            ["AuthType"] = "User",
+            ["ContextType"] = "Browser"
+        };
 }
 
 sealed class FakeDomHost : IPowerShellWasmDomHost

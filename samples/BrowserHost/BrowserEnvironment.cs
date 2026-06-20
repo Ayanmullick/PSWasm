@@ -22,4 +22,28 @@ internal static class BrowserEnvironment
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(BrowserPowerShellResult))]
 [JsonSerializable(typeof(PSWasm.PowerShellWasmOutputRecord))]
+[JsonSerializable(typeof(BrowserAzureAuthConnectOptions))]
+[JsonSerializable(typeof(BrowserAzureAuthTokenOptions))]
+[JsonSerializable(typeof(BrowserAzureAuthAccount))]
+[JsonSerializable(typeof(BrowserAzureAuthAccessToken))]
 internal sealed partial class BrowserHostJsonContext : JsonSerializerContext;
+
+internal sealed record BrowserAzureAuthConnectOptions(string Tenant, string ClientId, string[] Scopes);
+
+internal sealed record BrowserAzureAuthTokenOptions(string ResourceUrl, string[] Scopes);
+
+internal sealed record BrowserAzureAuthAccount(
+    bool Authenticated,
+    string UserName,
+    string Name,
+    string TenantId,
+    string UserId,
+    string ClientId);
+
+internal sealed record BrowserAzureAuthAccessToken(
+    string AccessToken,
+    string ExpiresOn,
+    string TenantId,
+    string UserId,
+    string Account,
+    string TokenType);

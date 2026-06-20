@@ -12,16 +12,22 @@
     <PSWasmEnableDom Condition="'$(PSWasmEnableDom)' == ''">true</PSWasmEnableDom>
     <PSWasmEnableCrypto Condition="'$(PSWasmEnableCrypto)' == ''">true</PSWasmEnableCrypto>
     <PSWasmEnableWeb Condition="'$(PSWasmEnableWeb)' == ''">true</PSWasmEnableWeb>
+    <PSWasmEnableAzureAuth Condition="'$(PSWasmEnableAzureAuth)' == ''">true</PSWasmEnableAzureAuth>
     <DefineConstants Condition="'$(PSWasmEnableDom)' == 'true'">$(DefineConstants);PSWASM_DOM</DefineConstants>
+    <DefineConstants Condition="'$(PSWasmEnableAzureAuth)' == 'true'">$(DefineConstants);PSWASM_AZURE_AUTH</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PowerShell.Wasm\PowerShell.Wasm.csproj"
-      AdditionalProperties="PSWasmEnableDom=$(PSWasmEnableDom);PSWasmEnableCrypto=$(PSWasmEnableCrypto);PSWasmEnableWeb=$(PSWasmEnableWeb)" />
+      AdditionalProperties="PSWasmEnableDom=$(PSWasmEnableDom);PSWasmEnableCrypto=$(PSWasmEnableCrypto);PSWasmEnableWeb=$(PSWasmEnableWeb);PSWasmEnableAzureAuth=$(PSWasmEnableAzureAuth)" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(PSWasmEnableDom)' != 'true'">
     <Compile Remove="BrowserDomHost.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PSWasmEnableAzureAuth)' != 'true'">
+    <Compile Remove="BrowserAzureAuthHost.cs" />
   </ItemGroup>
 
   <ItemGroup>

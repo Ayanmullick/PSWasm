@@ -17,7 +17,8 @@ public sealed class PowerShellWasmRuntime
 #if PSWASM_WEB
         HttpMessageHandler? httpMessageHandler = null,
 #endif
-        IPowerShellWasmDomHost? domHost = null)
+        IPowerShellWasmDomHost? domHost = null,
+        IPowerShellWasmAzureAuthHost? azureAuthHost = null)
     {
         _executionContext = new PowerShellWasmExecutionContext(environment, domHost);
 #if PSWASM_WEB
@@ -26,9 +27,15 @@ public sealed class PowerShellWasmRuntime
 
         RegisterCommand("Clear-Variable", new ClearVariableCommand());
         RegisterCommand("clv", new ClearVariableCommand());
+#if PSWASM_AZURE_AUTH
+        RegisterCommand("Connect-AzAccount", new ConnectAzAccountCommand(azureAuthHost));
+#endif
         RegisterCommand("ConvertFrom-Csv", new ConvertFromCsvCommand());
         RegisterCommand("ConvertFrom-Json", new ConvertFromJsonCommand());
         RegisterCommand("ConvertTo-Json", new ConvertToJsonCommand());
+#if PSWASM_AZURE_AUTH
+        RegisterCommand("Disconnect-AzAccount", new DisconnectAzAccountCommand(azureAuthHost));
+#endif
         RegisterCommand("Format-List", new FormatListCommand());
         RegisterCommand("Format-Table", new FormatTableCommand());
         RegisterCommand("fl", new FormatListCommand());
@@ -44,6 +51,10 @@ public sealed class PowerShellWasmRuntime
             _commands.Keys.Concat(_executionContext.GetFunctionNames()).Distinct(StringComparer.OrdinalIgnoreCase)));
         RegisterCommand("Get-Culture", new GetCultureCommand());
         RegisterCommand("Get-Date", new GetDateCommand());
+#if PSWASM_AZURE_AUTH
+        RegisterCommand("Get-AzAccessToken", new GetAzAccessTokenCommand(azureAuthHost));
+        RegisterCommand("Get-AzContext", new GetAzContextCommand(azureAuthHost));
+#endif
         RegisterCommand("Get-Time", new GetDateCommand(timeOnly: true));
         RegisterCommand("Get-TimeZone", new GetTimeZoneCommand());
         RegisterCommand("Get-UICulture", new GetCultureCommand(uiCulture: true));

@@ -1,6 +1,6 @@
 param(
-    [ValidateSet('core','dom','crypto','web','dom-crypto','dom-web','web-crypto','dom-web-crypto','full')]
-    [string[]]$Flavor = @('core','dom-web-crypto'),
+    [ValidateSet('core','dom','crypto','web','azure-auth','dom-crypto','dom-web','web-crypto','web-azure-auth','dom-web-crypto','dom-web-azure-auth','dom-web-crypto-azure-auth','full')]
+    [string[]]$Flavor = @('core','dom-web-crypto','dom-web-azure-auth'),
 
     [string]$OutputRoot = '.\artifacts\BrowserFlavorSmoke',
 
@@ -108,6 +108,14 @@ foreach ($Name in $Flavor) {
         Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Private.Uri*.wasm')) 'dom-web-crypto should include System.Private.Uri wasm.'
         Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Security.Cryptography*.wasm')) 'dom-web-crypto should include System.Security.Cryptography wasm.'
         Write-Host 'PASS dom-web-crypto package includes web and crypto framework assets.'
+    }
+
+    if ($Name -eq 'dom-web-azure-auth') {
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Net.Http*.wasm')) 'dom-web-azure-auth should include System.Net.Http wasm.'
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Private.Uri*.wasm')) 'dom-web-azure-auth should include System.Private.Uri wasm.'
+        $AppJs = Get-Content -LiteralPath ([IO.Path]::Combine($OutputRoot, $Name, 'wwwroot', 'app.js')) -Raw
+        Assert-Condition ($AppJs.Contains('pswasmAzureAuth')) 'dom-web-azure-auth should include the browser Azure auth JS bridge.'
+        Write-Host 'PASS dom-web-azure-auth package includes web and browser auth bridge assets.'
     }
 
     Assert-HostedFlavor -Root $HostedRoot -FlavorName $Name
