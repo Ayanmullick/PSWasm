@@ -324,6 +324,13 @@ $shadow = @{Count='shadow'; Name='ok'}
 $shadow.Count
 $shadow['Count']
 $shadow.Keys.Count
+$Map = @{
+    '#tenant-id' = 'cosmosTenant'
+    '#client-id' = 'cosmosClientId'
+}
+$Map['#tenant-id']
+$Map['#client-id']
+$Map
 """);
 
     ExpectLines(result, [
@@ -341,7 +348,13 @@ $shadow.Keys.Count
         "value",
         "shadow",
         "shadow",
-        "2"
+        "2",
+        "cosmosTenant",
+        "cosmosClientId",
+        "Name        Value",
+        "----        -----",
+        "#tenant-id  cosmosTenant",
+        "#client-id  cosmosClientId"
     ]);
 }
 
@@ -691,6 +704,8 @@ Forward-Args 'args' 6
 1 | Write-Output
 if ((Write-Output 'x') -eq 'x') { 'parenthesized command ok' }
 if (('pipe' | Write-Output) -eq 'pipe') { 'parenthesized pipeline ok' }
+$Value = (Write-Output ' abc ').Trim()
+$Value
 """);
 
     ExpectLines(result, [
@@ -705,7 +720,8 @@ if (('pipe' | Write-Output) -eq 'pipe') { 'parenthesized pipeline ok' }
         "args=6",
         "1",
         "parenthesized command ok",
-        "parenthesized pipeline ok"
+        "parenthesized pipeline ok",
+        "abc"
     ]);
 }
 

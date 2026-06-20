@@ -689,11 +689,11 @@ internal sealed class PowerShellWasmAstExecutor(
         return value;
     }
 
-    private async ValueTask<Dictionary<string, object?>> EvaluateHashtableAsync(
+    private async ValueTask<PowerShellWasmHashtable> EvaluateHashtableAsync(
         HashtableExpressionAst hashtable,
         CancellationToken cancellationToken)
     {
-        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        var result = new PowerShellWasmHashtable();
         foreach (var entry in hashtable.Entries)
         {
             result[entry.Key] = await EvaluateExpressionAsync(entry.Value, cancellationToken);

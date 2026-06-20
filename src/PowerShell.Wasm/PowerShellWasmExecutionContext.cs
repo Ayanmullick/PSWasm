@@ -466,10 +466,34 @@ public sealed class PowerShellWasmExecutionContext
         {
             null => string.Empty,
             PowerShellWasmStreamRecord stream => FormatOutput(stream.Value),
+            PowerShellWasmHashtable hashtable => FormatHashtable(hashtable),
             Dictionary<string, object?> hashtable => "@{" + string.Join("; ", hashtable.Select(static item => $"{item.Key}={FormatOutput(item.Value)}")) + "}",
             object?[] array => string.Join(Environment.NewLine, array.Select(FormatOutput)),
             _ => value.ToString() ?? string.Empty
         };
+
+    private static string FormatHashtable(PowerShellWasmHashtable hashtable)
+    {
+        if (hashtable.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var rows = hashtable.Select(static item => (Name: item.Key, Value: FormatOutput(item.Value))).ToArray();
+        var nameWidth = Math.Max("Name".Length, rows.Max(static row => row.Name.Length));
+        var valueWidth = Math.Max("Value".Length, rows.Max(static row => row.Value.Length));
+
+        var lines = new List<string>
+        {
+            JoinHashtableCells("Name", "Value", nameWidth, valueWidth),
+            JoinHashtableCells("----", "-----", nameWidth, valueWidth)
+        };
+        lines.AddRange(rows.Select(row => JoinHashtableCells(row.Name, row.Value, nameWidth, valueWidth)));
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string JoinHashtableCells(string name, string value, int nameWidth, int valueWidth) =>
+        $"{name.PadRight(nameWidth)}  {value.PadRight(valueWidth)}".TrimEnd();
 
     private sealed record PowerShellWasmStreamRecord(string StreamName, object? Value);
 
