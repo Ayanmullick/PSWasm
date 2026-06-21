@@ -21,7 +21,7 @@ Use a hosted trimmed flavor when the page only needs a specific browser-safe fea
 
 ```html
 <script type="pwsh" src="./sample.ps1"></script>
-<script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-crypto/app.js"></script>
+<script type="module" src="https://ayanmullick.github.io/PSWasm/web/app.js"></script>
 ```
 
 Use the Azure-auth flavor when a static page needs browser-safe user-delegated Entra tokens:
@@ -33,7 +33,7 @@ Connect-AzAccount -Tenant $TenantId -ClientId $ClientId
 $Token = Get-AzAccessToken -ResourceUrl 'https://management.azure.com/'
 </script>
 
-<script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-azure-auth/app.js"></script>
+<script type="module" src="https://ayanmullick.github.io/PSWasm/AzAuth/app.js"></script>
 ```
 
 After the first sign-in, `Get-AzContext` and `Get-AzAccessToken` can recover the cached browser auth context. See [Azure Auth Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/Azure-Auth-Cmdlets).
@@ -72,7 +72,7 @@ The default/full PSWasm browser host currently includes:
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods
 * a browser host that auto-runs `<script type="pwsh">` blocks and exposes JavaScript helpers for custom hosts
 
-Trimmed browser flavors can omit optional DOM, web request, crypto/text helper, or Azure auth groups. See [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization).
+Browser flavors are limited to `core`, `web`, `AzAuth`, and `full`. See [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization).
 
 PSWasm intentionally does not expose the full desktop/server PowerShell host. Providers, native process execution, profiles, remoting, jobs, unrestricted filesystem access, module autoloading, and arbitrary .NET reflection are outside the browser-safe scope.
 
@@ -105,17 +105,17 @@ publish/wwwroot
 Publish clean browser flavors for payload comparison:
 
 ```powershell
-.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom,crypto,web,dom-web-crypto,dom-web-azure-auth
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full
 ```
 
-Use `dom-web-crypto` for static pages that need DOM event binding, `Invoke-WebRequest`, and browser-safe HMAC/Base64/URI helper coverage.
-Use `dom-web-azure-auth` for static pages that need DOM event binding, `Invoke-WebRequest`, and user-delegated Entra access tokens.
+Use `web` for static pages that need DOM event binding and `Invoke-WebRequest`.
+Use `AzAuth` for static pages that need DOM event binding, `Invoke-WebRequest`, browser-safe HMAC/Base64/URI helper coverage, and user-delegated Entra access tokens.
 Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `artifacts/BrowserFlavors/<flavor>/wwwroot` into your static app.
 
 Publish host-ready flavor folders for static hosting:
 
 ```powershell
-.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom-web-crypto -HostedRoot .\artifacts\HostedBrowserFlavors -HostedVersion v0.1.0
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full -HostedRoot .\artifacts\HostedBrowserFlavors -HostedVersion v0.1.0
 ```
 
 That creates `artifacts/HostedBrowserFlavors/<flavor>/app.js` and `artifacts/HostedBrowserFlavors/v0.1.0/<flavor>/app.js`, with each `app.js` loading its own sibling `_framework/**` folder.
@@ -169,11 +169,11 @@ This repo deploys the browser host with GitHub Actions. After the workflow succe
 The Pages artifact also publishes hosted flavor folders:
 
 ```html
-<script type="module" src="https://ayanmullick.github.io/PSWasm/dom-web-crypto/app.js"></script>
+<script type="module" src="https://ayanmullick.github.io/PSWasm/web/app.js"></script>
 ```
 
 Manual Pages workflow runs can provide a version folder, such as `v0.1.0`, for stable consumption:
 
 ```html
-<script type="module" src="https://ayanmullick.github.io/PSWasm/v0.1.0/dom-web-crypto/app.js"></script>
+<script type="module" src="https://ayanmullick.github.io/PSWasm/v0.1.0/web/app.js"></script>
 ```

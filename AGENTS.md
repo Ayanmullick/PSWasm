@@ -31,8 +31,8 @@ dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r bro
 When browser package size or feature gating changes, publish clean browser flavors and measure the payload:
 
 ```pwsh
-.\tools\Publish-BrowserFlavors.ps1 -Flavor core,dom,crypto,web,dom-web-crypto,dom-web-azure-auth -HostedRoot .\artifacts\BrowserFlavorHosted -HostedVersion v-local -NoRestore
-.\tools\Measure-BrowserPayload.ps1 -Path .\artifacts\BrowserFlavors\dom-web-crypto\wwwroot -SummaryOnly
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full -HostedRoot .\artifacts\BrowserFlavorHosted -HostedVersion v-local -NoRestore
+.\tools\Measure-BrowserPayload.ps1 -Path .\artifacts\BrowserFlavors\AzAuth\wwwroot -SummaryOnly
 ```
 
 Also run the browser flavor smoke test when browser package size, hosted URL shape, publish shape, or feature gating changes:

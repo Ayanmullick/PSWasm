@@ -1,6 +1,6 @@
 param(
-    [ValidateSet('core','dom','crypto','web','azure-auth','dom-crypto','dom-web','web-crypto','web-azure-auth','dom-web-crypto','dom-web-azure-auth','dom-web-crypto-azure-auth','full')]
-    [string[]]$Flavor = @('core','dom-web-crypto','dom-web-azure-auth'),
+    [ValidateSet('core','web','AzAuth','full')]
+    [string[]]$Flavor = @('core','web','AzAuth','full'),
 
     [string]$OutputRoot = '.\artifacts\BrowserFlavorSmoke',
 
@@ -103,20 +103,28 @@ foreach ($Name in $Flavor) {
         Write-Host 'PASS core package excludes web-request framework assets.'
     }
 
-    if ($Name -eq 'dom-web-crypto') {
-        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Net.Http*.wasm')) 'dom-web-crypto should include System.Net.Http wasm.'
-        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Private.Uri*.wasm')) 'dom-web-crypto should include System.Private.Uri wasm.'
-        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Security.Cryptography*.wasm')) 'dom-web-crypto should include System.Security.Cryptography wasm.'
-        Write-Host 'PASS dom-web-crypto package includes web and crypto framework assets.'
+    if ($Name -eq 'web') {
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Net.Http*.wasm')) 'web should include System.Net.Http wasm.'
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Private.Uri*.wasm')) 'web should include System.Private.Uri wasm.'
+        Write-Host 'PASS web package includes browser DOM and web-request assets.'
     }
 
-    if ($Name -eq 'dom-web-azure-auth') {
-        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Net.Http*.wasm')) 'dom-web-azure-auth should include System.Net.Http wasm.'
-        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Private.Uri*.wasm')) 'dom-web-azure-auth should include System.Private.Uri wasm.'
+    if ($Name -eq 'AzAuth') {
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Net.Http*.wasm')) 'AzAuth should include System.Net.Http wasm.'
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Private.Uri*.wasm')) 'AzAuth should include System.Private.Uri wasm.'
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Security.Cryptography*.wasm')) 'AzAuth should include System.Security.Cryptography wasm.'
         $AppJs = Get-Content -LiteralPath ([IO.Path]::Combine($OutputRoot, $Name, 'wwwroot', 'app.js')) -Raw
-        Assert-Condition ($AppJs.Contains('pswasmAzureAuth')) 'dom-web-azure-auth should include the browser Azure auth JS bridge.'
-        Assert-Condition ($AppJs.Contains('pswasm.azureAuth')) 'dom-web-azure-auth should include browser auth state recovery.'
-        Write-Host 'PASS dom-web-azure-auth package includes web and browser auth bridge assets.'
+        Assert-Condition ($AppJs.Contains('pswasmAzureAuth')) 'AzAuth should include the browser Azure auth JS bridge.'
+        Assert-Condition ($AppJs.Contains('pswasm.azureAuth')) 'AzAuth should include browser auth state recovery.'
+        Write-Host 'PASS AzAuth package includes web, crypto, and browser auth bridge assets.'
+    }
+
+    if ($Name -eq 'full') {
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Net.Http*.wasm')) 'full should include System.Net.Http wasm.'
+        Assert-Condition ([bool]($Files | Where-Object Name -Like 'System.Security.Cryptography*.wasm')) 'full should include System.Security.Cryptography wasm.'
+        $AppJs = Get-Content -LiteralPath ([IO.Path]::Combine($OutputRoot, $Name, 'wwwroot', 'app.js')) -Raw
+        Assert-Condition ($AppJs.Contains('pswasmAzureAuth')) 'full should include the browser Azure auth JS bridge.'
+        Write-Host 'PASS full package includes all public browser feature groups.'
     }
 
     Assert-HostedFlavor -Root $HostedRoot -FlavorName $Name

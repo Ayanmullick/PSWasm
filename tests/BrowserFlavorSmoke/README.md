@@ -10,9 +10,10 @@ It checks:
 * default flavor output does not include the BrowserHost sample `index.html` or sample `.ps1` files
 * hosted flavor aliases have the `/<flavor>/app.js` shape
 * versioned hosted flavor aliases have the `/v-smoke/<flavor>/app.js` shape
-* `core` omits browser web-request framework assets
-* `dom-web-crypto` includes browser web-request and cryptography framework assets
-* `dom-web-azure-auth` includes browser web-request assets and the lazy MSAL auth bridge
+* `core` omits optional DOM, web-request, crypto, and Azure auth assets
+* `web` includes browser DOM and web-request assets without the PSWasm crypto bridge
+* `AzAuth` includes browser DOM, web-request, crypto, and the lazy MSAL auth bridge
+* `full` includes all public browser feature groups
 
 Run it from the repository root:
 

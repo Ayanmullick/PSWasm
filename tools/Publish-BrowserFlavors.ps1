@@ -1,6 +1,6 @@
 param(
-    [ValidateSet('core','dom','crypto','web','azure-auth','dom-crypto','dom-web','web-crypto','web-azure-auth','dom-web-crypto','dom-web-azure-auth','dom-web-crypto-azure-auth','full')]
-    [string[]]$Flavor = @('core','dom','crypto','web','dom-web-crypto','dom-web-azure-auth','full'),
+    [ValidateSet('core','web','AzAuth','full')]
+    [string[]]$Flavor = @('core','web','AzAuth','full'),
 
     [string]$OutputRoot = '.\artifacts\BrowserFlavors',
 
@@ -66,19 +66,10 @@ $Measure = [IO.Path]::Combine($PSScriptRoot, 'Measure-BrowserPayload.ps1')
 
 foreach ($Name in $Flavor) {
     $Dom,$Crypto,$Web,$AzureAuth = switch ($Name) {
-        'core'                      { 'false','false','false','false'; break }
-        'dom'                       { 'true','false','false','false'; break }
-        'crypto'                    { 'false','true','false','false'; break }
-        'web'                       { 'false','false','true','false'; break }
-        'azure-auth'                { 'false','false','false','true'; break }
-        'dom-crypto'                { 'true','true','false','false'; break }
-        'dom-web'                   { 'true','false','true','false'; break }
-        'web-crypto'                { 'false','true','true','false'; break }
-        'web-azure-auth'            { 'false','false','true','true'; break }
-        'dom-web-crypto'            { 'true','true','true','false'; break }
-        'dom-web-azure-auth'        { 'true','false','true','true'; break }
-        'dom-web-crypto-azure-auth' { 'true','true','true','true'; break }
-        'full'                      { 'true','true','true','true'; break }
+        'core'   { 'false','false','false','false'; break }
+        'web'    { 'true','false','true','false'; break }
+        'AzAuth' { 'true','true','true','true'; break }
+        'full'   { 'true','true','true','true'; break }
     }
 
     $Out = Join-Path $OutputRoot $Name
