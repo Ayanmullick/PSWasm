@@ -359,6 +359,14 @@ $ComputedMap = @{
 }
 $ComputedMap['#computed-tenant-id']
 $ComputedMap['#computed-client-id']
+$obj = [pscustomobject]@{Name='typed'; Value=42}
+$obj.Name
+$obj['Value']
+$psObject = [System.Management.Automation.PSObject]@{Kind='psobject'}
+$psObject.Kind
+$ordered = [ordered]@{First='one'; Second='two'}
+$ordered.First
+$ordered.Keys.Count
 $Map
 """);
 
@@ -382,6 +390,11 @@ $Map
         "cosmosClientId",
         "computedTenant",
         "computedClient",
+        "typed",
+        "42",
+        "psobject",
+        "one",
+        "2",
         "Name        Value",
         "----        -----",
         "#tenant-id  cosmosTenant",
@@ -780,6 +793,8 @@ static async ValueTask VerifyObjectPipelineCommandsAsync()
 {
     var result = await ExecuteAsync("""
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
+1..4 | ? { $_ -gt 2 } | % { $_ * 10 }
+5 % 2
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |
     Select-Object -ExpandProperty Name
@@ -794,6 +809,9 @@ $sum = 0
     ExpectLines(result, [
         "30",
         "40",
+        "30",
+        "40",
+        "1",
         "two",
         "three",
         "@{Name=one}",
@@ -1047,6 +1065,16 @@ function Scope-Test($x) {
 }
 Scope-Test 'ignored'
 $x
+& { 'call-literal' }
+$sb = { 'call-arg:' + $args[0] + ':' + $args.Count }
+& $sb 'x'
+$prefix = 'scope'
+& { $prefix + ':' + ($args -join '|') } 'a' 'b'
+1..2 | & {
+    'input-count:' + $input.Count
+    $input | % { 'input-item:' + $_ }
+    'underscore:' + $_
+}
 """);
 
     ExpectLines(result, [
@@ -1058,7 +1086,14 @@ $x
         "10",
         "20",
         "inner",
-        "outer"
+        "outer",
+        "call-literal",
+        "call-arg:x:1",
+        "scope:a|b",
+        "input-count:2",
+        "input-item:1",
+        "input-item:2",
+        "underscore:"
     ]);
 }
 

@@ -656,6 +656,8 @@ internal sealed class PowerShellWasmAstExecutor(
                     cancellationToken);
             case HashtableExpressionAst hashtable:
                 return await EvaluateHashtableAsync(hashtable, cancellationToken);
+            case TypedHashtableExpressionAst typedHashtable:
+                return await EvaluateTypedHashtableAsync(typedHashtable, cancellationToken);
             case ArrayExpressionAst array:
                 return await EvaluateArrayAsync(array, cancellationToken);
             case ScriptBlockExpressionAst scriptBlock:
@@ -724,6 +726,29 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         return result;
+    }
+
+    private async ValueTask<PowerShellWasmHashtable> EvaluateTypedHashtableAsync(
+        TypedHashtableExpressionAst typedHashtable,
+        CancellationToken cancellationToken)
+    {
+        if (!IsSupportedTypedHashtable(typedHashtable.TypeName))
+        {
+            throw new InvalidOperationException(
+                $"Typed hashtable literal [{typedHashtable.TypeName}]@{{}} is not available in this browser-safe runtime.");
+        }
+
+        return await EvaluateHashtableAsync(typedHashtable.Hashtable, cancellationToken);
+    }
+
+    private static bool IsSupportedTypedHashtable(string typeName)
+    {
+        var normalized = typeName.Trim();
+        return normalized.Equals("ordered", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("pscustomobject", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("psobject", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("System.Management.Automation.PSCustomObject", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("System.Management.Automation.PSObject", StringComparison.OrdinalIgnoreCase);
     }
 
     private async ValueTask<object?[]> EvaluateArrayAsync(ArrayExpressionAst array, CancellationToken cancellationToken)

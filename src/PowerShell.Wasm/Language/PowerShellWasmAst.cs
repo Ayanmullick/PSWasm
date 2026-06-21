@@ -120,6 +120,8 @@ public sealed record HashtableExpressionAst(IReadOnlyList<HashtableEntryAst> Ent
 
 public sealed record HashtableEntryAst(ExpressionAst Key, ExpressionAst Value) : PowerShellWasmAst;
 
+public sealed record TypedHashtableExpressionAst(string TypeName, HashtableExpressionAst Hashtable) : ExpressionAst;
+
 public sealed record ArrayExpressionAst(IReadOnlyList<ExpressionAst> Items) : ExpressionAst;
 
 public sealed record ScriptBlockExpressionAst(ScriptAst Body) : ExpressionAst;

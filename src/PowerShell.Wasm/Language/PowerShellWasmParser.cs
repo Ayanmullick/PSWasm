@@ -660,7 +660,7 @@ public sealed class PowerShellWasmParser
 
     private static CommandAst ParseCommand(IReadOnlyList<PowerShellWasmToken> tokens)
     {
-        if (tokens.Count == 0 || tokens[0].Kind != PowerShellWasmTokenKind.Identifier)
+        if (tokens.Count == 0 || !IsCommandNameToken(tokens[0]))
         {
             throw new InvalidOperationException("Expected a command name.");
         }
@@ -702,7 +702,7 @@ public sealed class PowerShellWasmParser
             arguments.Add(new CommandArgumentAst(ParseCommandArgumentExpression(ReadCommandArgument(tokens, ref position))));
         }
 
-        return new CommandAst(tokens[0].Text, parameters, arguments);
+        return new CommandAst(GetCommandName(tokens[0]), parameters, arguments);
     }
 
     private static bool TryReadOperatorSwitchParameter(
@@ -851,7 +851,14 @@ public sealed class PowerShellWasmParser
     }
 
     private static bool IsCommandSegment(IReadOnlyList<PowerShellWasmToken> tokens) =>
-        tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Identifier;
+        tokens.Count > 0 && IsCommandNameToken(tokens[0]);
+
+    private static bool IsCommandNameToken(PowerShellWasmToken token) =>
+        token.Kind == PowerShellWasmTokenKind.Identifier ||
+        token.Kind == PowerShellWasmTokenKind.Remainder;
+
+    private static string GetCommandName(PowerShellWasmToken token) =>
+        token.Kind == PowerShellWasmTokenKind.Remainder ? "%" : token.Text;
 
     private static bool IsStatementExpressionValue(IReadOnlyList<PowerShellWasmToken> tokens) =>
         tokens.Count > 0 &&
@@ -1303,6 +1310,14 @@ public sealed class PowerShellWasmParser
                         expression = new MemberAccessExpressionAst(expression, memberName);
                     }
 
+                    continue;
+                }
+
+                if (Current.Kind == PowerShellWasmTokenKind.AtLBrace &&
+                    expression is TypeLiteralExpressionAst typeLiteral)
+                {
+                    _position++;
+                    expression = new TypedHashtableExpressionAst(typeLiteral.TypeName, ParseHashtable());
                     continue;
                 }
 

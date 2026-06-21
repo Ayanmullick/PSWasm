@@ -27,6 +27,7 @@ public sealed class PowerShellWasmRuntime
 
         RegisterCommand("Clear-Variable", new ClearVariableCommand());
         RegisterCommand("clv", new ClearVariableCommand());
+        RegisterCommand("&", new CallOperatorCommand());
 #if PSWASM_AZURE_AUTH
         RegisterCommand("Connect-AzAccount", new ConnectAzAccountCommand(azureAuthHost));
 #endif
@@ -61,6 +62,7 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Get-UICulture", new GetCultureCommand(uiCulture: true));
         RegisterCommand("ForEach-Object", new ForEachObjectCommand());
         RegisterCommand("ForEach", new ForEachObjectCommand());
+        RegisterCommand("%", new ForEachObjectCommand());
         RegisterCommand("Group-Object", new GroupObjectCommand());
         RegisterCommand("Group", new GroupObjectCommand());
         RegisterCommand("Get-Variable", new GetVariableCommand());
@@ -98,6 +100,7 @@ public sealed class PowerShellWasmRuntime
 #endif
         RegisterCommand("Where-Object", new WhereObjectCommand());
         RegisterCommand("Where", new WhereObjectCommand());
+        RegisterCommand("?", new WhereObjectCommand());
         RegisterCommand("Write-Debug", new WriteStreamCommand("Debug", "Message"));
         RegisterCommand("Write-Error", new WriteStreamCommand("Error", "Message"));
         RegisterCommand("Write-Host", new WriteStreamCommand("Host", "Object", "Message"));
