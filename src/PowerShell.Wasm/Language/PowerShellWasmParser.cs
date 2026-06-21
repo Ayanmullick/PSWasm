@@ -623,7 +623,7 @@ public sealed class PowerShellWasmParser
             defaultValue = ParseExpression(defaultTokens);
         }
 
-        return new ParameterDeclarationAst(name, typeName, defaultValue, ExtractParameterAliases(annotations));
+        return new ParameterDeclarationAst(name, typeName, defaultValue, ExtractParameterAliases(annotations), ExtractValidateSetValues(annotations));
     }
 
     private static IReadOnlyList<string> ExtractParameterAliases(IEnumerable<string> annotations)
@@ -636,24 +636,48 @@ public sealed class PowerShellWasmParser
                 continue;
             }
 
-            var openParen = annotation.IndexOf('(', StringComparison.Ordinal);
-            var closeParen = annotation.LastIndexOf(')');
-            if (openParen < 0 || closeParen <= openParen)
-            {
-                continue;
-            }
-
-            foreach (var alias in annotation[(openParen + 1)..closeParen]
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            foreach (var alias in ExtractAttributeStringArguments(annotation))
             {
                 if (!string.IsNullOrWhiteSpace(alias))
                 {
-                    aliases.Add(alias.Trim('\'', '"'));
+                    aliases.Add(alias);
                 }
             }
         }
 
         return aliases;
+    }
+
+    private static IReadOnlyList<string> ExtractValidateSetValues(IEnumerable<string> annotations)
+    {
+        var values = new List<string>();
+        foreach (var annotation in annotations)
+        {
+            if (!GetAttributeAnnotationName(annotation).Equals("ValidateSet", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            values.AddRange(ExtractAttributeStringArguments(annotation));
+        }
+
+        return values;
+    }
+
+    private static IReadOnlyList<string> ExtractAttributeStringArguments(string annotation)
+    {
+        var openParen = annotation.IndexOf('(', StringComparison.Ordinal);
+        var closeParen = annotation.LastIndexOf(')');
+        if (openParen < 0 || closeParen <= openParen)
+        {
+            return [];
+        }
+
+        return annotation[(openParen + 1)..closeParen]
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static value => value.Trim('\'', '"'))
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToArray();
     }
 
     private static bool IsParameterAttributeAnnotation(string annotation)

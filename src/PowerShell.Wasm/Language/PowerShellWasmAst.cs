@@ -84,7 +84,8 @@ public sealed record ParameterDeclarationAst(
     string Name,
     string? TypeName,
     ExpressionAst? DefaultValue,
-    IReadOnlyList<string> Aliases) : PowerShellWasmAst;
+    IReadOnlyList<string> Aliases,
+    IReadOnlyList<string> ValidateSet) : PowerShellWasmAst;
 
 public sealed record MetadataAttributeStatementAst(string Name) : StatementAst;
 

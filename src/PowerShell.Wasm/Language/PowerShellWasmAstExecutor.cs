@@ -833,31 +833,38 @@ internal sealed class PowerShellWasmAstExecutor(
             var parameterName = parameter.Name;
             object? value;
             var wasBound = false;
+            var hasValue = false;
             if (TryGetNamedParameterValue(namedParameters, parameter, out var namedValue))
             {
                 value = namedValue;
                 wasBound = true;
+                hasValue = true;
             }
             else if (argumentIndex < arguments.Count)
             {
                 value = arguments[argumentIndex++];
                 wasBound = true;
+                hasValue = true;
             }
             else if (bindInputToFirstParameter && !inputBound)
             {
                 value = input;
                 inputBound = true;
                 wasBound = true;
+                hasValue = true;
             }
             else if (parameter.DefaultValue is not null)
             {
                 value = await EvaluateParameterDefaultAsync(parameter.DefaultValue, locals, cancellationToken);
+                hasValue = true;
             }
             else
             {
                 value = null;
             }
 
+            value = ConvertParameterValue(parameter, value, hasValue);
+            ValidateParameterValue(parameter, value);
             locals[parameterName] = value;
             if (wasBound)
             {
@@ -897,6 +904,41 @@ internal sealed class PowerShellWasmAstExecutor(
         return false;
     }
 
+    private static object? ConvertParameterValue(ParameterDeclarationAst parameter, object? value, bool hasValue)
+    {
+        if (string.IsNullOrWhiteSpace(parameter.TypeName))
+        {
+            return value;
+        }
+
+        if (NormalizeCastTypeName(parameter.TypeName).Equals("switch", StringComparison.Ordinal))
+        {
+            return hasValue && ToBoolean(value);
+        }
+
+        return hasValue ? CastValue(parameter.TypeName, value) : value;
+    }
+
+    private static void ValidateParameterValue(ParameterDeclarationAst parameter, object? value)
+    {
+        if (parameter.ValidateSet.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var item in Enumerate(value))
+        {
+            var text = ToInvariantString(item);
+            if (parameter.ValidateSet.Any(candidate => candidate.Equals(text, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"Parameter '{parameter.Name}' failed ValidateSet. Expected one of: {string.Join(", ", parameter.ValidateSet)}.");
+        }
+    }
+
     private async ValueTask<object?> EvaluateParameterDefaultAsync(
         ExpressionAst expression,
         IReadOnlyDictionary<string, object?> locals,
@@ -934,6 +976,7 @@ internal sealed class PowerShellWasmAstExecutor(
             "long" => values.Select(item => Convert.ToInt64(item, CultureInfo.InvariantCulture)).ToArray(),
             "double" => values.Select(item => Convert.ToDouble(item, CultureInfo.InvariantCulture)).ToArray(),
             "bool" => values.Select(ToBoolean).ToArray(),
+            "switch" => values.Select(ToBoolean).ToArray(),
             "object" => values,
             _ => throw new InvalidOperationException($"Cast type '[{elementType}[]]' is not available in this browser-safe runtime.")
         };
@@ -952,6 +995,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 ? decimal.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture)
                 : Convert.ToDecimal(ToCastNumber(value), CultureInfo.InvariantCulture),
             "byte" => Convert.ToByte(ToCastNumber(value), CultureInfo.InvariantCulture),
+            "switch" => ToBoolean(value),
             _ => throw new InvalidOperationException($"Cast type '[{typeName}]' is not available in this browser-safe runtime.")
         };
 
@@ -970,6 +1014,9 @@ internal sealed class PowerShellWasmAstExecutor(
         normalized = normalized switch
         {
             var value when value.Equals("boolean", StringComparison.OrdinalIgnoreCase) => "bool",
+            var value when value.Equals("switch", StringComparison.OrdinalIgnoreCase) => "switch",
+            var value when value.Equals("switchparameter", StringComparison.OrdinalIgnoreCase) => "switch",
+            var value when value.Equals("System.Management.Automation.SwitchParameter", StringComparison.OrdinalIgnoreCase) => "switch",
             var value when value.Equals("int32", StringComparison.OrdinalIgnoreCase) => "int",
             var value when value.Equals("int64", StringComparison.OrdinalIgnoreCase) => "long",
             var value when value.Equals("System.String", StringComparison.OrdinalIgnoreCase) => "string",
@@ -1271,6 +1318,7 @@ internal sealed class PowerShellWasmAstExecutor(
             "object" => true,
             "string" => value is string,
             "bool" => value is bool,
+            "switch" => value is bool,
             "int" => value is int,
             "long" => value is long,
             "double" => value is double,
@@ -1279,6 +1327,7 @@ internal sealed class PowerShellWasmAstExecutor(
             "object[]" => value is object?[],
             "string[]" => value is string[],
             "bool[]" => value is bool[],
+            "switch[]" => value is bool[],
             "int[]" => value is int[],
             "long[]" => value is long[],
             "double[]" => value is double[],

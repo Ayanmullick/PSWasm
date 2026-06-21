@@ -1104,6 +1104,21 @@ function Attribute-Param {
 }
 Attribute-Param -n 'App'
 Attribute-Param 'Svc' 'Prod'
+try {
+    Attribute-Param 'Bad' 'Test'
+} catch {
+    'validate-error'
+}
+function Type-Param {
+    param([int]$Count, [switch]$Enabled, [bool]$Flag = 'true')
+    'count:' + ($Count + 1)
+    'enabled:' + $Enabled
+    'flag:' + $Flag
+    'count-is-int:' + ($Count -is [int])
+    'enabled-is-switch:' + ($Enabled -is [switch])
+}
+Type-Param -Count '4' -Enabled
+Type-Param -Count '2'
 function Join-Args {
     $args -join ','
 }
@@ -1158,6 +1173,17 @@ $prefix = 'scope'
         "Svc-Prod",
         "2",
         "Svc",
+        "validate-error",
+        "count:5",
+        "enabled:True",
+        "flag:True",
+        "count-is-int:True",
+        "enabled-is-switch:True",
+        "count:3",
+        "enabled:False",
+        "flag:True",
+        "count-is-int:True",
+        "enabled-is-switch:True",
         "a,b",
         "pre-three",
         "Add-Prefix",
