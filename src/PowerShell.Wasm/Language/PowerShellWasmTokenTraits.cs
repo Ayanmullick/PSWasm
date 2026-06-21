@@ -50,6 +50,13 @@ internal static class PowerShellWasmTokenTraits
         ["-iin"] = PowerShellWasmTokenKind.Iin,
         ["-notin"] = PowerShellWasmTokenKind.Inotin,
         ["-inotin"] = PowerShellWasmTokenKind.Inotin,
+        ["-is"] = PowerShellWasmTokenKind.Iis,
+        ["-iis"] = PowerShellWasmTokenKind.Iis,
+        ["-isnot"] = PowerShellWasmTokenKind.Inotis,
+        ["-notis"] = PowerShellWasmTokenKind.Inotis,
+        ["-inotis"] = PowerShellWasmTokenKind.Inotis,
+        ["-as"] = PowerShellWasmTokenKind.Ias,
+        ["-ias"] = PowerShellWasmTokenKind.Ias,
         ["-split"] = PowerShellWasmTokenKind.Isplit,
         ["-isplit"] = PowerShellWasmTokenKind.Isplit,
         ["-ceq"] = PowerShellWasmTokenKind.Ceq,
@@ -96,6 +103,7 @@ internal static class PowerShellWasmTokenTraits
                 PowerShellWasmTokenKind.Ilike or PowerShellWasmTokenKind.Inotlike or PowerShellWasmTokenKind.Imatch or
                 PowerShellWasmTokenKind.Inotmatch or PowerShellWasmTokenKind.Ireplace or PowerShellWasmTokenKind.Icontains or
                 PowerShellWasmTokenKind.Inotcontains or PowerShellWasmTokenKind.Iin or PowerShellWasmTokenKind.Inotin or
+                PowerShellWasmTokenKind.Iis or PowerShellWasmTokenKind.Inotis or PowerShellWasmTokenKind.Ias or
                 PowerShellWasmTokenKind.Isplit or PowerShellWasmTokenKind.Ceq or PowerShellWasmTokenKind.Cne or
                 PowerShellWasmTokenKind.Cge or PowerShellWasmTokenKind.Cgt or PowerShellWasmTokenKind.Clt or
                 PowerShellWasmTokenKind.Cle or PowerShellWasmTokenKind.Clike or PowerShellWasmTokenKind.Cnotlike or
@@ -149,6 +157,9 @@ internal static class PowerShellWasmTokenTraits
             PowerShellWasmTokenKind.Inotcontains => "-notcontains",
             PowerShellWasmTokenKind.Iin => "-in",
             PowerShellWasmTokenKind.Inotin => "-notin",
+            PowerShellWasmTokenKind.Iis => "-is",
+            PowerShellWasmTokenKind.Inotis => "-isnot",
+            PowerShellWasmTokenKind.Ias => "-as",
             PowerShellWasmTokenKind.Isplit => "-split",
             PowerShellWasmTokenKind.Ceq => "-ceq",
             PowerShellWasmTokenKind.Cne => "-cne",

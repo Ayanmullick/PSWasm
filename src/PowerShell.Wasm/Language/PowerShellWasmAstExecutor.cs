@@ -21,11 +21,7 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         try
         {
-            foreach (var statement in script.Statements)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await ExecuteStatementWithStatusAsync(statement, [], cancellationToken);
-            }
+            await ExecuteScriptAsync(script, cancellationToken);
         }
         catch (ReturnFlowException)
         {
@@ -90,8 +86,12 @@ internal sealed class PowerShellWasmAstExecutor(
             case FunctionDefinitionStatementAst functionDefinition:
                 executionContext.SetFunction(new PowerShellWasmScriptFunction(
                     functionDefinition.Name,
-                    functionDefinition.ParameterNames,
+                    functionDefinition.Parameters,
                     functionDefinition.Body));
+                break;
+            case ParamBlockStatementAst:
+                throw new InvalidOperationException("A param block must be the first statement in a script or script block.");
+            case MetadataAttributeStatementAst:
                 break;
             case ReturnStatementAst returnStatement:
                 if (returnStatement.Expression is not null)
@@ -389,6 +389,11 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private async ValueTask ExecuteScriptAsync(ScriptAst script, CancellationToken cancellationToken)
     {
+        using var parameterScope = script.Parameters.Count == 0
+            ? null
+            : executionContext.WithTemporaryVariables(
+                await CreateParameterLocalsAsync(script.Parameters, null, [], null, bindInputToFirstParameter: false, null, cancellationToken));
+
         foreach (var statement in script.Statements)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -562,38 +567,17 @@ internal sealed class PowerShellWasmAstExecutor(
         IReadOnlyList<object?> pipelineInput,
         CancellationToken cancellationToken)
     {
-        var locals = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["input"] = pipelineInput.ToArray()
-        };
-        var boundParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        var argumentIndex = 0;
-
-        foreach (var parameterName in function.ParameterNames)
-        {
-            if (parameters.TryGetValue(parameterName, out var parameterValue))
+        var locals = await CreateParameterLocalsAsync(
+            function.Parameters,
+            parameters,
+            arguments,
+            null,
+            bindInputToFirstParameter: false,
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             {
-                locals[parameterName] = parameterValue;
-                boundParameters[parameterName] = parameterValue;
-                continue;
-            }
-
-            if (argumentIndex < arguments.Count)
-            {
-                var argumentValue = arguments[argumentIndex++];
-                locals[parameterName] = argumentValue;
-                boundParameters[parameterName] = argumentValue;
-            }
-            else
-            {
-                locals[parameterName] = null;
-            }
-        }
-
-        locals["PSBoundParameters"] = boundParameters;
-        locals["args"] = function.ParameterNames.Count == 0
-            ? arguments.ToArray()
-            : arguments.Skip(argumentIndex).ToArray();
+                ["input"] = pipelineInput.ToArray()
+            },
+            cancellationToken);
 
         using (executionContext.WithVariableScope(locals))
         {
@@ -668,6 +652,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateStatementExpressionAsync(statement.Statement, cancellationToken);
             case TypeLiteralExpressionAst typeLiteral:
                 return PowerShellWasmDotNetBridge.ResolveType(typeLiteral.TypeName);
+            case CastExpressionAst cast:
+                return await EvaluateCastAsync(cast, cancellationToken);
             case MemberAccessExpressionAst member:
                 return await EvaluateMemberAccessAsync(member, cancellationToken);
             case StaticMemberAccessExpressionAst member:
@@ -784,11 +770,20 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         async ValueTask<IReadOnlyList<object?>> InvokeAsync(
             object? input,
+            IReadOnlyList<object?>? arguments,
             IReadOnlyDictionary<string, object?>? variables,
             CancellationToken cancellationToken)
         {
             var output = new List<object?>();
-            using var variableScope = variables is null ? null : executionContext.WithTemporaryVariables(variables);
+            var locals = await CreateParameterLocalsAsync(
+                scriptBlock.Body.Parameters,
+                null,
+                arguments ?? [],
+                input,
+                bindInputToFirstParameter: arguments is null,
+                variables,
+                cancellationToken);
+            using var variableScope = locals.Count == 0 ? null : executionContext.WithTemporaryVariables(locals);
             using var pipelineScope = executionContext.WithPipelineItem(input);
             using var outputScope = executionContext.CaptureOutput(output);
 
@@ -809,11 +804,186 @@ internal sealed class PowerShellWasmAstExecutor(
 
         async ValueTask<PowerShellWasmResult> InvokeResultAsync(
             object? input,
+            IReadOnlyList<object?>? arguments,
             IReadOnlyDictionary<string, object?>? variables,
             CancellationToken cancellationToken) =>
-            executionContext.CreateResult(await InvokeAsync(input, variables, cancellationToken));
+            executionContext.CreateResult(await InvokeAsync(input, arguments, variables, cancellationToken));
 
         return new PowerShellWasmScriptBlock(InvokeAsync, InvokeResultAsync);
+    }
+
+    private async ValueTask<Dictionary<string, object?>> CreateParameterLocalsAsync(
+        IReadOnlyList<ParameterDeclarationAst> parameters,
+        IReadOnlyDictionary<string, object?>? namedParameters,
+        IReadOnlyList<object?> arguments,
+        object? input,
+        bool bindInputToFirstParameter,
+        IReadOnlyDictionary<string, object?>? variables,
+        CancellationToken cancellationToken)
+    {
+        var locals = variables is null
+            ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, object?>(variables, StringComparer.OrdinalIgnoreCase);
+        var boundParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        var argumentIndex = 0;
+        var inputBound = false;
+
+        foreach (var parameter in parameters)
+        {
+            var parameterName = parameter.Name;
+            object? value;
+            var wasBound = false;
+            if (TryGetNamedParameterValue(namedParameters, parameter, out var namedValue))
+            {
+                value = namedValue;
+                wasBound = true;
+            }
+            else if (argumentIndex < arguments.Count)
+            {
+                value = arguments[argumentIndex++];
+                wasBound = true;
+            }
+            else if (bindInputToFirstParameter && !inputBound)
+            {
+                value = input;
+                inputBound = true;
+                wasBound = true;
+            }
+            else if (parameter.DefaultValue is not null)
+            {
+                value = await EvaluateParameterDefaultAsync(parameter.DefaultValue, locals, cancellationToken);
+            }
+            else
+            {
+                value = null;
+            }
+
+            locals[parameterName] = value;
+            if (wasBound)
+            {
+                boundParameters[parameterName] = value;
+            }
+        }
+
+        locals["PSBoundParameters"] = boundParameters;
+        locals["args"] = parameters.Count == 0 ? arguments.ToArray() : arguments.Skip(argumentIndex).ToArray();
+        return locals;
+    }
+
+    private static bool TryGetNamedParameterValue(
+        IReadOnlyDictionary<string, object?>? namedParameters,
+        ParameterDeclarationAst parameter,
+        out object? value)
+    {
+        value = null;
+        if (namedParameters is null)
+        {
+            return false;
+        }
+
+        if (namedParameters.TryGetValue(parameter.Name, out value))
+        {
+            return true;
+        }
+
+        foreach (var alias in parameter.Aliases)
+        {
+            if (namedParameters.TryGetValue(alias, out value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private async ValueTask<object?> EvaluateParameterDefaultAsync(
+        ExpressionAst expression,
+        IReadOnlyDictionary<string, object?> locals,
+        CancellationToken cancellationToken)
+    {
+        using var parameterScope = locals.Count == 0 ? null : executionContext.WithTemporaryVariables(locals);
+        return await EvaluateExpressionAsync(expression, cancellationToken);
+    }
+
+    private async ValueTask<object?> EvaluateCastAsync(CastExpressionAst cast, CancellationToken cancellationToken)
+    {
+        var value = await EvaluateExpressionAsync(cast.Operand, cancellationToken);
+        return CastValue(cast.TypeName, value);
+    }
+
+    private static object? CastValue(string typeName, object? value)
+    {
+        var normalizedType = NormalizeCastTypeName(typeName);
+        if (normalizedType.EndsWith("[]", StringComparison.Ordinal))
+        {
+            return CastArrayValue(normalizedType[..^2], value);
+        }
+
+        return CastScalarValue(normalizedType, value);
+    }
+
+    private static object? CastArrayValue(string elementType, object? value)
+    {
+        var values = Enumerate(value).Select(item => CastScalarValue(elementType, item)).ToArray();
+        return elementType switch
+        {
+            "byte" => values.Select(item => Convert.ToByte(item, CultureInfo.InvariantCulture)).ToArray(),
+            "string" => values.Select(ToInvariantString).ToArray(),
+            "int" => values.Select(item => Convert.ToInt32(item, CultureInfo.InvariantCulture)).ToArray(),
+            "long" => values.Select(item => Convert.ToInt64(item, CultureInfo.InvariantCulture)).ToArray(),
+            "double" => values.Select(item => Convert.ToDouble(item, CultureInfo.InvariantCulture)).ToArray(),
+            "bool" => values.Select(ToBoolean).ToArray(),
+            "object" => values,
+            _ => throw new InvalidOperationException($"Cast type '[{elementType}[]]' is not available in this browser-safe runtime.")
+        };
+    }
+
+    private static object? CastScalarValue(string typeName, object? value) =>
+        typeName switch
+        {
+            "object" => value,
+            "string" => ToInvariantString(value),
+            "bool" => ToBoolean(value),
+            "int" => Convert.ToInt32(ToCastNumber(value), CultureInfo.InvariantCulture),
+            "long" => Convert.ToInt64(ToCastNumber(value), CultureInfo.InvariantCulture),
+            "double" => ToCastNumber(value),
+            "decimal" => value is string text
+                ? decimal.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture)
+                : Convert.ToDecimal(ToCastNumber(value), CultureInfo.InvariantCulture),
+            "byte" => Convert.ToByte(ToCastNumber(value), CultureInfo.InvariantCulture),
+            _ => throw new InvalidOperationException($"Cast type '[{typeName}]' is not available in this browser-safe runtime.")
+        };
+
+    private static double ToCastNumber(object? value) =>
+        value is null ? 0 : ToNumber(value);
+
+    private static string NormalizeCastTypeName(string typeName)
+    {
+        var normalized = typeName.Trim();
+        var isArray = normalized.EndsWith("[]", StringComparison.Ordinal);
+        if (isArray)
+        {
+            normalized = normalized[..^2];
+        }
+
+        normalized = normalized switch
+        {
+            var value when value.Equals("boolean", StringComparison.OrdinalIgnoreCase) => "bool",
+            var value when value.Equals("int32", StringComparison.OrdinalIgnoreCase) => "int",
+            var value when value.Equals("int64", StringComparison.OrdinalIgnoreCase) => "long",
+            var value when value.Equals("System.String", StringComparison.OrdinalIgnoreCase) => "string",
+            var value when value.Equals("System.Boolean", StringComparison.OrdinalIgnoreCase) => "bool",
+            var value when value.Equals("System.Int32", StringComparison.OrdinalIgnoreCase) => "int",
+            var value when value.Equals("System.Int64", StringComparison.OrdinalIgnoreCase) => "long",
+            var value when value.Equals("System.Double", StringComparison.OrdinalIgnoreCase) => "double",
+            var value when value.Equals("System.Decimal", StringComparison.OrdinalIgnoreCase) => "decimal",
+            var value when value.Equals("System.Byte", StringComparison.OrdinalIgnoreCase) => "byte",
+            var value when value.Equals("System.Object", StringComparison.OrdinalIgnoreCase) => "object",
+            _ => normalized.ToLowerInvariant()
+        };
+
+        return isArray ? normalized + "[]" : normalized;
     }
 
     private async ValueTask<object?> EvaluateMemberAccessAsync(
@@ -994,6 +1164,11 @@ internal sealed class PowerShellWasmAstExecutor(
             return ToBoolean(left) || ToBoolean(await EvaluateExpressionAsync(binary.Right, cancellationToken));
         }
 
+        if (binary.Operator is PowerShellWasmBinaryOperator.TypeIs or PowerShellWasmBinaryOperator.TypeIsNot or PowerShellWasmBinaryOperator.TypeAs)
+        {
+            return ApplyTypeOperator(left, binary.Operator, GetTypeOperatorName(binary.Right));
+        }
+
         var right = await EvaluateExpressionAsync(binary.Right, cancellationToken);
         return ApplyBinaryOperator(left, binary.Operator, right);
     }
@@ -1032,6 +1207,9 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.NotContains => !Contains(left, right, caseSensitive: false),
             PowerShellWasmBinaryOperator.In => Contains(right, left, caseSensitive: false),
             PowerShellWasmBinaryOperator.NotIn => !Contains(right, left, caseSensitive: false),
+            PowerShellWasmBinaryOperator.TypeIs => TypeMatches(left, ToInvariantString(right)),
+            PowerShellWasmBinaryOperator.TypeIsNot => !TypeMatches(left, ToInvariantString(right)),
+            PowerShellWasmBinaryOperator.TypeAs => TryCastAs(ToInvariantString(right), left),
             PowerShellWasmBinaryOperator.CaseSensitiveEqual => CompareValues(left, right, caseSensitive: true) == 0,
             PowerShellWasmBinaryOperator.CaseSensitiveNotEqual => CompareValues(left, right, caseSensitive: true) != 0,
             PowerShellWasmBinaryOperator.CaseSensitiveGreaterThan => CompareValues(left, right, caseSensitive: true) > 0,
@@ -1049,6 +1227,65 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.CaseSensitiveNotIn => !Contains(right, left, caseSensitive: true),
             _ => left
         };
+
+    private static object? ApplyTypeOperator(object? left, PowerShellWasmBinaryOperator op, string typeName) =>
+        op switch
+        {
+            PowerShellWasmBinaryOperator.TypeIs => TypeMatches(left, typeName),
+            PowerShellWasmBinaryOperator.TypeIsNot => !TypeMatches(left, typeName),
+            PowerShellWasmBinaryOperator.TypeAs => TryCastAs(typeName, left),
+            _ => throw new InvalidOperationException($"Operator '{op}' is not a type operator.")
+        };
+
+    private static string GetTypeOperatorName(ExpressionAst expression) =>
+        expression switch
+        {
+            TypeLiteralExpressionAst typeLiteral => typeLiteral.TypeName,
+            ParenthesizedExpressionAst parenthesized => GetTypeOperatorName(parenthesized.Expression),
+            StringExpressionAst text => text.Value,
+            BareWordExpressionAst bareWord => bareWord.Value,
+            _ => throw new InvalidOperationException("Type operators require a browser-safe type literal such as [string] or [int].")
+        };
+
+    private static object? TryCastAs(string typeName, object? value)
+    {
+        try
+        {
+            return CastValue(typeName, value);
+        }
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException)
+        {
+            return null;
+        }
+    }
+
+    private static bool TypeMatches(object? value, string typeName)
+    {
+        if (value is null)
+        {
+            return false;
+        }
+
+        return NormalizeCastTypeName(typeName) switch
+        {
+            "object" => true,
+            "string" => value is string,
+            "bool" => value is bool,
+            "int" => value is int,
+            "long" => value is long,
+            "double" => value is double,
+            "decimal" => value is decimal,
+            "byte" => value is byte,
+            "object[]" => value is object?[],
+            "string[]" => value is string[],
+            "bool[]" => value is bool[],
+            "int[]" => value is int[],
+            "long[]" => value is long[],
+            "double[]" => value is double[],
+            "byte[]" => value is byte[],
+            _ => throw new InvalidOperationException($"Type operator target '[{typeName}]' is not available in this browser-safe runtime.")
+        };
+    }
 
     private static object Add(object? left, object? right)
     {

@@ -78,6 +78,23 @@ $list = @(1)
 $list += 2
 $list.Count
 $list[1]
+([int]'40') + 2
+[string]123
+[bool]0
+[bool]'text'
+([byte[]]@(65,66)).Length
+([byte[]]@(65,66))[0]
+[string[]]@(1,2) -join ':'
+[Convert]::ToBase64String([byte[]]@(65,66))
+'abc' -is [string]
+42 -is [int]
+[int]'42' -is [int]
+'42' -is [int]
+$null -isnot [string]
+'42' -as [int]
+('bad' -as [int]) ?? 'null'
+([byte[]]@(65,66)) -is [byte[]]
+@(1,2) -is [object[]]
 """);
 
     ExpectLines(result, [
@@ -102,7 +119,24 @@ $list[1]
         "1",
         "ab",
         "2",
-        "2"
+        "2",
+        "42",
+        "123",
+        "False",
+        "True",
+        "2",
+        "65",
+        "1:2",
+        "QUI=",
+        "True",
+        "True",
+        "True",
+        "False",
+        "True",
+        "42",
+        "null",
+        "True",
+        "True"
     ]);
 }
 
@@ -597,9 +631,10 @@ $storageBinding.Event
 $storageBinding.Property
 Get-DomValue '#tenant-id'
 $registration = Register-DomEvent -Session $dom -Selector '#query-form' -Event Submit -PreventDefault -ScriptBlock {
+    param($Event)
     $AccountName,$DatabaseName = Get-DomValue '#account-name','#database-name'
     Set-DomProperty '#query-button' Disabled $false
-    Set-DomText '#status' ($EventData.Type + ':' + $AccountName + ':' + $DatabaseName)
+    Set-DomText '#status' ($Event.Type + ':' + $AccountName + ':' + $DatabaseName)
 }
 $registration.RegistrationType
 $registration.Selector
@@ -1040,11 +1075,35 @@ $name
 static async ValueTask VerifyScriptFunctionsAsync()
 {
     var result = await ExecuteAsync("""
+[CmdletBinding()]
+[OutputType([string])]
+param([string]$ScriptName = 'root')
+'script-param:' + $ScriptName
 function Add-Prefix($Text) {
     "pre-$Text"
 }
 Add-Prefix 'one'
 Add-Prefix -Text 'two'
+function Add-Suffix {
+    param([string]$Text = 'default', $Suffix = ($Text + '-suffix'))
+    "$Text-suf"
+    $Suffix
+    $PSBoundParameters.Count
+}
+Add-Suffix 'one'
+Add-Suffix
+function Attribute-Param {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][Alias('n')][string]$Name,
+        [ValidateSet('Dev','Prod')]$Environment = 'Dev'
+    )
+    "$Name-$Environment"
+    $PSBoundParameters.Count
+    $PSBoundParameters['Name']
+}
+Attribute-Param -n 'App'
+Attribute-Param 'Svc' 'Prod'
 function Join-Args {
     $args -join ','
 }
@@ -1068,6 +1127,11 @@ $x
 & { 'call-literal' }
 $sb = { 'call-arg:' + $args[0] + ':' + $args.Count }
 & $sb 'x'
+$sbWithParam = { param([string]$name='default',[string]$suffix='fallback') $name + '-' + $suffix + ':' + $args.Count }
+& $sbWithParam 'alpha' 'omega' 'extra'
+& $sbWithParam
+$metadataScriptBlock = { [CmdletBinding()] param([string]$Text='inline') 'metadata-block:' + $Text }
+& $metadataScriptBlock
 $prefix = 'scope'
 & { $prefix + ':' + ($args -join '|') } 'a' 'b'
 1..2 | & {
@@ -1075,11 +1139,25 @@ $prefix = 'scope'
     $input | % { 'input-item:' + $_ }
     'underscore:' + $_
 }
+1..2 | % { param($item) 'param-item:' + $item }
 """);
 
     ExpectLines(result, [
+        "script-param:root",
         "pre-one",
         "pre-two",
+        "one-suf",
+        "one-suffix",
+        "1",
+        "default-suf",
+        "default-suffix",
+        "0",
+        "App-Dev",
+        "1",
+        "App",
+        "Svc-Prod",
+        "2",
+        "Svc",
         "a,b",
         "pre-three",
         "Add-Prefix",
@@ -1089,11 +1167,16 @@ $prefix = 'scope'
         "outer",
         "call-literal",
         "call-arg:x:1",
+        "alpha-omega:1",
+        "default-fallback:0",
+        "metadata-block:inline",
         "scope:a|b",
         "input-count:2",
         "input-item:1",
         "input-item:2",
-        "underscore:"
+        "underscore:",
+        "param-item:1",
+        "param-item:2"
     ]);
 }
 

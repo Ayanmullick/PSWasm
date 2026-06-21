@@ -531,5 +531,5 @@ public sealed class PowerShellWasmExecutionContext
 
 internal sealed record PowerShellWasmScriptFunction(
     string Name,
-    IReadOnlyList<string> ParameterNames,
+    IReadOnlyList<ParameterDeclarationAst> Parameters,
     ScriptAst Body);

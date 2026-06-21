@@ -9,10 +9,44 @@ public sealed class PowerShellWasmParser
     public ScriptAst Parse(string script)
     {
         var tokens = PowerShellWasmTokenizer.Tokenize(script);
-        return new ScriptAst(ParseStatements(tokens));
+        return ParseScript(tokens);
     }
 
-    private static IReadOnlyList<StatementAst> ParseStatements(IReadOnlyList<PowerShellWasmToken> tokens)
+    private static ScriptAst ParseScript(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var statements = ParseStatements(tokens);
+        var contentStart = statements.FindIndex(static statement => statement is not MetadataAttributeStatementAst);
+        if (contentStart < 0)
+        {
+            return new ScriptAst([]);
+        }
+
+        if (contentStart > 0)
+        {
+            statements = statements.Skip(contentStart).ToList();
+        }
+
+        var paramBlockIndex = statements.FindIndex(static statement => statement is ParamBlockStatementAst);
+        if (paramBlockIndex < 0)
+        {
+            return new ScriptAst(statements);
+        }
+
+        if (paramBlockIndex > 0)
+        {
+            throw new InvalidOperationException("A param block must be the first statement in a script or script block.");
+        }
+
+        if (statements.Skip(1).Any(static statement => statement is ParamBlockStatementAst))
+        {
+            throw new InvalidOperationException("Only one param block is supported in a script or script block.");
+        }
+
+        var paramBlock = (ParamBlockStatementAst)statements[0];
+        return new ScriptAst(statements.Skip(1).ToArray(), paramBlock.Parameters);
+    }
+
+    private static List<StatementAst> ParseStatements(IReadOnlyList<PowerShellWasmToken> tokens)
     {
         var statements = new List<StatementAst>();
         var position = 0;
@@ -75,6 +109,16 @@ public sealed class PowerShellWasmParser
         if (IsKeyword(tokens, 0, "function"))
         {
             return ParseFunctionDefinition(tokens);
+        }
+
+        if (IsKeyword(tokens, 0, "param") && CurrentKind(tokens, 1) == PowerShellWasmTokenKind.LParen)
+        {
+            return ParseParamBlock(tokens);
+        }
+
+        if (TryParseMetadataAttributeStatement(tokens, out var metadataAttribute))
+        {
+            return metadataAttribute;
         }
 
         if (IsKeyword(tokens, 0, "return"))
@@ -462,10 +506,21 @@ public sealed class PowerShellWasmParser
         }
 
         var name = tokens[position++].Text;
-        var parameterNames = CurrentKind(tokens, position) == PowerShellWasmTokenKind.LParen
+        var parameters = CurrentKind(tokens, position) == PowerShellWasmTokenKind.LParen
             ? ReadFunctionParameters(tokens, ref position)
             : [];
         var body = ReadScriptBlock(tokens, ref position, "function");
+        if (parameters.Count > 0 && body.Parameters.Count > 0)
+        {
+            throw new InvalidOperationException("Function parameters must be declared either after the function name or in a param block, not both.");
+        }
+
+        if (parameters.Count == 0 && body.Parameters.Count > 0)
+        {
+            parameters = body.Parameters;
+            body = new ScriptAst(body.Statements);
+        }
+
         SkipStatementSeparators(tokens, ref position);
 
         if (position < tokens.Count)
@@ -473,28 +528,59 @@ public sealed class PowerShellWasmParser
             throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after function definition.");
         }
 
-        return new FunctionDefinitionStatementAst(name, parameterNames, body);
+        return new FunctionDefinitionStatementAst(name, parameters, body);
     }
 
-    private static IReadOnlyList<string> ReadFunctionParameters(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    private static ParamBlockStatementAst ParseParamBlock(IReadOnlyList<PowerShellWasmToken> tokens)
     {
-        var parameterNames = new List<string>();
+        var position = 1;
+        var parameters = ReadFunctionParameters(tokens, ref position);
+        SkipStatementSeparators(tokens, ref position);
+
+        if (position < tokens.Count)
+        {
+            throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after param block.");
+        }
+
+        return new ParamBlockStatementAst(parameters);
+    }
+
+    private static bool TryParseMetadataAttributeStatement(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        out MetadataAttributeStatementAst statement)
+    {
+        statement = null!;
+        if (!TryReadBracketAnnotation(tokens, 0, out var annotation, out var afterPosition) ||
+            !IsScriptMetadataAttributeAnnotation(annotation))
+        {
+            return false;
+        }
+
+        var position = afterPosition;
+        SkipStatementSeparators(tokens, ref position);
+        if (position < tokens.Count)
+        {
+            return false;
+        }
+
+        statement = new MetadataAttributeStatementAst(GetAttributeAnnotationName(annotation));
+        return true;
+    }
+
+    private static IReadOnlyList<ParameterDeclarationAst> ReadFunctionParameters(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    {
+        var parameters = new List<ParameterDeclarationAst>();
         position++;
 
         while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.RParen)
         {
-            if (tokens[position].Kind == PowerShellWasmTokenKind.Comma)
+            if (tokens[position].Kind is PowerShellWasmTokenKind.Comma or PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.Semicolon)
             {
                 position++;
                 continue;
             }
 
-            if (tokens[position].Kind != PowerShellWasmTokenKind.Variable)
-            {
-                throw new InvalidOperationException("Function parameter lists currently support variable names only.");
-            }
-
-            parameterNames.Add(tokens[position++].Text);
+            parameters.Add(ReadParameterDeclaration(tokens, ref position));
         }
 
         if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.RParen)
@@ -503,7 +589,157 @@ public sealed class PowerShellWasmParser
         }
 
         position++;
-        return parameterNames;
+        return parameters;
+    }
+
+    private static ParameterDeclarationAst ReadParameterDeclaration(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    {
+        var annotations = new List<string>();
+        while (CurrentKind(tokens, position) == PowerShellWasmTokenKind.LBracket)
+        {
+            annotations.Add(ReadParameterTypeName(tokens, ref position));
+        }
+
+        var typeName = annotations.Count > 0 && !IsParameterAttributeAnnotation(annotations[^1])
+            ? annotations[^1]
+            : null;
+
+        if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.Variable)
+        {
+            throw new InvalidOperationException("Function parameter lists support optional attributes and type literals followed by variable names.");
+        }
+
+        var name = tokens[position++].Text;
+        ExpressionAst? defaultValue = null;
+        if (CurrentKind(tokens, position) == PowerShellWasmTokenKind.Equals)
+        {
+            position++;
+            var defaultTokens = ReadParameterDefaultValue(tokens, ref position);
+            if (defaultTokens.Count == 0)
+            {
+                throw new InvalidOperationException($"Expected a default value for parameter '${name}'.");
+            }
+
+            defaultValue = ParseExpression(defaultTokens);
+        }
+
+        return new ParameterDeclarationAst(name, typeName, defaultValue, ExtractParameterAliases(annotations));
+    }
+
+    private static IReadOnlyList<string> ExtractParameterAliases(IEnumerable<string> annotations)
+    {
+        var aliases = new List<string>();
+        foreach (var annotation in annotations)
+        {
+            if (!GetAttributeAnnotationName(annotation).Equals("Alias", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var openParen = annotation.IndexOf('(', StringComparison.Ordinal);
+            var closeParen = annotation.LastIndexOf(')');
+            if (openParen < 0 || closeParen <= openParen)
+            {
+                continue;
+            }
+
+            foreach (var alias in annotation[(openParen + 1)..closeParen]
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!string.IsNullOrWhiteSpace(alias))
+                {
+                    aliases.Add(alias.Trim('\'', '"'));
+                }
+            }
+        }
+
+        return aliases;
+    }
+
+    private static bool IsParameterAttributeAnnotation(string annotation)
+    {
+        var name = GetAttributeAnnotationName(annotation);
+        return name.Equals("Parameter", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("Alias", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("AllowNull", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("AllowEmptyString", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("AllowEmptyCollection", StringComparison.OrdinalIgnoreCase) ||
+            name.StartsWith("Validate", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsScriptMetadataAttributeAnnotation(string annotation)
+    {
+        var name = GetAttributeAnnotationName(annotation);
+        return name.Equals("CmdletBinding", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("OutputType", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("SuppressMessage", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("Diagnostics.CodeAnalysis.SuppressMessage", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("System.Diagnostics.CodeAnalysis.SuppressMessage", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetAttributeAnnotationName(string annotation)
+    {
+        var name = annotation;
+        var parenIndex = name.IndexOf('(', StringComparison.Ordinal);
+        if (parenIndex >= 0)
+        {
+            name = name[..parenIndex];
+        }
+
+        if (name.EndsWith("Attribute", StringComparison.OrdinalIgnoreCase))
+        {
+            name = name[..^"Attribute".Length];
+        }
+
+        return name;
+    }
+
+    private static string ReadParameterTypeName(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    {
+        position++;
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.RBracket && depth == 0)
+            {
+                var typeName = string.Concat(tokens.Skip(start).Take(position - start).Select(static token => token.Text));
+                position++;
+                if (string.IsNullOrWhiteSpace(typeName))
+                {
+                    throw new InvalidOperationException("Expected a type name in parameter type literal.");
+                }
+
+                return typeName;
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        throw new InvalidOperationException("Expected ']' to close parameter type literal.");
+    }
+
+    private static IReadOnlyList<PowerShellWasmToken> ReadParameterDefaultValue(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        ref int position)
+    {
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (depth == 0 && tokens[position].Kind is PowerShellWasmTokenKind.Comma or PowerShellWasmTokenKind.RParen)
+            {
+                break;
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        return RemoveTopLevelNewLines(tokens.Skip(start).Take(position - start).ToArray());
     }
 
     private static ExpressionAst ReadParenthesizedExpression(
@@ -616,7 +852,7 @@ public sealed class PowerShellWasmParser
             {
                 var bodyTokens = tokens.Skip(start).Take(position - start).ToArray();
                 position++;
-                return new ScriptAst(ParseStatements(bodyTokens));
+                return ParseScript(bodyTokens);
             }
 
             UpdateDepth(tokens[position], ref depth);
@@ -1012,6 +1248,11 @@ public sealed class PowerShellWasmParser
     {
         var start = position;
         var depth = 0;
+        var leadingParamBlock = IsKeyword(tokens, start, "param") &&
+            CurrentKind(tokens, start + 1) == PowerShellWasmTokenKind.LParen;
+        var leadingMetadataAttribute =
+            TryReadBracketAnnotation(tokens, start, out var annotation, out _) &&
+            IsScriptMetadataAttributeAnnotation(annotation);
 
         while (position < tokens.Count)
         {
@@ -1047,6 +1288,16 @@ public sealed class PowerShellWasmParser
 
             UpdateDepth(token, ref depth);
             position++;
+
+            if (leadingParamBlock && depth == 0 && token.Kind == PowerShellWasmTokenKind.RParen)
+            {
+                break;
+            }
+
+            if (leadingMetadataAttribute && depth == 0 && token.Kind == PowerShellWasmTokenKind.RBracket)
+            {
+                break;
+            }
         }
 
         return RemoveTopLevelNewLines(tokens.Skip(start).Take(position - start).ToArray());
@@ -1169,6 +1420,39 @@ public sealed class PowerShellWasmParser
         return -1;
     }
 
+    private static bool TryReadBracketAnnotation(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        int startPosition,
+        out string annotation,
+        out int afterPosition)
+    {
+        annotation = string.Empty;
+        afterPosition = startPosition;
+        if (CurrentKind(tokens, startPosition) != PowerShellWasmTokenKind.LBracket)
+        {
+            return false;
+        }
+
+        var position = startPosition + 1;
+        var start = position;
+        var depth = 0;
+
+        while (position < tokens.Count)
+        {
+            if (tokens[position].Kind == PowerShellWasmTokenKind.RBracket && depth == 0)
+            {
+                annotation = string.Concat(tokens.Skip(start).Take(position - start).Select(static token => token.Text));
+                afterPosition = position + 1;
+                return !string.IsNullOrWhiteSpace(annotation);
+            }
+
+            UpdateDepth(tokens[position], ref depth);
+            position++;
+        }
+
+        return false;
+    }
+
     private static void UpdateDepth(PowerShellWasmToken token, ref int depth)
     {
         depth += token.Kind switch
@@ -1276,6 +1560,11 @@ public sealed class PowerShellWasmParser
 
         private ExpressionAst ParseUnary()
         {
+            if (TryParseCastExpression(out var cast))
+            {
+                return cast;
+            }
+
             if (Current.Kind.IsUnaryOperator())
             {
                 var op = MapUnaryOperator(Current.Kind);
@@ -1284,6 +1573,21 @@ public sealed class PowerShellWasmParser
             }
 
             return ParsePostfix();
+        }
+
+        private bool TryParseCastExpression(out CastExpressionAst cast)
+        {
+            cast = null!;
+            if (Current.Kind != PowerShellWasmTokenKind.LBracket ||
+                !TryReadTypeName(_position, out var typeName, out var afterTypePosition) ||
+                !IsCastOperandStart(TokenAt(afterTypePosition)))
+            {
+                return false;
+            }
+
+            _position = afterTypePosition;
+            cast = new CastExpressionAst(typeName, ParseUnary());
+            return true;
         }
 
         private ExpressionAst ParsePostfix()
@@ -1382,23 +1686,10 @@ public sealed class PowerShellWasmParser
             return new ParenthesizedExpressionAst(expression);
         }
 
-        private TypeLiteralExpressionAst ParseTypeLiteral()
-        {
-            var typeName = string.Empty;
-            while (Current.Kind is not PowerShellWasmTokenKind.RBracket and not PowerShellWasmTokenKind.EndOfInput)
-            {
-                typeName += Current.Text;
-                _position++;
-            }
-
-            Consume(PowerShellWasmTokenKind.RBracket);
-            if (string.IsNullOrWhiteSpace(typeName))
-            {
-                throw new InvalidOperationException("Expected a type name inside '[]'.");
-            }
-
-            return new TypeLiteralExpressionAst(typeName);
-        }
+        private TypeLiteralExpressionAst ParseTypeLiteral() =>
+            TryReadTypeName(_position - 1, out var typeName, out _position)
+                ? new TypeLiteralExpressionAst(typeName)
+                : throw new InvalidOperationException("Expected a type name inside '[]'.");
 
         private IReadOnlyList<ExpressionAst> ParseArgumentList()
         {
@@ -1479,7 +1770,7 @@ public sealed class PowerShellWasmParser
 
             var bodyTokens = tokens.Skip(start).Take(_position - start).ToArray();
             Consume(PowerShellWasmTokenKind.RBrace);
-            return new ScriptBlockExpressionAst(new ScriptAst(ParseStatements(bodyTokens)));
+            return new ScriptBlockExpressionAst(ParseScript(bodyTokens));
         }
 
         private HashtableExpressionAst ParseHashtable()
@@ -1572,6 +1863,54 @@ public sealed class PowerShellWasmParser
             return position < tokens.Count ? tokens[position] : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
         }
 
+        private PowerShellWasmToken TokenAt(int position) =>
+            position < tokens.Count ? tokens[position] : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
+
+        private bool TryReadTypeName(int startPosition, out string typeName, out int afterTypePosition)
+        {
+            typeName = string.Empty;
+            afterTypePosition = startPosition;
+            if (TokenAt(startPosition).Kind != PowerShellWasmTokenKind.LBracket)
+            {
+                return false;
+            }
+
+            var position = startPosition + 1;
+            var start = position;
+            var depth = 0;
+
+            while (position < tokens.Count)
+            {
+                if (tokens[position].Kind == PowerShellWasmTokenKind.RBracket && depth == 0)
+                {
+                    typeName = string.Concat(tokens.Skip(start).Take(position - start).Select(static token => token.Text));
+                    afterTypePosition = position + 1;
+                    return !string.IsNullOrWhiteSpace(typeName);
+                }
+
+                UpdateDepth(tokens[position], ref depth);
+                position++;
+            }
+
+            return false;
+        }
+
+        private static bool IsCastOperandStart(PowerShellWasmToken token) =>
+            token.Kind is
+                PowerShellWasmTokenKind.Number or
+                PowerShellWasmTokenKind.StringLiteral or
+                PowerShellWasmTokenKind.ExpandableStringLiteral or
+                PowerShellWasmTokenKind.Variable or
+                PowerShellWasmTokenKind.Identifier or
+                PowerShellWasmTokenKind.LParen or
+                PowerShellWasmTokenKind.LBrace or
+                PowerShellWasmTokenKind.AtLParen or
+                PowerShellWasmTokenKind.LBracket or
+                PowerShellWasmTokenKind.Plus or
+                PowerShellWasmTokenKind.Minus or
+                PowerShellWasmTokenKind.Not or
+                PowerShellWasmTokenKind.Bnot;
+
         private static ExpressionAst ParseNumber(string text) =>
             int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intValue)
                 ? new NumberExpressionAst(intValue)
@@ -1637,6 +1976,9 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.Inotcontains => PowerShellWasmBinaryOperator.NotContains,
                 PowerShellWasmTokenKind.Iin => PowerShellWasmBinaryOperator.In,
                 PowerShellWasmTokenKind.Inotin => PowerShellWasmBinaryOperator.NotIn,
+                PowerShellWasmTokenKind.Iis => PowerShellWasmBinaryOperator.TypeIs,
+                PowerShellWasmTokenKind.Inotis => PowerShellWasmBinaryOperator.TypeIsNot,
+                PowerShellWasmTokenKind.Ias => PowerShellWasmBinaryOperator.TypeAs,
                 PowerShellWasmTokenKind.Ceq => PowerShellWasmBinaryOperator.CaseSensitiveEqual,
                 PowerShellWasmTokenKind.Cne => PowerShellWasmBinaryOperator.CaseSensitiveNotEqual,
                 PowerShellWasmTokenKind.Cge => PowerShellWasmBinaryOperator.CaseSensitiveGreaterThanOrEqual,

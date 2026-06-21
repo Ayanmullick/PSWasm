@@ -4,7 +4,13 @@ namespace PSWasm.Language;
 // Browser note: this is a small AST profile for PSWasm, not a verbatim copy of SMA's full AST hierarchy.
 public abstract record PowerShellWasmAst;
 
-public sealed record ScriptAst(IReadOnlyList<StatementAst> Statements) : PowerShellWasmAst;
+public sealed record ScriptAst(IReadOnlyList<StatementAst> Statements, IReadOnlyList<ParameterDeclarationAst> Parameters) : PowerShellWasmAst
+{
+    public ScriptAst(IReadOnlyList<StatementAst> Statements)
+        : this(Statements, [])
+    {
+    }
+}
 
 public abstract record StatementAst : PowerShellWasmAst;
 
@@ -69,8 +75,18 @@ public sealed record SwitchClauseAst(ExpressionAst Pattern, ScriptAst Body) : Po
 
 public sealed record FunctionDefinitionStatementAst(
     string Name,
-    IReadOnlyList<string> ParameterNames,
+    IReadOnlyList<ParameterDeclarationAst> Parameters,
     ScriptAst Body) : StatementAst;
+
+public sealed record ParamBlockStatementAst(IReadOnlyList<ParameterDeclarationAst> Parameters) : StatementAst;
+
+public sealed record ParameterDeclarationAst(
+    string Name,
+    string? TypeName,
+    ExpressionAst? DefaultValue,
+    IReadOnlyList<string> Aliases) : PowerShellWasmAst;
+
+public sealed record MetadataAttributeStatementAst(string Name) : StatementAst;
 
 public sealed record ReturnStatementAst(ExpressionAst? Expression) : StatementAst;
 
@@ -132,6 +148,8 @@ public sealed record StatementExpressionAst(StatementAst Statement) : Expression
 
 public sealed record TypeLiteralExpressionAst(string TypeName) : ExpressionAst;
 
+public sealed record CastExpressionAst(string TypeName, ExpressionAst Operand) : ExpressionAst;
+
 public sealed record MemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 
 public sealed record StaticMemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
@@ -191,6 +209,9 @@ public enum PowerShellWasmBinaryOperator
     NotContains,
     In,
     NotIn,
+    TypeIs,
+    TypeIsNot,
+    TypeAs,
     CaseSensitiveEqual,
     CaseSensitiveNotEqual,
     CaseSensitiveGreaterThan,
