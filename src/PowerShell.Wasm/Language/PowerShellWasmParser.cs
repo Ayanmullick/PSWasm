@@ -102,6 +102,11 @@ public sealed class PowerShellWasmParser
             return new ContinueStatementAst();
         }
 
+        if (TryParseCompoundAssignmentStatement(tokens, out var compoundAssignment))
+        {
+            return compoundAssignment;
+        }
+
         var equals = FindTopLevel(tokens, PowerShellWasmTokenKind.Equals);
         if (tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Variable && equals > 0)
         {
@@ -882,6 +887,23 @@ public sealed class PowerShellWasmParser
         SplitTopLevelPipelineChain(tokens).Segments.Count > 1 ||
         SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe).Count > 1;
 
+    private static bool TryParseCompoundAssignmentStatement(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        out CompoundAssignmentStatementAst statement)
+    {
+        statement = null!;
+        if (tokens.Count < 4 ||
+            tokens[0].Kind != PowerShellWasmTokenKind.Variable ||
+            !TryMapCompoundAssignmentOperator(tokens[1].Kind, out var op) ||
+            tokens[2].Kind != PowerShellWasmTokenKind.Equals)
+        {
+            return false;
+        }
+
+        statement = new CompoundAssignmentStatementAst(tokens[0].Text, op, ParseExpression(tokens.Skip(3).ToArray()));
+        return true;
+    }
+
     private static bool TryReadAssignmentTargets(
         IReadOnlyList<PowerShellWasmToken> tokens,
         int equals,
@@ -916,6 +938,22 @@ public sealed class PowerShellWasmParser
 
         variableNames = names;
         return names.Count > 0 && !expectVariable;
+    }
+
+    private static bool TryMapCompoundAssignmentOperator(PowerShellWasmTokenKind kind, out PowerShellWasmBinaryOperator op)
+    {
+        op = kind switch
+        {
+            PowerShellWasmTokenKind.Plus => PowerShellWasmBinaryOperator.Add,
+            PowerShellWasmTokenKind.Minus => PowerShellWasmBinaryOperator.Subtract,
+            PowerShellWasmTokenKind.Star => PowerShellWasmBinaryOperator.Multiply,
+            PowerShellWasmTokenKind.Slash => PowerShellWasmBinaryOperator.Divide,
+            PowerShellWasmTokenKind.Remainder => PowerShellWasmBinaryOperator.Remainder,
+            _ => default
+        };
+
+        return kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus or PowerShellWasmTokenKind.Star or
+            PowerShellWasmTokenKind.Slash or PowerShellWasmTokenKind.Remainder;
     }
 
     private static bool TryParseVariableIncrementStatement(
@@ -1172,6 +1210,15 @@ public sealed class PowerShellWasmParser
 
         private ExpressionAst ParseAssignment()
         {
+            if (Current.Kind == PowerShellWasmTokenKind.Variable &&
+                TryMapCompoundAssignmentOperator(Peek(1).Kind, out var compoundOperator) &&
+                Peek(2).Kind == PowerShellWasmTokenKind.Equals)
+            {
+                var variable = Current.Text;
+                _position += 3;
+                return new CompoundAssignmentExpressionAst(variable, compoundOperator, ParseAssignment());
+            }
+
             if (Current.Kind == PowerShellWasmTokenKind.Variable && Peek(1).Kind == PowerShellWasmTokenKind.Equals)
             {
                 var variable = Current.Text;
@@ -1431,7 +1478,7 @@ public sealed class PowerShellWasmParser
                     break;
                 }
 
-                var key = ReadHashtableKey();
+                var key = ReadHashtableKeyExpression();
                 Consume(PowerShellWasmTokenKind.Equals);
                 entries.Add(new(key, ParseAssignment()));
                 SkipExpressionSeparators();
@@ -1460,11 +1507,26 @@ public sealed class PowerShellWasmParser
             return new ArrayExpressionAst(items);
         }
 
-        private string ReadHashtableKey()
+        private ExpressionAst ReadHashtableKeyExpression()
         {
-            var token = Current;
-            _position++;
-            return token.Text;
+            var start = _position;
+            var depth = 0;
+
+            while (Current.Kind is not PowerShellWasmTokenKind.EndOfInput)
+            {
+                if (Current.Kind == PowerShellWasmTokenKind.Equals && depth == 0)
+                {
+                    break;
+                }
+
+                UpdateDepth(Current, ref depth);
+                _position++;
+            }
+
+            var keyTokens = RemoveTopLevelNewLines(tokens.Skip(start).Take(_position - start).ToArray());
+            return keyTokens.Count == 1 && keyTokens[0].Kind == PowerShellWasmTokenKind.Identifier
+                ? new BareWordExpressionAst(keyTokens[0].Text)
+                : ParseExpression(keyTokens);
         }
 
         private void SkipExpressionSeparators()

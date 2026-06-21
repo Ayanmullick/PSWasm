@@ -9,6 +9,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("regular expressions", VerifyRegularExpressionsAsync),
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),
+    ("expandable strings", VerifyExpandableStringsAsync),
     ("parallel assignment", VerifyParallelAssignmentAsync),
     ("browser-safe dotnet interop", VerifyBrowserSafeDotNetInteropAsync),
     ("variable commands", VerifyVariableCommandsAsync),
@@ -62,6 +63,21 @@ $var
 'a b c' -split ' '
 '{0}-{1}' -f @('left','right')
 $missing ?? 'fallback'
+$compound = 5
+$compound += 3
+$compound
+($compound *= 2)
+$compound -= 4
+$compound /= 2
+$compound %= 5
+$compound
+$text = 'a'
+$text += 'b'
+$text
+$list = @(1)
+$list += 2
+$list.Count
+$list[1]
 """);
 
     ExpectLines(result, [
@@ -80,7 +96,13 @@ $missing ?? 'fallback'
         "b",
         "c",
         "left-right",
-        "fallback"
+        "fallback",
+        "8",
+        "16",
+        "1",
+        "ab",
+        "2",
+        "2"
     ]);
 }
 
@@ -330,6 +352,13 @@ $Map = @{
 }
 $Map['#tenant-id']
 $Map['#client-id']
+$KeyName = '#computed-client-id'
+$ComputedMap = @{
+    ('#' + 'computed-tenant-id') = 'computedTenant'
+    $KeyName = 'computedClient'
+}
+$ComputedMap['#computed-tenant-id']
+$ComputedMap['#computed-client-id']
 $Map
 """);
 
@@ -351,10 +380,32 @@ $Map
         "2",
         "cosmosTenant",
         "cosmosClientId",
+        "computedTenant",
+        "computedClient",
         "Name        Value",
         "----        -----",
         "#tenant-id  cosmosTenant",
         "#client-id  cosmosClientId"
+    ]);
+}
+
+static async ValueTask VerifyExpandableStringsAsync()
+{
+    var result = await ExecuteAsync("""
+$Name = 'World'
+"Hello $Name ${Name}"
+$Token = @{Token='abc123'}
+"Bearer $($Token.Token)"
+"Trimmed=$((Write-Output ' abc ').Trim())"
+$OFS = '|'
+"Items=$(Write-Output 'a'; Write-Output 'b')"
+""");
+
+    ExpectLines(result, [
+        "Hello World World",
+        "Bearer abc123",
+        "Trimmed=abc",
+        "Items=a|b"
     ]);
 }
 
@@ -734,6 +785,10 @@ static async ValueTask VerifyObjectPipelineCommandsAsync()
     Select-Object -ExpandProperty Name
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Select-Object -First 2 Name
+1..3 | ForEach-Object -Begin { 'begin' } -Process { $_ * 2 } -End { 'end' }
+$sum = 0
+1..3 | ForEach-Object -Begin { $sum = 10 } -Process { $sum += $_ } -End { $sum }
+1..2 | ForEach-Object -Begin { 'only-begin' } -End { 'only-end' }
 """);
 
     ExpectLines(result, [
@@ -742,7 +797,15 @@ static async ValueTask VerifyObjectPipelineCommandsAsync()
         "two",
         "three",
         "@{Name=one}",
-        "@{Name=two}"
+        "@{Name=two}",
+        "begin",
+        "2",
+        "4",
+        "6",
+        "end",
+        "16",
+        "only-begin",
+        "only-end"
     ]);
 }
 

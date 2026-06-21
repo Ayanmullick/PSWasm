@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.ExceptionServices;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace PSWasm.Language;
@@ -40,6 +41,9 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             case AssignmentStatementAst assignment:
                 executionContext.SetVariable(assignment.VariableName, await EvaluateExpressionAsync(assignment.Value, cancellationToken));
+                break;
+            case CompoundAssignmentStatementAst assignment:
+                await EvaluateCompoundAssignmentAsync(assignment.VariableName, assignment.Operator, assignment.Value, cancellationToken);
                 break;
             case ParallelAssignmentStatementAst assignment:
                 AssignParallel(assignment.VariableNames, await EvaluateExpressionAsync(assignment.Value, cancellationToken));
@@ -637,13 +641,19 @@ internal sealed class PowerShellWasmAstExecutor(
             case NumberExpressionAst number:
                 return number.Value;
             case StringExpressionAst text:
-                return text.IsExpandable ? ExpandString(text.Value) : text.Value;
+                return text.IsExpandable ? await ExpandStringAsync(text.Value, cancellationToken) : text.Value;
             case VariableExpressionAst variable:
                 return variable.IsEnvironment
                     ? executionContext.GetEnvironmentVariable(variable.Name) ?? string.Empty
                     : EvaluateVariable(variable.Name);
             case AssignmentExpressionAst assignment:
                 return await EvaluateAssignmentAsync(assignment, cancellationToken);
+            case CompoundAssignmentExpressionAst assignment:
+                return await EvaluateCompoundAssignmentAsync(
+                    assignment.VariableName,
+                    assignment.Operator,
+                    assignment.Value,
+                    cancellationToken);
             case HashtableExpressionAst hashtable:
                 return await EvaluateHashtableAsync(hashtable, cancellationToken);
             case ArrayExpressionAst array:
@@ -689,6 +699,19 @@ internal sealed class PowerShellWasmAstExecutor(
         return value;
     }
 
+    private async ValueTask<object?> EvaluateCompoundAssignmentAsync(
+        string variableName,
+        PowerShellWasmBinaryOperator op,
+        ExpressionAst expression,
+        CancellationToken cancellationToken)
+    {
+        var left = EvaluateVariable(variableName);
+        var right = await EvaluateExpressionAsync(expression, cancellationToken);
+        var value = ApplyBinaryOperator(left, op, right);
+        executionContext.SetVariable(variableName, value);
+        return value;
+    }
+
     private async ValueTask<PowerShellWasmHashtable> EvaluateHashtableAsync(
         HashtableExpressionAst hashtable,
         CancellationToken cancellationToken)
@@ -696,7 +719,8 @@ internal sealed class PowerShellWasmAstExecutor(
         var result = new PowerShellWasmHashtable();
         foreach (var entry in hashtable.Entries)
         {
-            result[entry.Key] = await EvaluateExpressionAsync(entry.Value, cancellationToken);
+            var key = ToInvariantString(await EvaluateExpressionAsync(entry.Key, cancellationToken));
+            result[key] = await EvaluateExpressionAsync(entry.Value, cancellationToken);
         }
 
         return result;
@@ -946,7 +970,11 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         var right = await EvaluateExpressionAsync(binary.Right, cancellationToken);
-        return binary.Operator switch
+        return ApplyBinaryOperator(left, binary.Operator, right);
+    }
+
+    private object? ApplyBinaryOperator(object? left, PowerShellWasmBinaryOperator op, object? right) =>
+        op switch
         {
             PowerShellWasmBinaryOperator.Add => Add(left, right),
             PowerShellWasmBinaryOperator.Subtract => NormalizeNumber(ToNumber(left) - ToNumber(right)),
@@ -996,7 +1024,6 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.CaseSensitiveNotIn => !Contains(right, left, caseSensitive: true),
             _ => left
         };
-    }
 
     private static object Add(object? left, object? right)
     {
@@ -1260,28 +1287,200 @@ internal sealed class PowerShellWasmAstExecutor(
     private static bool TryGetDictionaryValue(Dictionary<string, object?> dictionary, string key, out object? value) =>
         dictionary.TryGetValue(key, out value);
 
-    private string ExpandString(string value) =>
-        Regex.Replace(value, @"\$\{(?<braced>(?:env:)?[A-Za-z_][A-Za-z0-9_:]*)\}|\$(?<env>env:)?(?<name>[A-Za-z_][A-Za-z0-9_]*)", match =>
+    private async ValueTask<string> ExpandStringAsync(string value, CancellationToken cancellationToken)
+    {
+        var builder = new StringBuilder();
+        for (var i = 0; i < value.Length;)
         {
-            if (match.Groups["braced"].Success)
+            if (value[i] != '$')
             {
-                var bracedName = match.Groups["braced"].Value;
-                if (bracedName.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+                builder.Append(value[i++]);
+                continue;
+            }
+
+            if (TryReadSubexpression(value, i, out var script, out var nextIndex))
+            {
+                builder.Append(await EvaluateExpandableSubexpressionAsync(script, cancellationToken));
+                i = nextIndex;
+                continue;
+            }
+
+            if (TryReadBracedVariable(value, i, out var bracedName, out nextIndex))
+            {
+                builder.Append(ExpandVariable(bracedName));
+                i = nextIndex;
+                continue;
+            }
+
+            if (TryReadVariable(value, i, out var name, out nextIndex))
+            {
+                builder.Append(ExpandVariable(name));
+                i = nextIndex;
+                continue;
+            }
+
+            builder.Append(value[i++]);
+        }
+
+        return builder.ToString();
+    }
+
+    private async ValueTask<string> EvaluateExpandableSubexpressionAsync(string script, CancellationToken cancellationToken)
+    {
+        var output = new List<object?>();
+        using (executionContext.CaptureOutput(output))
+        {
+            await ExecuteAsync(new PowerShellWasmParser().Parse(script), cancellationToken);
+        }
+
+        var captured = executionContext.GetCapturedOutput(output);
+        return captured.Count switch
+        {
+            0 => string.Empty,
+            1 => ToExpandableString(captured[0]),
+            _ => string.Join(executionContext.OutputFieldSeparator, captured.Select(ToExpandableString))
+        };
+    }
+
+    private string ExpandVariable(string name)
+    {
+        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            return executionContext.GetEnvironmentVariable(name[4..]) ?? string.Empty;
+        }
+
+        return ToExpandableString(executionContext.GetVariable(name));
+    }
+
+    private static bool TryReadSubexpression(string value, int start, out string script, out int nextIndex)
+    {
+        script = string.Empty;
+        nextIndex = start;
+        if (start + 1 >= value.Length || value[start + 1] != '(')
+        {
+            return false;
+        }
+
+        var expressionStart = start + 2;
+        var depth = 1;
+        char? quote = null;
+        for (var i = expressionStart; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (quote is not null)
+            {
+                if (ch == quote)
                 {
-                    return executionContext.GetEnvironmentVariable(bracedName[4..]) ?? string.Empty;
+                    quote = null;
                 }
 
-                return ToExpandableString(executionContext.GetVariable(bracedName));
+                continue;
             }
 
-            var name = match.Groups["name"].Value;
-            if (match.Groups["env"].Success)
+            if (ch is '\'' or '"')
             {
-                return executionContext.GetEnvironmentVariable(name) ?? string.Empty;
+                quote = ch;
+                continue;
             }
 
-            return ToExpandableString(executionContext.GetVariable(name));
-        });
+            if (ch == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch != ')')
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth == 0)
+            {
+                script = value[expressionStart..i];
+                nextIndex = i + 1;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryReadBracedVariable(string value, int start, out string name, out int nextIndex)
+    {
+        name = string.Empty;
+        nextIndex = start;
+        if (start + 2 >= value.Length || value[start + 1] != '{')
+        {
+            return false;
+        }
+
+        var end = value.IndexOf('}', start + 2);
+        if (end < 0)
+        {
+            return false;
+        }
+
+        var candidate = value[(start + 2)..end];
+        if (!IsVariableName(candidate, allowColon: true))
+        {
+            return false;
+        }
+
+        name = candidate;
+        nextIndex = end + 1;
+        return true;
+    }
+
+    private static bool TryReadVariable(string value, int start, out string name, out int nextIndex)
+    {
+        name = string.Empty;
+        nextIndex = start;
+        var position = start + 1;
+        var hasEnvironmentScope = false;
+        if (position + 4 <= value.Length && value.AsSpan(position, 4).Equals("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            hasEnvironmentScope = true;
+            position += 4;
+        }
+
+        var nameStart = position;
+        if (position >= value.Length || !IsVariableStart(value[position]))
+        {
+            return false;
+        }
+
+        position++;
+        while (position < value.Length && IsVariablePart(value[position]))
+        {
+            position++;
+        }
+
+        name = hasEnvironmentScope ? "env:" + value[nameStart..position] : value[nameStart..position];
+        nextIndex = position;
+        return true;
+    }
+
+    private static bool IsVariableName(string name, bool allowColon)
+    {
+        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            return name.Length > 4 && IsVariableName(name[4..], allowColon: false);
+        }
+
+        if (name.Length == 0 || !IsVariableStart(name[0]))
+        {
+            return false;
+        }
+
+        return name.Skip(1).All(ch => allowColon && ch == ':' || IsVariablePart(ch));
+    }
+
+    private static bool IsVariableStart(char ch) =>
+        ch is '_' || char.IsLetter(ch);
+
+    private static bool IsVariablePart(char ch) =>
+        ch is '_' || char.IsLetterOrDigit(ch);
 
     private string ToExpandableString(object? value) =>
         value is object?[] array

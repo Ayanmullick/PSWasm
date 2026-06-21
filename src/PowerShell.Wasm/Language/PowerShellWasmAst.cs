@@ -10,6 +10,11 @@ public abstract record StatementAst : PowerShellWasmAst;
 
 public sealed record AssignmentStatementAst(string VariableName, ExpressionAst Value) : StatementAst;
 
+public sealed record CompoundAssignmentStatementAst(
+    string VariableName,
+    PowerShellWasmBinaryOperator Operator,
+    ExpressionAst Value) : StatementAst;
+
 public sealed record ParallelAssignmentStatementAst(IReadOnlyList<string> VariableNames, ExpressionAst Value) : StatementAst;
 
 public sealed record VariableIncrementStatementAst(string VariableName, int Delta) : StatementAst;
@@ -106,9 +111,14 @@ public sealed record VariableExpressionAst(string Name, bool IsEnvironment) : Ex
 
 public sealed record AssignmentExpressionAst(string VariableName, ExpressionAst Value) : ExpressionAst;
 
+public sealed record CompoundAssignmentExpressionAst(
+    string VariableName,
+    PowerShellWasmBinaryOperator Operator,
+    ExpressionAst Value) : ExpressionAst;
+
 public sealed record HashtableExpressionAst(IReadOnlyList<HashtableEntryAst> Entries) : ExpressionAst;
 
-public sealed record HashtableEntryAst(string Key, ExpressionAst Value) : PowerShellWasmAst;
+public sealed record HashtableEntryAst(ExpressionAst Key, ExpressionAst Value) : PowerShellWasmAst;
 
 public sealed record ArrayExpressionAst(IReadOnlyList<ExpressionAst> Items) : ExpressionAst;
 
