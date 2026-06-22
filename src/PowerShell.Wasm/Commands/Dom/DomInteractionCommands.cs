@@ -30,6 +30,35 @@ internal sealed class SetDomTextCommand : IPowerShellWasmCommand
     }
 }
 
+internal sealed class SetDomHtmlCommand : IPowerShellWasmCommand
+{
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    {
+        var host = DomCommandUtilities.GetDomHost(context);
+        var selector = DomCommandUtilities.GetRequiredText(context, "Selector", 0);
+        var html = GetHtml(context);
+        await host.SetHtmlAsync(selector, html, cancellationToken);
+    }
+
+    private static string GetHtml(PowerShellWasmCommandContext context)
+    {
+        if (context.Parameters.TryGetValue("Html", out var html))
+        {
+            return PowerShellWasmCommandUtilities.FormatValue(html);
+        }
+
+        if (context.Arguments.Count > 1)
+        {
+            return PowerShellWasmCommandUtilities.FormatValue(context.Arguments[1]);
+        }
+
+        var input = PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput)
+            .Select(PowerShellWasmCommandUtilities.FormatValue)
+            .ToArray();
+        return string.Join(Environment.NewLine, input);
+    }
+}
+
 internal sealed class GetDomValueCommand : IPowerShellWasmCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)

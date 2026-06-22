@@ -6,6 +6,8 @@ public interface IPowerShellWasmDomHost
 
     ValueTask SetTextAsync(string selector, string text, CancellationToken cancellationToken);
 
+    ValueTask SetHtmlAsync(string selector, string html, CancellationToken cancellationToken);
+
     ValueTask<string> GetValueAsync(string selector, CancellationToken cancellationToken);
 
     ValueTask SetPropertyAsync(string selector, string propertyName, object? value, CancellationToken cancellationToken);

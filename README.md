@@ -55,6 +55,7 @@ The detailed documentation lives in the GitHub Wiki:
 * [Language Support](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support)
 * [Browser Commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands)
 * [DOM Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlets)
+* [DOM Cmdlet Reference](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlet-Reference)
 * [Azure Auth Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/Azure-Auth-Cmdlets)
 * [Browser Usage](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Usage)
 * [Runtime Flavors and Payload Optimization](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Flavors-and-Payload-Optimization)
@@ -68,7 +69,7 @@ The default/full PSWasm browser host currently includes:
 * browser-safe parser, AST profile, executor, session state, command dispatch, and object pipeline support
 * variables, parallel assignment, arrays, hashtables with literal and computed keys, `[pscustomobject]@{}` / `[ordered]@{}` literals, primitive casts, splatting, expandable strings with `$()` subexpressions, script blocks, simple typed/default `param(...)` blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
 * common PowerShell-style operators, including arithmetic, compound assignment, comparisons, primitive type operators, wildcard/regex operators, script block call operator `&`, `-replace`, `-split`, `-join`, `-f`, `&&`, `||`, `$i++`, `$i--`, and `??`
-* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/object pipeline commands, `?` / `%` pipeline aliases, `Invoke-WebRequest`, DOM session/interaction/storage commands, and user-delegated browser Azure auth commands
+* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/HTML/object pipeline commands, `?` / `%` pipeline aliases, `Invoke-WebRequest`, DOM session/interaction/storage commands, and user-delegated browser Azure auth commands
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods
 * a browser host that auto-runs `<script type="pwsh">` blocks and exposes JavaScript helpers for custom hosts
 
@@ -111,6 +112,12 @@ Publish clean browser flavors for payload comparison:
 Use `web` for static pages that need DOM event binding and `Invoke-WebRequest`.
 Use `AzAuth` for static pages that need DOM event binding, `Invoke-WebRequest`, browser-safe HMAC/Base64/URI helper coverage, and user-delegated Entra access tokens.
 Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `artifacts/BrowserFlavors/<flavor>/wwwroot` into your static app.
+
+For browser DOM output, generate HTML as PowerShell output and render it explicitly:
+
+```powershell
+$Rows | ConvertTo-Html -Fragment -Property Id,Name,Status | Set-DomHtml '#output'
+```
 
 Publish host-ready flavor folders for static hosting:
 

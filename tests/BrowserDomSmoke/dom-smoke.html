@@ -11,11 +11,14 @@
     <button id="dom-sample-button" type="submit">Update text</button>
   </form>
   <p id="dom-sample-status"></p>
+  <div id="dom-sample-html"></div>
 
   <script type="pwsh">
 $Dom = New-DomSession -Name Smoke -Target document
 Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSmokeName'}
 Set-DomText '#dom-sample-status' 'DOM event handler ready.'
+$Rows = @([pscustomobject]@{Name='PowerShell';Status='<Ready>'})
+$Rows | ConvertTo-Html -Fragment -Property Name,Status | Set-DomHtml '#dom-sample-html'
 Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -PreventDefault -ScriptBlock {
     Set-DomProperty '#dom-sample-button' Disabled $true
     $Name = Get-DomValue '#dom-sample-name'

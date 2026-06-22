@@ -8,9 +8,22 @@ Get-Command Connect-AzAccount
 Get-Command Get-AzAccessToken
 Get-Command New-DomSession
 Get-Command Register-DomEvent
+Get-Command Set-DomHtml
 'optional commands excluded'
 """, [
     "optional commands excluded"
+]);
+
+await ExpectLinesAsync(runtime, """
+Get-Command ConvertTo-Html | Select-Object -ExpandProperty Name
+[pscustomobject]@{Name='core';Status='<ok>'} | ConvertTo-Html -Fragment -Property Name,Status
+""", [
+    "ConvertTo-Html",
+    "<table>",
+    "<colgroup><col/><col/></colgroup>",
+    "<tr><th>Name</th><th>Status</th></tr>",
+    "<tr><td>core</td><td>&lt;ok&gt;</td></tr>",
+    "</table>"
 ]);
 
 await ExpectRuntimeErrorAsync(
@@ -32,6 +45,11 @@ await ExpectRuntimeErrorAsync(
     runtime,
     "New-DomSession -Name Main -Target document",
     "Command 'New-DomSession' is not registered in this browser runtime.");
+
+await ExpectRuntimeErrorAsync(
+    runtime,
+    "Set-DomHtml '#output' '<strong>Ready</strong>'",
+    "Command 'Set-DomHtml' is not registered in this browser runtime.");
 
 await ExpectRuntimeErrorAsync(
     runtime,

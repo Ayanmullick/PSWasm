@@ -33,6 +33,7 @@ public sealed class PowerShellWasmRuntime
 #endif
         RegisterCommand("ConvertFrom-Csv", new ConvertFromCsvCommand());
         RegisterCommand("ConvertFrom-Json", new ConvertFromJsonCommand());
+        RegisterCommand("ConvertTo-Html", new ConvertToHtmlCommand());
         RegisterCommand("ConvertTo-Json", new ConvertToJsonCommand());
 #if PSWASM_AZURE_AUTH
         RegisterCommand("Disconnect-AzAccount", new DisconnectAzAccountCommand(azureAuthHost));
@@ -79,6 +80,7 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Select-String", new SelectStringCommand());
         RegisterCommand("sls", new SelectStringCommand());
 #if PSWASM_DOM
+        RegisterCommand("Set-DomHtml", new SetDomHtmlCommand());
         RegisterCommand("Clear-DomStorage", new ClearDomStorageCommand());
         RegisterCommand("Set-DomProperty", new SetDomPropertyCommand());
         RegisterCommand("Set-DomStorageItem", new SetDomStorageItemCommand());

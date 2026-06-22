@@ -329,11 +329,17 @@ Get-DomSession Main | Select-Object -ExpandProperty SessionType
     <button id="dom-sample-button" type="submit">Update text</button>
   </form>
   <p id="dom-sample-status"></p>
+  <div id="dom-sample-html"></div>
 
   <script type="pwsh">
 $Dom = New-DomSession -Name Ui -Target document
 $StorageBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSampleName'}
 Set-DomText '#dom-sample-status' 'DOM event handler ready.'
+$Rows = @(
+    [pscustomobject]@{Name='PowerShell';Status='<Ready>'}
+    [pscustomobject]@{Name='Browser';Status='Rendered'}
+)
+$Rows | ConvertTo-Html -Fragment -Property Name,Status | Set-DomHtml '#dom-sample-html'
 $Registration = Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -PreventDefault -ScriptBlock {
     Set-DomProperty '#dom-sample-button' Disabled $true
     $Name = Get-DomValue '#dom-sample-name'

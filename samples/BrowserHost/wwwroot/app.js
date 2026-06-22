@@ -16,6 +16,9 @@ globalThis.pswasmDom = {
   setText: (selector, text) => {
     resolveDomElement(selector).textContent = text ?? "";
   },
+  setHtml: (selector, html) => {
+    resolveDomElement(selector).innerHTML = html ?? "";
+  },
   getValue: selector => {
     const element = resolveDomElement(selector);
     return getElementValue(element);

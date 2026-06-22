@@ -25,6 +25,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("object pipeline commands", VerifyObjectPipelineCommandsAsync),
     ("format commands", VerifyFormatCommandsAsync),
     ("json and csv commands", VerifyJsonAndCsvCommandsAsync),
+    ("html commands", VerifyHtmlCommandsAsync),
     ("sort and measure commands", VerifySortAndMeasureCommandsAsync),
     ("group and output commands", VerifyGroupAndOutputCommandsAsync),
     ("region comments", VerifyRegionCommentsAsync),
@@ -640,6 +641,8 @@ $registration.RegistrationType
 $registration.Selector
 $registration.Event
 $registration.PreventDefault
+$rows = @([pscustomobject]@{Name='Ada';Status='<Ready>'})
+$rows | ConvertTo-Html -Fragment -Property Name,Status | Set-DomHtml '#html-output'
 Get-Command *-Dom* | Select-Object -ExpandProperty Name
 """);
 
@@ -667,10 +670,23 @@ Get-Command *-Dom* | Select-Object -ExpandProperty Name
         "Register-DomStorageBinding",
         "Remove-DomSession",
         "Remove-DomStorageItem",
+        "Set-DomHtml",
         "Set-DomProperty",
         "Set-DomStorageItem",
         "Set-DomText"
     ]);
+
+    var expectedHtml = string.Join(Environment.NewLine, [
+        "<table>",
+        "<colgroup><col/><col/></colgroup>",
+        "<tr><th>Name</th><th>Status</th></tr>",
+        "<tr><td>Ada</td><td>&lt;Ready&gt;</td></tr>",
+        "</table>"
+    ]);
+    if (!domHost.Text.TryGetValue("#html-output", out var html) || html != expectedHtml)
+    {
+        Fail($"Expected Set-DomHtml to receive converted HTML:{Environment.NewLine}{expectedHtml}{Environment.NewLine}Actual:{Environment.NewLine}{html}");
+    }
 
     domHost.Values["#tenant-id"] = "typed-tenant";
     await domHost.TriggerStorageBindingAsync("#tenant-id", "Input");
@@ -884,6 +900,43 @@ csv,4
         "quoted, name",
         "6",
         "7"
+    ]);
+}
+
+static async ValueTask VerifyHtmlCommandsAsync()
+{
+    var result = await ExecuteAsync("""
+$Rows = @(
+    [pscustomobject]@{Id=1; Name='Ada'; Status='<Ready>'}
+    [pscustomobject]@{Id=2; Name='Grace'; Status='Done'}
+)
+$Rows | ConvertTo-Html -Fragment -Property Id,Name,Status
+'--doc--'
+$Rows | ConvertTo-Html -Title 'Report' -PreContent '<h1>Rows</h1>' -PostContent '<p>Done</p>' -Property Name
+""");
+
+    ExpectLines(result, [
+        "<table>",
+        "<colgroup><col/><col/><col/></colgroup>",
+        "<tr><th>Id</th><th>Name</th><th>Status</th></tr>",
+        "<tr><td>1</td><td>Ada</td><td>&lt;Ready&gt;</td></tr>",
+        "<tr><td>2</td><td>Grace</td><td>Done</td></tr>",
+        "</table>",
+        "--doc--",
+        "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\"  \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">",
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\">",
+        "<head>",
+        "<title>Report</title>",
+        "</head><body>",
+        "<h1>Rows</h1>",
+        "<table>",
+        "<colgroup><col/></colgroup>",
+        "<tr><th>Name</th></tr>",
+        "<tr><td>Ada</td></tr>",
+        "<tr><td>Grace</td></tr>",
+        "</table>",
+        "<p>Done</p>",
+        "</body></html>"
     ]);
 }
 
@@ -1725,6 +1778,12 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
     public ValueTask SetTextAsync(string selector, string text, CancellationToken cancellationToken)
     {
         Text[selector] = text;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask SetHtmlAsync(string selector, string html, CancellationToken cancellationToken)
+    {
+        Text[selector] = html;
         return ValueTask.CompletedTask;
     }
 

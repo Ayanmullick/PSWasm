@@ -31,7 +31,7 @@ const server = await startStaticServer(root, fixture, port);
 if (options.manual) {
   console.log("PSWasm Browser DOM smoke server is running.");
   console.log(`Open http://127.0.0.1:${server.port}/dom-smoke.html in Edge Tools or the VS Code integrated browser.`);
-  console.log("Expected manual check: status starts as 'DOM event handler ready.'; changing the name and clicking the button updates the status text.");
+  console.log("Expected manual check: status starts as 'DOM event handler ready.', a two-column HTML table is visible, changing the name and clicking the button updates the status text.");
   console.log("Press Ctrl+C to stop the server.");
   await waitForever();
   process.exit(0);
@@ -50,6 +50,15 @@ try {
     text => text === "DOM event handler ready.",
     timeout,
     "DOM event handler did not become ready.");
+
+  await waitFor(
+    () => evaluate(cdp, sessionId, `
+Array.from(document.querySelectorAll('#dom-sample-html td')).map(td => td.textContent).join('|') +
+  '|' + document.querySelector('#dom-sample-html')?.innerHTML.includes('&lt;Ready&gt;')
+`),
+    value => value === "PowerShell|<Ready>|true",
+    timeout,
+    "DOM HTML rendering did not create the expected encoded table.");
 
   await evaluate(cdp, sessionId, `
 (() => {

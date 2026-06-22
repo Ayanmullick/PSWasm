@@ -24,6 +24,13 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask SetHtmlAsync(string selector, string html, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        SetHtml(selector, html);
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask<string> GetValueAsync(string selector, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -163,6 +170,9 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
 
     [JSImport("globalThis.pswasmDom.setText")]
     private static partial void SetText(string selector, string text);
+
+    [JSImport("globalThis.pswasmDom.setHtml")]
+    private static partial void SetHtml(string selector, string html);
 
     [JSImport("globalThis.pswasmDom.getValue")]
     private static partial string GetValue(string selector);
