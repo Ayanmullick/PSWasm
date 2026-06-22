@@ -8,9 +8,14 @@ TestResults/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+
+# Local workspace agent instructions
 .codex/
 .agents/
 AGENTS.md
+# Local Copilot instructions
+.github/instructions/
+
 .idea/
 *.user
 *.suo
