@@ -8,6 +8,9 @@ TestResults/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+.codex/
+.agents/
+AGENTS.md
 .idea/
 *.user
 *.suo
