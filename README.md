@@ -70,7 +70,7 @@ The default/full PSWasm browser host currently includes:
 * browser-safe parser, AST profile, executor, session state, command dispatch, and object pipeline support
 * variables, parallel assignment, arrays, hashtables with literal and computed keys, `[pscustomobject]@{}` / `[ordered]@{}` literals, primitive casts, splatting, expandable strings with `$()` subexpressions, parenthesized command expressions, script blocks, simple typed/default `param(...)` blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
 * common PowerShell-style operators, including arithmetic, compound assignment, comparisons, primitive type operators, wildcard/regex operators, script block call operator `&`, `-replace`, `-split`, `-join`, `-f`, `&&`, `||`, `$i++`, `$i--`, and `??`
-* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/HTML/object pipeline commands including `Where-Object` property filters, `ForEach-Object` member-name calls, and `Select-Object` wildcard/calculated properties, `?` / `%` pipeline aliases, `Invoke-WebRequest`, DOM session/interaction/storage commands, and user-delegated browser Azure auth commands
+* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/HTML/object pipeline commands including `Where-Object` property filters, `ForEach-Object` member-name calls, and `Select-Object` wildcard/calculated properties, `?` / `%` pipeline aliases, `Invoke-WebRequest`, `Invoke-RestMethod`, DOM session/interaction/storage commands, and user-delegated browser Azure auth commands
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods
 * a browser host that auto-runs `<script type="pwsh">` blocks and exposes JavaScript helpers for custom hosts
 
@@ -110,8 +110,8 @@ Publish clean browser flavors for payload comparison:
 .\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full
 ```
 
-Use `web` for static pages that need DOM event binding and `Invoke-WebRequest`.
-Use `AzAuth` for static pages that need DOM event binding, `Invoke-WebRequest`, browser-safe HMAC/Base64/URI helper coverage, and user-delegated Entra access tokens.
+Use `web` for static pages that need DOM event binding, `Invoke-WebRequest`, and `Invoke-RestMethod`.
+Use `AzAuth` for static pages that need DOM event binding, browser HTTP commands, browser-safe HMAC/Base64/URI helper coverage, and user-delegated Entra access tokens.
 Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `artifacts/BrowserFlavors/<flavor>/wwwroot` into your static app.
 
 For browser DOM output, generate HTML as PowerShell output and render it explicitly:

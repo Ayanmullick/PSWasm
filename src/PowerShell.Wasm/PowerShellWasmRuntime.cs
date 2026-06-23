@@ -72,6 +72,8 @@ public sealed class PowerShellWasmRuntime
 #if PSWASM_WEB
         RegisterCommand("Invoke-WebRequest", new InvokeWebRequestCommand(httpClient));
         RegisterCommand("iwr", new InvokeWebRequestCommand(httpClient));
+        RegisterCommand("Invoke-RestMethod", new InvokeRestMethodCommand(httpClient));
+        RegisterCommand("irm", new InvokeRestMethodCommand(httpClient));
 #endif
         RegisterCommand("Out-String", new OutStringCommand());
         RegisterCommand("Remove-Variable", new RemoveVariableCommand());

@@ -9,27 +9,107 @@ internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShe
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
-        var uri = GetUri(context);
+        using var response = await WebRequestCommandUtilities.SendAsync(
+            httpClient,
+            context,
+            "Invoke-WebRequest",
+            cancellationToken);
+        context.ExecutionContext.WriteOutput(WebRequestCommandUtilities.CreateResponseObject(response.Message, response.Content));
+    }
+}
+
+internal sealed class InvokeRestMethodCommand(HttpClient httpClient) : IPowerShellWasmCommand
+{
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    {
+        using var response = await WebRequestCommandUtilities.SendAsync(
+            httpClient,
+            context,
+            "Invoke-RestMethod",
+            cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(response.Content))
+        {
+            return;
+        }
+
+        context.ExecutionContext.WriteOutput(WebRequestCommandUtilities.ConvertRestContent(response.Message, response.Content));
+    }
+}
+
+internal sealed class WebRequestCommandResponse(HttpResponseMessage message, string content) : IDisposable
+{
+    public HttpResponseMessage Message { get; } = message;
+
+    public string Content { get; } = content;
+
+    public void Dispose() => Message.Dispose();
+}
+
+internal static class WebRequestCommandUtilities
+{
+    public static async Task<WebRequestCommandResponse> SendAsync(
+        HttpClient httpClient,
+        PowerShellWasmCommandContext context,
+        string commandName,
+        CancellationToken cancellationToken)
+    {
+        var uri = GetUri(context, commandName);
         using var request = new HttpRequestMessage(GetMethod(context), uri);
 
         AddHeaders(request, context);
         AddBody(request, context);
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var response = await httpClient.SendAsync(request, cancellationToken);
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
         var skipHttpErrorCheck = context.Parameters.TryGetValue("SkipHttpErrorCheck", out var skipValue) &&
             PowerShellWasmCommandUtilities.ToBoolean(skipValue);
 
         if (!skipHttpErrorCheck && !response.IsSuccessStatusCode)
         {
+            response.Dispose();
             throw new InvalidOperationException(
-                $"Invoke-WebRequest failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}.");
+                $"{commandName} failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}.");
         }
 
-        context.ExecutionContext.WriteOutput(CreateResponseObject(response, content));
+        return new(response, content);
     }
 
-    private static Uri GetUri(PowerShellWasmCommandContext context)
+    public static Dictionary<string, object?> CreateResponseObject(HttpResponseMessage response, string content)
+    {
+        var headers = response.Headers.Concat(response.Content.Headers)
+            .ToDictionary(static item => item.Key, static item => FormatHeaderValue(item.Value), StringComparer.OrdinalIgnoreCase);
+        var rawContent = BuildRawContent(response, headers, content);
+
+        return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["StatusCode"] = (int)response.StatusCode,
+            ["StatusDescription"] = response.ReasonPhrase ?? response.StatusCode.ToString(),
+            ["Headers"] = headers,
+            ["Content"] = content,
+            ["RawContent"] = rawContent,
+            ["RawContentLength"] = response.Content.Headers.ContentLength ?? Encoding.UTF8.GetByteCount(content)
+        };
+    }
+
+    public static object? ConvertRestContent(HttpResponseMessage response, string content)
+    {
+        if (!ContentTypeIsJson(response.Content.Headers.ContentType?.MediaType))
+        {
+            return content;
+        }
+
+        try
+        {
+            return PowerShellWasmJson.ConvertFromJson(content);
+        }
+        catch (Exception error) when (error is FormatException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            throw new InvalidOperationException($"Invoke-RestMethod failed to parse JSON response: {error.Message}", error);
+        }
+    }
+
+    private static Uri GetUri(PowerShellWasmCommandContext context, string commandName)
     {
         var text = context.GetString("Uri") ??
             context.GetString("Url") ??
@@ -38,7 +118,7 @@ internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShe
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            throw new InvalidOperationException("Invoke-WebRequest requires a Uri.");
+            throw new InvalidOperationException($"{commandName} requires a Uri.");
         }
 
         return new Uri(text, UriKind.RelativeOrAbsolute);
@@ -126,23 +206,6 @@ internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShe
         }
 
         return null;
-    }
-
-    private static Dictionary<string, object?> CreateResponseObject(HttpResponseMessage response, string content)
-    {
-        var headers = response.Headers.Concat(response.Content.Headers)
-            .ToDictionary(static item => item.Key, static item => FormatHeaderValue(item.Value), StringComparer.OrdinalIgnoreCase);
-        var rawContent = BuildRawContent(response, headers, content);
-
-        return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["StatusCode"] = (int)response.StatusCode,
-            ["StatusDescription"] = response.ReasonPhrase ?? response.StatusCode.ToString(),
-            ["Headers"] = headers,
-            ["Content"] = content,
-            ["RawContent"] = rawContent,
-            ["RawContentLength"] = response.Content.Headers.ContentLength ?? Encoding.UTF8.GetByteCount(content)
-        };
     }
 
     private static string BuildRawContent(HttpResponseMessage response, IReadOnlyDictionary<string, object?> headers, string content)

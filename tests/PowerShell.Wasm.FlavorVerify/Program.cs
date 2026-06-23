@@ -4,6 +4,7 @@ var runtime = new PowerShellWasmRuntime();
 
 await ExpectLinesAsync(runtime, """
 Get-Command Invoke-WebRequest
+Get-Command Invoke-RestMethod
 Get-Command Connect-AzAccount
 Get-Command Get-AzAccessToken
 Get-Command New-DomSession
@@ -30,6 +31,11 @@ await ExpectRuntimeErrorAsync(
     runtime,
     "Invoke-WebRequest -Uri 'https://example.test/'",
     "Command 'Invoke-WebRequest' is not registered in this browser runtime.");
+
+await ExpectRuntimeErrorAsync(
+    runtime,
+    "Invoke-RestMethod -Uri 'https://example.test/'",
+    "Command 'Invoke-RestMethod' is not registered in this browser runtime.");
 
 await ExpectRuntimeErrorAsync(
     runtime,

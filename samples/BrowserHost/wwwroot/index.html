@@ -66,10 +66,12 @@ $table.Keys | Sort-Object
   <hr>
 
   <script type="pwsh">
-# Invoke-WebRequest uses browser HTTP and requires the target service to allow CORS.
+# Invoke-WebRequest and Invoke-RestMethod use browser HTTP and require the target service to allow CORS.
 $response = Invoke-WebRequest -Uri 'https://api.github.com/zen' -Headers @{Accept='application/json'} -SkipHttpErrorCheck
 $response | Select-Object StatusCode RawContentLength
 $response.Content
+$repo = Invoke-RestMethod -Uri 'https://api.github.com/repos/PowerShell/PowerShell' -Headers @{Accept='application/vnd.github+json'} -SkipHttpErrorCheck
+$repo.full_name
   </script>
 
   <hr>

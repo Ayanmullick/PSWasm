@@ -235,6 +235,22 @@ static async ValueTask VerifyInvokeWebRequestAsync()
             };
         }
 
+        if (path.Equals("/json", StringComparison.OrdinalIgnoreCase))
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"Name":"Ada","Value":7,"Tags":["web","json"]}""", Encoding.UTF8, "application/json")
+            };
+        }
+
+        if (path.Equals("/text", StringComparison.OrdinalIgnoreCase))
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("plain text", Encoding.UTF8, "text/plain")
+            };
+        }
+
         return new HttpResponseMessage(HttpStatusCode.NotFound)
         {
             ReasonPhrase = "Not Found",
@@ -258,6 +274,19 @@ try {
 } catch {
     $_.Message
 }
+$rest = Invoke-RestMethod -Uri 'https://example.test/json' -Headers @{Accept='application/json'}
+$rest.Name
+$rest.Value
+$rest.Tags[1]
+irm 'https://example.test/text'
+Get-Command irm | Select-Object -ExpandProperty Name
+$restSkip = Invoke-RestMethod 'https://example.test/missing' -SkipHttpErrorCheck
+$restSkip
+try {
+    Invoke-RestMethod 'https://example.test/missing'
+} catch {
+    $_.Message
+}
 """);
 
     ExpectLines(result, [
@@ -267,7 +296,14 @@ try {
         "201",
         "POST:hello:text/plain",
         "404",
-        "Invoke-WebRequest failed with HTTP 404 Not Found."
+        "Invoke-WebRequest failed with HTTP 404 Not Found.",
+        "Ada",
+        "7",
+        "json",
+        "plain text",
+        "irm",
+        "missing",
+        "Invoke-RestMethod failed with HTTP 404 Not Found."
     ]);
 }
 
