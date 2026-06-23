@@ -9,8 +9,12 @@ This smoke test validates the real browser DOM bridge:
 * `Get-DomValue`
 * `Set-DomText`
 * `Set-DomHtml`
+* `Set-DomValue`
+* `Get-DomProperty`
 * `Set-DomProperty`
 * `Register-DomStorageBinding`
+* `Unregister-DomStorageBinding`
+* `Unregister-DomEvent`
 * browser event callback execution into a PowerShell script block
 * browser storage binding updates into `localStorage`
 

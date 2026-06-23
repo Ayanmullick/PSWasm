@@ -218,7 +218,38 @@ public sealed class PowerShellWasmExecutionContext
     }
 
     internal IReadOnlyList<object?> GetCapturedOutput(IEnumerable<object?> output) =>
-        output.Where(static item => item is not null and not PowerShellWasmStreamRecord).ToArray();
+        output.Where(static item => item is not null and not PowerShellWasmStreamRecord)
+            .Select(PowerShellWasmPipelineValue.Unwrap)
+            .ToArray();
+
+    internal IReadOnlyList<object?> AddPipelineVariable(
+        IEnumerable<object?> output,
+        string variableName)
+    {
+        variableName = NormalizeCommonParameterVariableName(variableName);
+        if (string.IsNullOrWhiteSpace(variableName))
+        {
+            return output.ToArray();
+        }
+
+        return output.Select(item =>
+        {
+            if (item is null or PowerShellWasmStreamRecord)
+            {
+                return item;
+            }
+
+            var value = PowerShellWasmPipelineValue.Unwrap(item);
+            var variables = new Dictionary<string, object?>(
+                PowerShellWasmPipelineValue.GetVariables(item),
+                StringComparer.OrdinalIgnoreCase)
+            {
+                [variableName] = value
+            };
+
+            return PowerShellWasmPipelineValue.Wrap(value, variables);
+        }).ToArray();
+    }
 
     internal IReadOnlyList<object?> GetCapturedStreamValues(IEnumerable<object?> output, string streamName) =>
         output.OfType<PowerShellWasmStreamRecord>()
@@ -249,6 +280,9 @@ public sealed class PowerShellWasmExecutionContext
         var existing = append ? EnumerateVariableValue(GetVariable(variableName)) : [];
         _variables[variableName] = existing.Concat(values).ToArray();
     }
+
+    private static string NormalizeCommonParameterVariableName(string variableName) =>
+        variableName.StartsWith("+", StringComparison.Ordinal) ? variableName[1..] : variableName;
 
     private List<object?> ActiveOutput =>
         _outputCaptures.TryPeek(out var output) ? output : _output;
@@ -465,6 +499,7 @@ public sealed class PowerShellWasmExecutionContext
         value switch
         {
             null => string.Empty,
+            PowerShellWasmPipelineValue pipelineValue => FormatOutput(pipelineValue.Value),
             PowerShellWasmStreamRecord stream => FormatOutput(stream.Value),
             PowerShellWasmHashtable hashtable => FormatHashtable(hashtable),
             Dictionary<string, object?> hashtable => "@{" + string.Join("; ", hashtable.Select(static item => $"{item.Key}={FormatOutput(item.Value)}")) + "}",

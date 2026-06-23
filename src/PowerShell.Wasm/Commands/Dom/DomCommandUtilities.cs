@@ -106,6 +106,38 @@ internal static class DomCommandUtilities
             }
         }
     }
+
+    public static IReadOnlyList<int> GetIds(PowerShellWasmCommandContext context)
+    {
+        var ids = new List<int>();
+        if (context.Parameters.TryGetValue("Id", out var id))
+        {
+            AddValues(id);
+        }
+
+        foreach (var argument in context.Arguments)
+        {
+            AddValues(argument);
+        }
+
+        return ids.ToArray();
+
+        void AddValues(object? value)
+        {
+            foreach (var item in PowerShellWasmCommandUtilities.EnumerateInput([value]))
+            {
+                var idValue = PowerShellWasmCommandUtilities.GetMemberValue(item, "Id") ?? item;
+                if (int.TryParse(
+                    PowerShellWasmCommandUtilities.ToInvariantString(idValue),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var parsed))
+                {
+                    ids.Add(parsed);
+                }
+            }
+        }
+    }
 }
 
 internal static class DomSessionCommandUtilities

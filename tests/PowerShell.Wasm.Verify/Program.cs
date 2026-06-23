@@ -618,6 +618,10 @@ static async ValueTask VerifyDomInteractionCommandsAsync()
 $dom = New-DomSession -Name Main -Target document
 Set-DomText '#status' 'Ready'
 Get-DomText '#status'
+Set-DomValue '#sample-value' 'typed'
+Get-DomValue '#sample-value'
+Set-DomProperty '#query-button' Disabled $true
+Get-DomProperty '#query-button' Disabled
 $account,$database = Get-DomValue '#account-name','#database-name'
 $account
 $database
@@ -631,6 +635,8 @@ $storageBinding.Storage
 $storageBinding.Event
 $storageBinding.Property
 Get-DomValue '#tenant-id'
+$temporaryStorageBinding = Register-DomStorageBinding -Session $dom -Storage Local -Selector '#temporary' -Key 'temporary'
+Unregister-DomStorageBinding $temporaryStorageBinding
 $registration = Register-DomEvent -Session $dom -Selector '#query-form' -Event Submit -PreventDefault -ScriptBlock {
     param($Event)
     $AccountName,$DatabaseName = Get-DomValue '#account-name','#database-name'
@@ -641,6 +647,8 @@ $registration.RegistrationType
 $registration.Selector
 $registration.Event
 $registration.PreventDefault
+$temporaryEvent = Register-DomEvent -Session $dom -Selector '#temporary' -Event Click -ScriptBlock { Set-DomText '#status' 'temporary' }
+Unregister-DomEvent $temporaryEvent
 $rows = @([pscustomobject]@{Name='Ada';Status='<Ready>'})
 $rows | ConvertTo-Html -Fragment -Property Name,Status | Set-DomHtml '#html-output'
 Get-Command *-Dom* | Select-Object -ExpandProperty Name
@@ -648,6 +656,8 @@ Get-Command *-Dom* | Select-Object -ExpandProperty Name
 
     ExpectLines(result, [
         "Ready",
+        "typed",
+        "True",
         "acct",
         "db",
         "tenant-one",
@@ -661,6 +671,7 @@ Get-Command *-Dom* | Select-Object -ExpandProperty Name
         "Submit",
         "True",
         "Clear-DomStorage",
+        "Get-DomProperty",
         "Get-DomSession",
         "Get-DomStorageItem",
         "Get-DomText",
@@ -673,7 +684,10 @@ Get-Command *-Dom* | Select-Object -ExpandProperty Name
         "Set-DomHtml",
         "Set-DomProperty",
         "Set-DomStorageItem",
-        "Set-DomText"
+        "Set-DomText",
+        "Set-DomValue",
+        "Unregister-DomEvent",
+        "Unregister-DomStorageBinding"
     ]);
 
     var expectedHtml = string.Join(Environment.NewLine, [
@@ -686,6 +700,11 @@ Get-Command *-Dom* | Select-Object -ExpandProperty Name
     if (!domHost.Text.TryGetValue("#html-output", out var html) || html != expectedHtml)
     {
         Fail($"Expected Set-DomHtml to receive converted HTML:{Environment.NewLine}{expectedHtml}{Environment.NewLine}Actual:{Environment.NewLine}{html}");
+    }
+
+    if (domHost.EventRegistrationCount != 1 || domHost.StorageBindingRegistrationCount != 1)
+    {
+        Fail($"Expected one active DOM event and storage binding; got events={domHost.EventRegistrationCount}, storage={domHost.StorageBindingRegistrationCount}.");
     }
 
     domHost.Values["#tenant-id"] = "typed-tenant";
@@ -1598,6 +1617,13 @@ $?
 $Error.Count
 Write-Output 'pipeline value' -PipelineVariable pipelineValue
 $pipelineValue
+1,2,3 | Write-Output -PipelineVariable pipelineItem | ForEach-Object { "pv=$pipelineItem item=$_" }
+1,2,3 | Write-Output -PipelineVariable keptItem | Where-Object { $keptItem -gt 1 } | ForEach-Object { "kept=$keptItem item=$_" }
+@(
+    [pscustomobject]@{Name='Ada';Status='Ready'}
+    [pscustomobject]@{Name='Grace';Status='Done'}
+) | Write-Output -pv row | Select-Object -ExpandProperty Name | ForEach-Object { "row=$($row.Name) name=$_" }
+3,1,2 | Write-Output -PipelineVariable sortedItem | Sort-Object | ForEach-Object { "sorted=$sortedItem item=$_" }
 Write-Output 'buffer accepted' -OutBuffer 10
 Write-Output 'whatif accepted' -WhatIf
 Write-Output 'confirm accepted' -Confirm
@@ -1631,6 +1657,16 @@ try {
         "1",
         "pipeline value",
         "pipeline value",
+        "pv=1 item=1",
+        "pv=2 item=2",
+        "pv=3 item=3",
+        "kept=2 item=2",
+        "kept=3 item=3",
+        "row=Ada name=Ada",
+        "row=Grace name=Grace",
+        "sorted=1 item=1",
+        "sorted=2 item=2",
+        "sorted=3 item=3",
         "buffer accepted",
         "whatif accepted",
         "confirm accepted",
@@ -1766,6 +1802,7 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
 {
     private readonly Dictionary<int, PowerShellWasmDomEventRegistration> _registrations = [];
 
+    public int EventRegistrationCount => _registrations.Count;
     public Dictionary<string, string> Text { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<(string Selector, string PropertyName), object?> Properties { get; } = [];
@@ -1792,13 +1829,39 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
 
     public ValueTask SetPropertyAsync(string selector, string propertyName, object? value, CancellationToken cancellationToken)
     {
-        Properties[(selector, propertyName.ToLowerInvariant())] = value;
+        var normalizedPropertyName = propertyName.ToLowerInvariant();
+        if (normalizedPropertyName.Equals("value", StringComparison.OrdinalIgnoreCase))
+        {
+            Values[selector] = Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+        }
+
+        Properties[(selector, normalizedPropertyName)] = value;
         return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<object?> GetPropertyAsync(string selector, string propertyName, CancellationToken cancellationToken)
+    {
+        var normalizedPropertyName = propertyName.ToLowerInvariant();
+        if (Properties.TryGetValue((selector, normalizedPropertyName), out var value))
+        {
+            return ValueTask.FromResult(value);
+        }
+
+        return ValueTask.FromResult<object?>(normalizedPropertyName.Equals("value", StringComparison.OrdinalIgnoreCase) &&
+            Values.TryGetValue(selector, out var text)
+                ? text
+                : null);
     }
 
     public ValueTask RegisterEventAsync(PowerShellWasmDomEventRegistration registration, CancellationToken cancellationToken)
     {
         _registrations[registration.Id] = registration;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask UnregisterEventAsync(int registrationId, CancellationToken cancellationToken)
+    {
+        _registrations.Remove(registrationId);
         return ValueTask.CompletedTask;
     }
 
@@ -1841,6 +1904,12 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask UnregisterStorageBindingAsync(int registrationId, CancellationToken cancellationToken)
+    {
+        _storageBindings.Remove(registrationId);
+        return ValueTask.CompletedTask;
+    }
+
     public async ValueTask TriggerAsync(string selector, string eventName, Dictionary<string, object?> eventData)
     {
         var registration = _registrations.Values.Single(item =>
@@ -1867,6 +1936,7 @@ sealed class FakeDomHost : IPowerShellWasmDomHost
     }
 
     private readonly Dictionary<int, PowerShellWasmDomStorageBindingRegistration> _storageBindings = [];
+    public int StorageBindingRegistrationCount => _storageBindings.Count;
 
     private Dictionary<string, string> GetStorage(string storage) =>
         storage.Equals("Session", StringComparison.OrdinalIgnoreCase) ? SessionStorage : LocalStorage;

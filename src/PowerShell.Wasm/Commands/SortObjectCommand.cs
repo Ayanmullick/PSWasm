@@ -11,18 +11,19 @@ internal sealed class SortObjectCommand : IPowerShellWasmCommand
             PowerShellWasmCommandUtilities.ToBoolean(uniqueValue);
 
         var comparer = new SortObjectComparer(propertyNames, descending);
-        var sorted = PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput).Order(comparer);
-        object? previous = null;
+        var sorted = PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput)
+            .Order(new PipelineInputItemComparer(comparer));
+        PowerShellWasmPipelineInputItem previous = default;
         var hasPrevious = false;
 
         foreach (var item in sorted)
         {
-            if (unique && hasPrevious && comparer.Compare(previous, item) == 0)
+            if (unique && hasPrevious && comparer.Compare(previous.Value, item.Value) == 0)
             {
                 continue;
             }
 
-            context.ExecutionContext.WriteOutput(item);
+            context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables));
             previous = item;
             hasPrevious = true;
         }
@@ -56,5 +57,11 @@ internal sealed class SortObjectCommand : IPowerShellWasmCommand
 
             return 0;
         }
+    }
+
+    private sealed class PipelineInputItemComparer(SortObjectComparer comparer) : IComparer<PowerShellWasmPipelineInputItem>
+    {
+        public int Compare(PowerShellWasmPipelineInputItem x, PowerShellWasmPipelineInputItem y) =>
+            comparer.Compare(x.Value, y.Value);
     }
 }

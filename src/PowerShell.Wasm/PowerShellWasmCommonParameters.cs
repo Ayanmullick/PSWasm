@@ -29,7 +29,7 @@ internal sealed class PowerShellWasmCommonParameters
     public IDisposable Apply(PowerShellWasmExecutionContext executionContext) =>
         executionContext.WithTemporaryVariables(_preferenceOverrides);
 
-    public void ApplyCaptures(
+    public IReadOnlyList<object?> ApplyCaptures(
         PowerShellWasmExecutionContext executionContext,
         IReadOnlyList<object?> capturedOutput,
         int initialErrorCount)
@@ -41,6 +41,12 @@ internal sealed class PowerShellWasmCommonParameters
             executionContext.GetCapturedStreamValues(capturedOutput, "Information"));
         SetVariableFromParameter(executionContext, "WarningVariable", "wv",
             executionContext.GetCapturedStreamValues(capturedOutput, "Warning"));
+
+        return TryGetValue("PipelineVariable", "pv", out var variable)
+            ? executionContext.AddPipelineVariable(
+                capturedOutput,
+                Convert.ToString(variable, CultureInfo.InvariantCulture) ?? string.Empty)
+            : capturedOutput;
     }
 
     private void AddSwitchPreference(string name, string alias, string preferenceName)

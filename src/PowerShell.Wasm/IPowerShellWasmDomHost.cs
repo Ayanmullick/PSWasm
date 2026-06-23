@@ -12,7 +12,11 @@ public interface IPowerShellWasmDomHost
 
     ValueTask SetPropertyAsync(string selector, string propertyName, object? value, CancellationToken cancellationToken);
 
+    ValueTask<object?> GetPropertyAsync(string selector, string propertyName, CancellationToken cancellationToken);
+
     ValueTask RegisterEventAsync(PowerShellWasmDomEventRegistration registration, CancellationToken cancellationToken);
+
+    ValueTask UnregisterEventAsync(int registrationId, CancellationToken cancellationToken);
 
     ValueTask<string?> GetStorageItemAsync(string storage, string key, CancellationToken cancellationToken);
 
@@ -23,6 +27,8 @@ public interface IPowerShellWasmDomHost
     ValueTask ClearStorageAsync(string storage, CancellationToken cancellationToken);
 
     ValueTask RegisterStorageBindingAsync(PowerShellWasmDomStorageBindingRegistration registration, CancellationToken cancellationToken);
+
+    ValueTask UnregisterStorageBindingAsync(int registrationId, CancellationToken cancellationToken);
 }
 
 public sealed record PowerShellWasmDomEventRegistration(

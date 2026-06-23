@@ -44,6 +44,7 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("ft", new FormatTableCommand());
 #if PSWASM_DOM
         RegisterCommand("Get-DomSession", new GetDomSessionCommand());
+        RegisterCommand("Get-DomProperty", new GetDomPropertyCommand());
         RegisterCommand("Get-DomStorageItem", new GetDomStorageItemCommand());
         RegisterCommand("Get-DomText", new GetDomTextCommand());
         RegisterCommand("Get-DomValue", new GetDomValueCommand());
@@ -85,6 +86,7 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Set-DomProperty", new SetDomPropertyCommand());
         RegisterCommand("Set-DomStorageItem", new SetDomStorageItemCommand());
         RegisterCommand("Set-DomText", new SetDomTextCommand());
+        RegisterCommand("Set-DomValue", new SetDomValueCommand());
 #endif
         RegisterCommand("Set-Variable", new SetVariableCommand());
         RegisterCommand("sv", new SetVariableCommand());
@@ -99,6 +101,8 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Register-DomStorageBinding", new RegisterDomStorageBindingCommand());
         RegisterCommand("Remove-DomStorageItem", new RemoveDomStorageItemCommand());
         RegisterCommand("Remove-DomSession", new RemoveDomSessionCommand());
+        RegisterCommand("Unregister-DomEvent", new UnregisterDomEventCommand());
+        RegisterCommand("Unregister-DomStorageBinding", new UnregisterDomStorageBindingCommand());
 #endif
         RegisterCommand("Where-Object", new WhereObjectCommand());
         RegisterCommand("Where", new WhereObjectCommand());

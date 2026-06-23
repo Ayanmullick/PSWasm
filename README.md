@@ -67,7 +67,7 @@ The detailed documentation lives in the GitHub Wiki:
 The default/full PSWasm browser host currently includes:
 
 * browser-safe parser, AST profile, executor, session state, command dispatch, and object pipeline support
-* variables, parallel assignment, arrays, hashtables with literal and computed keys, `[pscustomobject]@{}` / `[ordered]@{}` literals, primitive casts, splatting, expandable strings with `$()` subexpressions, script blocks, simple typed/default `param(...)` blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
+* variables, parallel assignment, arrays, hashtables with literal and computed keys, `[pscustomobject]@{}` / `[ordered]@{}` literals, primitive casts, splatting, expandable strings with `$()` subexpressions, parenthesized command expressions, script blocks, simple typed/default `param(...)` blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
 * common PowerShell-style operators, including arithmetic, compound assignment, comparisons, primitive type operators, wildcard/regex operators, script block call operator `&`, `-replace`, `-split`, `-join`, `-f`, `&&`, `||`, `$i++`, `$i--`, and `??`
 * stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/HTML/object pipeline commands, `?` / `%` pipeline aliases, `Invoke-WebRequest`, DOM session/interaction/storage commands, and user-delegated browser Azure auth commands
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods

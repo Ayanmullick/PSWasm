@@ -16,9 +16,17 @@
   <script type="pwsh">
 $Dom = New-DomSession -Name Smoke -Target document
 Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSmokeName'}
+Set-DomValue '#dom-sample-name' 'PSWasm'
+if ((Get-DomProperty '#dom-sample-name' Value) -ne 'PSWasm') { throw 'DOM property bridge failed.' }
+$TemporaryBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Selector '#dom-sample-name' -Key 'pswasm.domSmokeTemporary'
+Unregister-DomStorageBinding $TemporaryBinding
 Set-DomText '#dom-sample-status' 'DOM event handler ready.'
 $Rows = @([pscustomobject]@{Name='PowerShell';Status='<Ready>'})
 $Rows | ConvertTo-Html -Fragment -Property Name,Status | Set-DomHtml '#dom-sample-html'
+$TemporaryEvent = Register-DomEvent -Session $Dom -Selector '#dom-sample-button' -Event Focus -ScriptBlock {
+    Set-DomText '#dom-sample-status' 'Unexpected temporary handler.'
+}
+Unregister-DomEvent $TemporaryEvent
 Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -PreventDefault -ScriptBlock {
     Set-DomProperty '#dom-sample-button' Disabled $true
     $Name = Get-DomValue '#dom-sample-name'

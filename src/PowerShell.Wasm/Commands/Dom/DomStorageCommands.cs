@@ -155,3 +155,23 @@ internal sealed class RegisterDomStorageBindingCommand : IPowerShellWasmCommand
             ["RegistrationType"] = "DomStorageBinding"
         };
 }
+
+internal sealed class UnregisterDomStorageBindingCommand : IPowerShellWasmCommand
+{
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    {
+        var host = DomCommandUtilities.GetDomHost(context);
+        var ids = DomCommandUtilities.GetIds(context);
+        if (ids.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Unregister-DomStorageBinding requires at least one registration id or registration object.");
+        }
+
+        foreach (var id in ids)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await host.UnregisterStorageBindingAsync(id, cancellationToken);
+        }
+    }
+}

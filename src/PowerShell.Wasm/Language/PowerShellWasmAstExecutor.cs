@@ -555,8 +555,9 @@ internal sealed class PowerShellWasmAstExecutor(
             }
         }
 
-        commonParameters.ApplyCaptures(executionContext, capturedOutput, initialErrorCount);
-        executionContext.WriteCapturedOutput(capturedOutput);
+        var capturedOutputWithPipelineVariables =
+            commonParameters.ApplyCaptures(executionContext, capturedOutput, initialErrorCount);
+        executionContext.WriteCapturedOutput(capturedOutputWithPipelineVariables);
         pending?.Throw();
     }
 

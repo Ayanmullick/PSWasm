@@ -6,13 +6,48 @@ internal static class PowerShellWasmCommandUtilities
 {
     public static IEnumerable<object?> EnumerateInput(IReadOnlyList<object?> input)
     {
+        foreach (var item in EnumeratePipelineInput(input))
+        {
+            yield return item.Value;
+        }
+    }
+
+    public static IEnumerable<PowerShellWasmPipelineInputItem> EnumeratePipelineInput(IReadOnlyList<object?> input)
+    {
         foreach (var item in input)
         {
-            foreach (var value in Enumerate(item))
+            var itemVariables = PowerShellWasmPipelineValue.GetVariables(item);
+            foreach (var value in Enumerate(PowerShellWasmPipelineValue.Unwrap(item)))
             {
-                yield return value;
+                var variables = MergePipelineVariables(itemVariables, PowerShellWasmPipelineValue.GetVariables(value));
+                yield return new(
+                    PowerShellWasmPipelineValue.Unwrap(value),
+                    variables);
             }
         }
+    }
+
+    private static IReadOnlyDictionary<string, object?> MergePipelineVariables(
+        IReadOnlyDictionary<string, object?> first,
+        IReadOnlyDictionary<string, object?> second)
+    {
+        if (first.Count == 0)
+        {
+            return second;
+        }
+
+        if (second.Count == 0)
+        {
+            return first;
+        }
+
+        var merged = new Dictionary<string, object?>(first, StringComparer.OrdinalIgnoreCase);
+        foreach (var variable in second)
+        {
+            merged[variable.Key] = variable.Value;
+        }
+
+        return merged;
     }
 
     public static PowerShellWasmScriptBlock? GetScriptBlock(PowerShellWasmCommandContext context, params string[] parameterNames)

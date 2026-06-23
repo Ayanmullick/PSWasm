@@ -44,11 +44,25 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<object?> GetPropertyAsync(string selector, string propertyName, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(ParseJsonValue(GetProperty(selector, propertyName)));
+    }
+
     public ValueTask RegisterEventAsync(PowerShellWasmDomEventRegistration registration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         s_eventRegistrations[registration.Id] = registration;
         RegisterEvent(registration.Id, registration.Selector, registration.Event, registration.PreventDefault);
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask UnregisterEventAsync(int registrationId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        s_eventRegistrations.Remove(registrationId);
+        UnregisterEvent(registrationId);
         return ValueTask.CompletedTask;
     }
 
@@ -83,6 +97,13 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
     {
         cancellationToken.ThrowIfCancellationRequested();
         RegisterStorageBinding(registration.Id, registration.Storage, SerializeMap(registration.Map), registration.Event, registration.Property);
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask UnregisterStorageBindingAsync(int registrationId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        UnregisterStorageBinding(registrationId);
         return ValueTask.CompletedTask;
     }
 
@@ -165,6 +186,17 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
                 : null;
     }
 
+    private static object? ParseJsonValue(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(json);
+        return ReadElement(document.RootElement);
+    }
+
     [JSImport("globalThis.pswasmDom.getText")]
     private static partial string GetText(string selector);
 
@@ -180,8 +212,14 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
     [JSImport("globalThis.pswasmDom.setProperty")]
     private static partial void SetProperty(string selector, string propertyName, string valueJson);
 
+    [JSImport("globalThis.pswasmDom.getProperty")]
+    private static partial string GetProperty(string selector, string propertyName);
+
     [JSImport("globalThis.pswasmDom.registerEvent")]
     private static partial void RegisterEvent(int registrationId, string selector, string eventName, bool preventDefault);
+
+    [JSImport("globalThis.pswasmDom.unregisterEvent")]
+    private static partial void UnregisterEvent(int registrationId);
 
     [JSImport("globalThis.pswasmDom.getStorageItem")]
     private static partial string GetStorageItem(string storage, string key);
@@ -197,4 +235,7 @@ internal sealed partial class BrowserDomHost : IPowerShellWasmDomHost
 
     [JSImport("globalThis.pswasmDom.registerStorageBinding")]
     private static partial void RegisterStorageBinding(int registrationId, string storage, string mapJson, string eventName, string propertyName);
+
+    [JSImport("globalThis.pswasmDom.unregisterStorageBinding")]
+    private static partial void UnregisterStorageBinding(int registrationId);
 }

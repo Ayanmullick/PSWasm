@@ -10,12 +10,12 @@ internal sealed class WhereObjectCommand : IPowerShellWasmCommand
             return;
         }
 
-        foreach (var item in PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput))
+        foreach (var item in PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput))
         {
-            var filterOutput = await scriptBlock.InvokeAsync(item, cancellationToken);
+            var filterOutput = await scriptBlock.InvokeAsync(item.Value, null, item.Variables, cancellationToken);
             if (filterOutput.Any(PowerShellWasmCommandUtilities.ToBoolean))
             {
-                context.ExecutionContext.WriteOutput(item);
+                context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables));
             }
         }
     }

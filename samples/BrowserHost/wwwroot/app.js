@@ -27,6 +27,10 @@ globalThis.pswasmDom = {
     const element = resolveDomElement(selector);
     element[normalizeDomPropertyName(propertyName)] = JSON.parse(valueJson);
   },
+  getProperty: (selector, propertyName) => {
+    const element = resolveDomElement(selector);
+    return serializeDomJsonValue(element[normalizeDomPropertyName(propertyName)]);
+  },
   getStorageItem: (storage, key) => {
     const item = resolveDomStorage(storage).getItem(key);
     return JSON.stringify({ exists: item !== null, value: item ?? "" });
@@ -100,6 +104,29 @@ globalThis.pswasmDom = {
 
     element.addEventListener(normalizedEventName, handler);
     domEventRegistrations.set(key, { element, eventName: normalizedEventName, handler });
+  },
+  unregisterEvent: registrationId => {
+    const key = `${registrationId}`;
+    const previous = domEventRegistrations.get(key);
+    if (!previous) {
+      return;
+    }
+
+    previous.element.removeEventListener(previous.eventName, previous.handler);
+    domEventRegistrations.delete(key);
+  },
+  unregisterStorageBinding: registrationId => {
+    const key = `${registrationId}`;
+    const previous = domStorageRegistrations.get(key);
+    if (!previous) {
+      return;
+    }
+
+    for (const binding of previous.bindings) {
+      binding.element.removeEventListener(binding.eventName, binding.handler);
+    }
+
+    domStorageRegistrations.delete(key);
   }
 };
 
@@ -465,6 +492,11 @@ function setElementBoundValue(element, propertyName, value) {
   }
 
   element.setAttribute(propertyName, value ?? "");
+}
+
+function serializeDomJsonValue(value) {
+  const json = JSON.stringify(value ?? null);
+  return json === undefined ? "null" : json;
 }
 
 function resolveDomStorage(storage) {
