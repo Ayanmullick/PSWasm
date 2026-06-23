@@ -298,10 +298,12 @@ function getPowerShellExecutionOptions(options, session) {
  */
 export function renderPowerShellResult(result, target = undefined) {
   const output = resolveOutputElement(target);
+  const records = result.records ?? [];
   installDefaultStyles();
   output.textContent = "";
+  setGeneratedOutputVisibility(output, records.length > 0);
 
-  for (const [index, record] of (result.records ?? []).entries()) {
+  for (const [index, record] of records.entries()) {
     if (index > 0) {
       output.append(document.createTextNode("\n"));
     }
@@ -317,10 +319,12 @@ export function renderPowerShellResult(result, target = undefined) {
  */
 export function renderPowerShellOutput(text, target = undefined) {
   const output = resolveOutputElement(target);
+  const lines = text.split(/\r?\n/);
   installDefaultStyles();
   output.textContent = "";
+  setGeneratedOutputVisibility(output, text.length > 0);
 
-  for (const [index, line] of text.split(/\r?\n/).entries()) {
+  for (const [index, line] of lines.entries()) {
     if (index > 0) {
       output.append(document.createTextNode("\n"));
     }
@@ -394,6 +398,12 @@ function getOrCreateScriptOutputElement(script) {
   output.dataset.pswasmGenerated = "true";
   script.insertAdjacentElement("afterend", output);
   return output;
+}
+
+function setGeneratedOutputVisibility(output, hasContent) {
+  if (output.dataset?.pswasmGenerated === "true") {
+    output.hidden = !hasContent;
+  }
 }
 
 function renderRecord(record) {

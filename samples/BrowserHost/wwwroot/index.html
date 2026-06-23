@@ -8,6 +8,11 @@
     :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
     body { margin: 2rem; }
     pre { border: 1px solid CanvasText; padding: 1rem; white-space: pre-wrap; }
+    .sample-panel { border: 1px solid CanvasText; margin: 1rem 0; padding: 1rem; }
+    .sample-panel h2 { margin-top: 0; }
+    .sample-panel form { align-items: center; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .sample-panel table { border-collapse: collapse; margin-top: 1rem; }
+    .sample-panel th, .sample-panel td { padding: 0.25rem 0.75rem; text-align: left; }
   </style>
 </head>
 <body>
@@ -322,16 +327,17 @@ Get-DomSession Main | Select-Object -ExpandProperty SessionType
 
   <hr>
 
-  <h2>DOM interaction sample</h2>
-  <form id="dom-sample-form">
-    <label for="dom-sample-name">Name</label>
-    <input id="dom-sample-name" name="Name" value="PSWasm" />
-    <button id="dom-sample-button" type="submit">Update text</button>
-  </form>
-  <p id="dom-sample-status"></p>
-  <div id="dom-sample-html"></div>
+  <section class="sample-panel" aria-labelledby="dom-interaction-title">
+    <h2 id="dom-interaction-title">DOM interaction sample</h2>
+    <form id="dom-sample-form">
+      <label for="dom-sample-name">Name</label>
+      <input id="dom-sample-name" name="Name" value="PSWasm" />
+      <button id="dom-sample-button" type="submit">Update text</button>
+    </form>
+    <p id="dom-sample-status"></p>
+    <div id="dom-sample-html"></div>
 
-  <script type="pwsh">
+    <script type="pwsh">
 $Dom = New-DomSession -Name Ui -Target document
 $StorageBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSampleName'}
 Set-DomText '#dom-sample-status' 'DOM event handler ready.'
@@ -346,7 +352,8 @@ $Registration = Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Ev
     Set-DomText '#dom-sample-status' "Hello $Name from a PowerShell DOM event."
     Set-DomProperty '#dom-sample-button' Disabled $false
 }
-  </script>
+    </script>
+  </section>
 
   <hr>
 
