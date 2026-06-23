@@ -80,20 +80,27 @@ internal static class PowerShellWasmCommandUtilities
 
     public static object? GetMemberValue(object? target, string memberName)
     {
+        return TryGetMemberValue(target, memberName, out var value) ? value : null;
+    }
+
+    public static bool TryGetMemberValue(object? target, string memberName, out object? value)
+    {
+        value = null;
         if (target is null)
         {
-            return null;
+            return false;
         }
 
         if (target is IReadOnlyDictionary<string, object?> readOnlyDictionary &&
             readOnlyDictionary.TryGetValue(memberName, out var readOnlyValue))
         {
-            return readOnlyValue;
+            value = readOnlyValue;
+            return true;
         }
 
-        if (target is IDictionary<string, object?> dictionary && dictionary.TryGetValue(memberName, out var value))
+        if (target is IDictionary<string, object?> dictionary && dictionary.TryGetValue(memberName, out value))
         {
-            return value;
+            return true;
         }
 
         if (target is System.Collections.IDictionary legacyDictionary)
@@ -103,12 +110,18 @@ internal static class PowerShellWasmCommandUtilities
                 if (string.Equals(Convert.ToString(entry.Key, CultureInfo.InvariantCulture), memberName,
                     StringComparison.OrdinalIgnoreCase))
                 {
-                    return entry.Value;
+                    value = entry.Value;
+                    return true;
                 }
             }
         }
 
-        return null;
+        if (TryGetCollectionProperty(target, memberName, out value))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     public static int CompareValues(object? left, object? right)
@@ -218,6 +231,83 @@ internal static class PowerShellWasmCommandUtilities
 
         yield return value;
     }
+
+    private static bool TryGetCollectionProperty(object? target, string memberName, out object? value)
+    {
+        value = null;
+        if (target is IReadOnlyDictionary<string, object?> readOnlyDictionary)
+        {
+            if (IsCountLike(memberName))
+            {
+                value = readOnlyDictionary.Count;
+                return true;
+            }
+
+            if (memberName.Equals("Keys", StringComparison.OrdinalIgnoreCase))
+            {
+                value = readOnlyDictionary.Keys.Cast<object?>().ToArray();
+                return true;
+            }
+
+            if (memberName.Equals("Values", StringComparison.OrdinalIgnoreCase))
+            {
+                value = readOnlyDictionary.Values.ToArray();
+                return true;
+            }
+        }
+
+        if (target is System.Collections.IDictionary dictionary)
+        {
+            if (IsCountLike(memberName))
+            {
+                value = dictionary.Count;
+                return true;
+            }
+
+            if (memberName.Equals("Keys", StringComparison.OrdinalIgnoreCase))
+            {
+                value = dictionary.Keys.Cast<object?>().ToArray();
+                return true;
+            }
+
+            if (memberName.Equals("Values", StringComparison.OrdinalIgnoreCase))
+            {
+                value = dictionary.Values.Cast<object?>().ToArray();
+                return true;
+            }
+        }
+
+        if (memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) && target is string text)
+        {
+            value = text.Length;
+            return true;
+        }
+
+        if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) && target is string)
+        {
+            value = 1;
+            return true;
+        }
+
+        if (IsCountLike(memberName))
+        {
+            value = Enumerate(target).Count();
+            return true;
+        }
+
+        if (memberName.Equals("Rank", StringComparison.OrdinalIgnoreCase))
+        {
+            value = target is System.Collections.IEnumerable and not string ? 1 : 0;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsCountLike(string memberName) =>
+        memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
+        memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ||
+        memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase);
 
     private static string FormatDictionary(IEnumerable<KeyValuePair<string, object?>> dictionary) =>
         "@{" + string.Join("; ", dictionary.Select(static item => $"{item.Key}={FormatValue(item.Value)}")) + "}";

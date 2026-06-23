@@ -526,6 +526,7 @@ $ConnectionKey
 [Convert]::ToBase64String([Convert]::FromBase64String($ConnectionKey))
 'MIXED'.ToLowerInvariant()
 '  padded  '.Trim()
+'abcdef'.Substring(1,3)
 """);
 
     ExpectLines(result, [
@@ -539,7 +540,8 @@ $ConnectionKey
         "+/8=",
         "+/8=",
         "mixed",
-        "padded"
+        "padded",
+        "bcd"
     ]);
 }
 
@@ -870,6 +872,24 @@ static async ValueTask VerifyObjectPipelineCommandsAsync()
     Select-Object -ExpandProperty Name
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Select-Object -First 2 Name
+$rows = @(
+    @{Name='one'; Value=1; Enabled=$false; Tags=@('core')}
+    @{Name='two'; Value=2; Enabled=$true; Tags=@('web','api')}
+    @{Name='three'; Value=3; Enabled=$true; Tags=@('web')}
+)
+$rows | Where-Object Value -ge 2 | Select-Object -ExpandProperty Name
+$rows | Where-Object -Property Name -EQ 'two' | Select-Object -ExpandProperty Name
+$rows | Where-Object Name -like 't*' | Select-Object -ExpandProperty Name
+$rows | Where-Object Enabled | Select-Object -ExpandProperty Name
+$rows | Where-Object Tags -contains 'api' | Select-Object -ExpandProperty Name
+$rows | ForEach-Object Name
+@('aa','bbb') | ForEach-Object Length
+@(' abc ',' def ') | ForEach-Object Trim
+'abcdef' | ForEach-Object Substring 1 3
+$rows | Select-Object @{Name='Label';Expression={$_.Name.ToUpperInvariant()}},@{N='Next';E={$_.Value + 1}} | ConvertTo-Json -Compress
+$rows | Select-Object @{Name='Copied';Expression='Name'} | ConvertTo-Json -Compress
+$rows | Select-Object N* | ConvertTo-Json -Compress
+$rows | Select-Object * | Select-Object -First 1 | ConvertTo-Json -Compress
 1..3 | ForEach-Object -Begin { 'begin' } -Process { $_ * 2 } -End { 'end' }
 $sum = 0
 1..3 | ForEach-Object -Begin { $sum = 10 } -Process { $sum += $_ } -End { $sum }
@@ -886,6 +906,26 @@ $sum = 0
         "three",
         "@{Name=one}",
         "@{Name=two}",
+        "two",
+        "three",
+        "two",
+        "two",
+        "three",
+        "two",
+        "three",
+        "two",
+        "one",
+        "two",
+        "three",
+        "2",
+        "3",
+        "abc",
+        "def",
+        "bcd",
+        "[{\"Label\":\"ONE\",\"Next\":2},{\"Label\":\"TWO\",\"Next\":3},{\"Label\":\"THREE\",\"Next\":4}]",
+        "[{\"Copied\":\"one\"},{\"Copied\":\"two\"},{\"Copied\":\"three\"}]",
+        "[{\"Name\":\"one\"},{\"Name\":\"two\"},{\"Name\":\"three\"}]",
+        "{\"Name\":\"one\",\"Value\":1,\"Enabled\":false,\"Tags\":[\"core\"]}",
         "begin",
         "2",
         "4",

@@ -106,7 +106,7 @@ internal static class PowerShellWasmDotNetBridge
         }
 #endif
 
-        if (target is string && IsMember(memberName, "ToLowerInvariant", "ToUpperInvariant", "ToString", "Trim"))
+        if (target is string && IsMember(memberName, "ToLowerInvariant", "ToUpperInvariant", "ToString", "Trim", "Substring"))
         {
             value = new PowerShellWasmDotNetMethod(StringType, memberName, target, IsStatic: false);
             return true;
@@ -178,13 +178,13 @@ internal static class PowerShellWasmDotNetBridge
         if (method.DeclaringType.Equals(StringType, StringComparison.OrdinalIgnoreCase) &&
             method.Target is string text)
         {
-            RequireArgumentCount(method, arguments, 0);
             return method.Name.ToLowerInvariant() switch
             {
-                "tolowerinvariant" => text.ToLowerInvariant(),
-                "toupperinvariant" => text.ToUpperInvariant(),
-                "tostring" => text,
-                "trim" => text.Trim(),
+                "tolowerinvariant" => InvokeStringNoArgument(method, arguments, text.ToLowerInvariant),
+                "toupperinvariant" => InvokeStringNoArgument(method, arguments, text.ToUpperInvariant),
+                "tostring" => InvokeStringNoArgument(method, arguments, () => text),
+                "trim" => InvokeStringNoArgument(method, arguments, text.Trim),
+                "substring" => InvokeSubstring(method, arguments, text),
                 _ => throw new InvalidOperationException($"Method '{method.Name}' is not available in this browser-safe runtime.")
             };
         }
@@ -194,6 +194,31 @@ internal static class PowerShellWasmDotNetBridge
 
     private static bool IsMember(string memberName, params string[] supportedMembers) =>
         supportedMembers.Any(supported => supported.Equals(memberName, StringComparison.OrdinalIgnoreCase));
+
+    private static string InvokeStringNoArgument(
+        PowerShellWasmDotNetMethod method,
+        IReadOnlyList<object?> arguments,
+        Func<string> invoke)
+    {
+        RequireArgumentCount(method, arguments, 0);
+        return invoke();
+    }
+
+    private static string InvokeSubstring(PowerShellWasmDotNetMethod method, IReadOnlyList<object?> arguments, string text)
+    {
+        if (arguments.Count == 1)
+        {
+            return text.Substring(ToInt32(arguments[0]));
+        }
+
+        if (arguments.Count == 2)
+        {
+            return text.Substring(ToInt32(arguments[0]), ToInt32(arguments[1]));
+        }
+
+        throw new InvalidOperationException(
+            $"Method '{method.Name}' expects 1 or 2 argument(s), but received {arguments.Count}.");
+    }
 
     private static void RequireArgumentCount(PowerShellWasmDotNetMethod method, IReadOnlyList<object?> arguments, int count)
     {
@@ -232,6 +257,9 @@ internal static class PowerShellWasmDotNetBridge
 
     private static string ToInvariantString(object? value) =>
         Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+
+    private static int ToInt32(object? value) =>
+        Convert.ToInt32(value, CultureInfo.InvariantCulture);
 }
 
 internal sealed record PowerShellWasmDotNetType(string FullName)

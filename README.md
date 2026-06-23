@@ -46,6 +46,7 @@ PowerShell can also live in a same-origin `.ps1` file:
 ```
 
 External and inline `type="pwsh"` scripts run in document order and share the same default runtime session. Normal browser fetch rules apply to external `.ps1` files, including CORS for cross-origin files.
+For DOM-only script blocks that update existing page elements directly, add `data-pswasm-output="none"` to suppress the generated success output box while still showing runtime failures.
 
 ## Documentation
 
@@ -69,7 +70,7 @@ The default/full PSWasm browser host currently includes:
 * browser-safe parser, AST profile, executor, session state, command dispatch, and object pipeline support
 * variables, parallel assignment, arrays, hashtables with literal and computed keys, `[pscustomobject]@{}` / `[ordered]@{}` literals, primitive casts, splatting, expandable strings with `$()` subexpressions, parenthesized command expressions, script blocks, simple typed/default `param(...)` blocks, functions, loops, `switch`, `try` / `catch` / `finally`, `throw`, `return`, `break`, and `continue`
 * common PowerShell-style operators, including arithmetic, compound assignment, comparisons, primitive type operators, wildcard/regex operators, script block call operator `&`, `-replace`, `-split`, `-join`, `-f`, `&&`, `||`, `$i++`, `$i--`, and `??`
-* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/HTML/object pipeline commands, `?` / `%` pipeline aliases, `Invoke-WebRequest`, DOM session/interaction/storage commands, and user-delegated browser Azure auth commands
+* stream-aware `Write-*` commands, browser-safe variable commands, JSON/CSV/HTML/object pipeline commands including `Where-Object` property filters, `ForEach-Object` member-name calls, and `Select-Object` wildcard/calculated properties, `?` / `%` pipeline aliases, `Invoke-WebRequest`, DOM session/interaction/storage commands, and user-delegated browser Azure auth commands
 * allowlisted browser-safe .NET helpers for Base64, UTF-8 bytes, HMACSHA256, URI escaping/unescaping, and simple string methods
 * a browser host that auto-runs `<script type="pwsh">` blocks and exposes JavaScript helpers for custom hosts
 

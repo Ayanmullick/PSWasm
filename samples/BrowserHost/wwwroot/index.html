@@ -286,6 +286,14 @@ try {
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |
     Select-Object -ExpandProperty Name
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
+    Where-Object Value -ge 2 |
+    Select-Object -ExpandProperty Name
+@(' alpha ',' beta ') | ForEach-Object Trim
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}) |
+    Select-Object @{Name='Label';Expression={$_.Name.ToUpperInvariant()}},@{Name='Next';Expression={$_.Value + 1}} |
+    ConvertTo-Json -Compress
+@(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object N* | ConvertTo-Json -Compress
   </script>
 
   <hr>
@@ -337,7 +345,7 @@ Get-DomSession Main | Select-Object -ExpandProperty SessionType
     <p id="dom-sample-status"></p>
     <div id="dom-sample-html"></div>
 
-    <script type="pwsh">
+    <script type="pwsh" data-pswasm-output="none">
 $Dom = New-DomSession -Name Ui -Target document
 $StorageBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSampleName'}
 Set-DomText '#dom-sample-status' 'DOM event handler ready.'

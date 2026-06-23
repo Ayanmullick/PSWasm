@@ -945,9 +945,9 @@ public sealed class PowerShellWasmParser
                 continue;
             }
 
-            if (TryReadOperatorSwitchParameter(tokens, ref position, out var switchParameter))
+            if (TryReadOperatorParameter(tokens, ref position, out var operatorParameter))
             {
-                parameters.Add(new(switchParameter, null));
+                parameters.Add(operatorParameter);
                 continue;
             }
 
@@ -965,27 +965,72 @@ public sealed class PowerShellWasmParser
         return new CommandAst(GetCommandName(tokens[0]), parameters, arguments);
     }
 
-    private static bool TryReadOperatorSwitchParameter(
+    private static bool TryReadOperatorParameter(
         IReadOnlyList<PowerShellWasmToken> tokens,
         ref int position,
-        out string parameterName)
+        out CommandParameterAst parameter)
     {
-        parameterName = string.Empty;
-        if (!IsOperatorSwitchParameter(tokens, position))
+        parameter = null!;
+        if (!TryGetOperatorParameterName(tokens[position].Kind, out var parameterName))
         {
             return false;
         }
 
-        parameterName = "NotMatch";
         position++;
+        if (position >= tokens.Count ||
+            tokens[position].Kind == PowerShellWasmTokenKind.Parameter ||
+            IsSplatStart(tokens, position) ||
+            IsOperatorParameter(tokens, position))
+        {
+            parameter = new(parameterName, null);
+            return true;
+        }
+
+        var argumentTokens = ReadCommandArgument(tokens, ref position);
+        parameter = new(parameterName, ParseParameterArgumentExpression(parameterName, argumentTokens));
         return true;
     }
 
-    private static bool IsOperatorSwitchParameter(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
-        tokens[position].Kind is PowerShellWasmTokenKind.Inotmatch or PowerShellWasmTokenKind.Cnotmatch &&
-        (position + 1 >= tokens.Count ||
-            tokens[position + 1].Kind == PowerShellWasmTokenKind.Parameter ||
-            IsSplatStart(tokens, position + 1));
+    private static bool IsOperatorParameter(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
+        position < tokens.Count && TryGetOperatorParameterName(tokens[position].Kind, out _);
+
+    private static bool TryGetOperatorParameterName(PowerShellWasmTokenKind kind, out string name)
+    {
+        name = kind switch
+        {
+            PowerShellWasmTokenKind.Ieq => "EQ",
+            PowerShellWasmTokenKind.Ine => "NE",
+            PowerShellWasmTokenKind.Ige => "GE",
+            PowerShellWasmTokenKind.Igt => "GT",
+            PowerShellWasmTokenKind.Ilt => "LT",
+            PowerShellWasmTokenKind.Ile => "LE",
+            PowerShellWasmTokenKind.Ilike => "Like",
+            PowerShellWasmTokenKind.Inotlike => "NotLike",
+            PowerShellWasmTokenKind.Imatch => "Match",
+            PowerShellWasmTokenKind.Inotmatch => "NotMatch",
+            PowerShellWasmTokenKind.Icontains => "Contains",
+            PowerShellWasmTokenKind.Inotcontains => "NotContains",
+            PowerShellWasmTokenKind.Iin => "In",
+            PowerShellWasmTokenKind.Inotin => "NotIn",
+            PowerShellWasmTokenKind.Ceq => "CEQ",
+            PowerShellWasmTokenKind.Cne => "CNE",
+            PowerShellWasmTokenKind.Cge => "CGE",
+            PowerShellWasmTokenKind.Cgt => "CGT",
+            PowerShellWasmTokenKind.Clt => "CLT",
+            PowerShellWasmTokenKind.Cle => "CLE",
+            PowerShellWasmTokenKind.Clike => "CLike",
+            PowerShellWasmTokenKind.Cnotlike => "CNotLike",
+            PowerShellWasmTokenKind.Cmatch => "CMatch",
+            PowerShellWasmTokenKind.Cnotmatch => "CNotMatch",
+            PowerShellWasmTokenKind.Ccontains => "CContains",
+            PowerShellWasmTokenKind.Cnotcontains => "CNotContains",
+            PowerShellWasmTokenKind.Cin => "CIn",
+            PowerShellWasmTokenKind.Cnotin => "CNotIn",
+            _ => string.Empty
+        };
+
+        return name.Length > 0;
+    }
 
     private static IReadOnlyList<PowerShellWasmToken> ReadCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
     {
@@ -1045,12 +1090,12 @@ public sealed class PowerShellWasmParser
             while (position < tokens.Count && depth > 0);
         }
 
-        if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator() && !IsOperatorSwitchParameter(tokens, position))
+        if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator() && !IsOperatorParameter(tokens, position))
         {
             while (position < tokens.Count &&
                 tokens[position].Kind != PowerShellWasmTokenKind.Parameter &&
                 !IsSplatStart(tokens, position) &&
-                !IsOperatorSwitchParameter(tokens, position))
+                !IsOperatorParameter(tokens, position))
             {
                 position++;
             }

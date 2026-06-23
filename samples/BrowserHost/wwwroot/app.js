@@ -216,6 +216,7 @@ export async function disposePowerShellSession(session) {
 
 /**
  * Find and execute browser script blocks or external PowerShell scripts. Auto-run creates one output block per script.
+ * Set data-pswasm-output="none" on DOM-only script blocks to suppress the success output block.
  * Script blocks share one PowerShell session by default. Pass session: false to isolate blocks.
  * Pass options.output to render all scripts into one combined output target.
  * @param {{ environment?: Record<string, string>, output?: Element | string, selector?: string, session?: boolean | string | { id: string } }} [options]
@@ -243,13 +244,18 @@ export async function runPowerShellScripts(options = {}) {
     }
 
     for (const script of scripts) {
-      const output = getOrCreateScriptOutputElement(script);
+      const outputMode = getPowerShellScriptOutputMode(script);
+      let output = outputMode === "none" ? undefined : getOrCreateScriptOutputElement(script);
+      const ensureOutput = () => output ??= getOrCreateScriptOutputElement(script);
 
       try {
-        renderPowerShellResult(await executePowerShellResult(await getPowerShellScriptText(script), executeOptions), output);
+        const result = await executePowerShellResult(await getPowerShellScriptText(script), executeOptions);
+        if (outputMode !== "none" || hasErrorRecord(result)) {
+          renderPowerShellResult(result, ensureOutput());
+        }
       } catch (error) {
         console.error(error);
-        renderPowerShellOutput("[Error] Runtime error. Check the browser console.", output);
+        renderPowerShellOutput("[Error] Runtime error. Check the browser console.", ensureOutput());
       }
     }
   } catch (error) {
@@ -280,6 +286,14 @@ async function getPowerShellScriptText(script) {
 
 function getPowerShellScriptSource(script) {
   return script.getAttribute("src")?.trim() ?? "";
+}
+
+function getPowerShellScriptOutputMode(script) {
+  return script.getAttribute("data-pswasm-output")?.trim().toLowerCase() ?? "auto";
+}
+
+function hasErrorRecord(result) {
+  return (result.records ?? []).some(record => (record.stream ?? "").toLowerCase() === "error");
 }
 
 function getPowerShellExecutionOptions(options, session) {
