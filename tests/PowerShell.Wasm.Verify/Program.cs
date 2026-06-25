@@ -36,6 +36,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("script functions", VerifyScriptFunctionsAsync),
     ("return break continue", VerifyReturnBreakContinueAsync),
     ("while statement", VerifyWhileStatementAsync),
+    ("do while statement", VerifyDoWhileStatementAsync),
     ("for statement", VerifyForStatementAsync),
     ("switch statement", VerifySwitchStatementAsync),
     ("automatic variables", VerifyAutomaticVariablesAsync),
@@ -73,6 +74,24 @@ $compound -= 4
 $compound /= 2
 $compound %= 5
 $compound
+$coalesce = $null
+$coalesce ??= 'created'
+$coalesce
+$coalesce ??= 'ignored'
+$coalesce
+$existing = 'kept'
+$side = 'clean'
+$existing ??= ($side = 'dirty')
+$existing
+$side
+$falseValue = $false
+$falseValue ??= 'wrong'
+$falseValue
+$emptyText = ''
+$emptyText ??= 'wrong'
+"empty=[$emptyText]"
+($exprCoalesce ??= 'expr-created')
+$exprCoalesce
 $text = 'a'
 $text += 'b'
 $text
@@ -119,6 +138,14 @@ $null -isnot [string]
         "8",
         "16",
         "1",
+        "created",
+        "created",
+        "kept",
+        "clean",
+        "False",
+        "empty=[]",
+        "expr-created",
+        "expr-created",
         "ab",
         "2",
         "2",
@@ -959,6 +986,25 @@ if ((Write-Output 'x') -eq 'x') { 'parenthesized command ok' }
 if (('pipe' | Write-Output) -eq 'pipe') { 'parenthesized pipeline ok' }
 $Value = (Write-Output ' abc ').Trim()
 $Value
+$Grouped = (Write-Output 'a'; Write-Output 'b')
+$Grouped.Count
+$Grouped[0]
+$Grouped[1]
+(Write-Output 'c'; Write-Output 'd').Count
+(Write-Output ' padded '; Write-Output 'ignored')[0].Trim()
+$Multiline = (
+    Write-Output 'line-a'
+    Write-Output 'line-b'
+)
+$Multiline.Count
+$Multiline[0]
+$Multiline[1]
+(1 +
+    2)
+(
+    $LocalValue = 'inside'
+    $LocalValue
+)
 """);
 
     ExpectLines(result, [
@@ -974,7 +1020,17 @@ $Value
         "1",
         "parenthesized command ok",
         "parenthesized pipeline ok",
-        "abc"
+        "abc",
+        "2",
+        "a",
+        "b",
+        "2",
+        "padded",
+        "2",
+        "line-a",
+        "line-b",
+        "3",
+        "inside"
     ]);
 }
 
@@ -1507,6 +1563,54 @@ try {
         "4",
         "none",
         "The browser-safe while loop exceeded 10000 iterations."
+    ]);
+}
+
+static async ValueTask VerifyDoWhileStatementAsync()
+{
+    var result = await ExecuteAsync("""
+$i = 0
+do {
+    $i++
+    if ($i -eq 2) {
+        continue
+    }
+    $i
+} while ($i -lt 3)
+$j = 0
+do {
+    $j++
+    $j
+} until ($j -ge 2)
+$once = do {
+    'once'
+} while ($false)
+$once
+$k = 0
+do {
+    $k++
+    if ($k -gt 2) {
+        break
+    }
+    "break-$k"
+} while ($true)
+try {
+    do {
+    } while ($true)
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "1",
+        "3",
+        "1",
+        "2",
+        "once",
+        "break-1",
+        "break-2",
+        "The browser-safe do loop exceeded 10000 iterations."
     ]);
 }
 

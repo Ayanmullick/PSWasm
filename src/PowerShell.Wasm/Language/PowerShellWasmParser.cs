@@ -4,6 +4,7 @@ namespace PSWasm.Language;
 
 // PowerShell source reference: src/System.Management.Automation/engine/parser/Parser.cs
 // Ternary reference: ExpressionRule handling for QuestionMark / Colon and TernaryExpressionAst construction.
+// Null coalescing assignment reference: compound assignment parsing for the QuestionQuestion token followed by Equals.
 // Browser note: this parser models a browser-safe PowerShell subset and produces the PSWasm AST profile.
 public sealed class PowerShellWasmParser
 {
@@ -1150,6 +1151,11 @@ public sealed class PowerShellWasmParser
 
     private static ExpressionAst ParseParenthesizedExpressionValue(IReadOnlyList<PowerShellWasmToken> tokens)
     {
+        if (HasTopLevelStatementSeparator(tokens))
+        {
+            return new ScriptExpressionAst(ParseScript(tokens));
+        }
+
         var normalized = RemoveTopLevelNewLines(tokens);
         return IsStatementExpressionValue(normalized)
             ? new StatementExpressionAst(ParseStatement(normalized))
@@ -1172,6 +1178,97 @@ public sealed class PowerShellWasmParser
         (SplitTopLevelPipelineChain(tokens).Segments.Count > 1 ||
             SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe).Count > 1 ||
             IsCommandExpressionSegment(tokens));
+
+    private static bool HasTopLevelStatementSeparator(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var depth = 0;
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            var token = tokens[i];
+            if (depth == 0 && token.Kind == PowerShellWasmTokenKind.Semicolon)
+            {
+                return true;
+            }
+
+            if (depth == 0 &&
+                token.Kind == PowerShellWasmTokenKind.NewLine &&
+                IsStatementBoundaryNewLine(tokens, i))
+            {
+                return true;
+            }
+
+            UpdateDepth(token, ref depth);
+        }
+
+        return false;
+    }
+
+    private static bool IsStatementBoundaryNewLine(IReadOnlyList<PowerShellWasmToken> tokens, int position)
+    {
+        var previous = PreviousSignificantToken(tokens, position);
+        var next = NextSignificantToken(tokens, position + 1);
+        return previous.HasValue &&
+            next.HasValue &&
+            CanEndStatementBeforeNewLine(previous.Value.Kind) &&
+            CanStartStatementAfterNewLine(next.Value.Kind);
+    }
+
+    private static PowerShellWasmToken? PreviousSignificantToken(IReadOnlyList<PowerShellWasmToken> tokens, int position)
+    {
+        for (var i = position - 1; i >= 0; i--)
+        {
+            if (tokens[i].Kind != PowerShellWasmTokenKind.NewLine)
+            {
+                return tokens[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static PowerShellWasmToken? NextSignificantToken(IReadOnlyList<PowerShellWasmToken> tokens, int position)
+    {
+        for (var i = position; i < tokens.Count; i++)
+        {
+            if (tokens[i].Kind != PowerShellWasmTokenKind.NewLine)
+            {
+                return tokens[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static bool CanEndStatementBeforeNewLine(PowerShellWasmTokenKind kind) =>
+        kind is not (PowerShellWasmTokenKind.Semicolon or
+            PowerShellWasmTokenKind.Pipe or
+            PowerShellWasmTokenKind.PipelineChainAnd or
+            PowerShellWasmTokenKind.PipelineChainOr or
+            PowerShellWasmTokenKind.Equals or
+            PowerShellWasmTokenKind.Question or
+            PowerShellWasmTokenKind.Colon or
+            PowerShellWasmTokenKind.Comma or
+            PowerShellWasmTokenKind.LParen or
+            PowerShellWasmTokenKind.LBrace or
+            PowerShellWasmTokenKind.LBracket or
+            PowerShellWasmTokenKind.At or
+            PowerShellWasmTokenKind.AtLBrace or
+            PowerShellWasmTokenKind.AtLParen or
+            PowerShellWasmTokenKind.DoubleColon) &&
+        !kind.IsBinaryOperator();
+
+    private static bool CanStartStatementAfterNewLine(PowerShellWasmTokenKind kind) =>
+        kind is not (PowerShellWasmTokenKind.EndOfInput or
+            PowerShellWasmTokenKind.NewLine or
+            PowerShellWasmTokenKind.Semicolon or
+            PowerShellWasmTokenKind.RParen or
+            PowerShellWasmTokenKind.RBrace or
+            PowerShellWasmTokenKind.RBracket or
+            PowerShellWasmTokenKind.Pipe or
+            PowerShellWasmTokenKind.PipelineChainAnd or
+            PowerShellWasmTokenKind.PipelineChainOr or
+            PowerShellWasmTokenKind.Colon or
+            PowerShellWasmTokenKind.Comma);
 
     private static bool IsCommandExpressionSegment(IReadOnlyList<PowerShellWasmToken> tokens)
     {
@@ -1263,11 +1360,12 @@ public sealed class PowerShellWasmParser
             PowerShellWasmTokenKind.Star => PowerShellWasmBinaryOperator.Multiply,
             PowerShellWasmTokenKind.Slash => PowerShellWasmBinaryOperator.Divide,
             PowerShellWasmTokenKind.Remainder => PowerShellWasmBinaryOperator.Remainder,
+            PowerShellWasmTokenKind.QuestionQuestion => PowerShellWasmBinaryOperator.NullCoalesce,
             _ => default
         };
 
         return kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus or PowerShellWasmTokenKind.Star or
-            PowerShellWasmTokenKind.Slash or PowerShellWasmTokenKind.Remainder;
+            PowerShellWasmTokenKind.Slash or PowerShellWasmTokenKind.Remainder or PowerShellWasmTokenKind.QuestionQuestion;
     }
 
     private static bool TryParseVariableIncrementStatement(

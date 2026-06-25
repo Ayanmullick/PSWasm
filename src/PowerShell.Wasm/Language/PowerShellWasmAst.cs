@@ -148,6 +148,8 @@ public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : Expr
 
 public sealed record StatementExpressionAst(StatementAst Statement) : ExpressionAst;
 
+public sealed record ScriptExpressionAst(ScriptAst Script) : ExpressionAst;
+
 public sealed record TypeLiteralExpressionAst(string TypeName) : ExpressionAst;
 
 public sealed record CastExpressionAst(string TypeName, ExpressionAst Operand) : ExpressionAst;

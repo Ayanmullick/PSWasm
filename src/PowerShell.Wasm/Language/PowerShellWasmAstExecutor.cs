@@ -12,6 +12,7 @@ namespace PSWasm.Language;
 // - src/System.Management.Automation/engine/SessionState*.cs
 // - src/System.Management.Automation/engine/parser/Compiler.cs
 // Ternary reference: VisitTernaryExpression-style lazy conditional branch evaluation.
+// Null coalescing assignment reference: compound assignment evaluates the right operand only when the left value is null.
 // Browser note: this executor keeps only browser-safe command dispatch, state, expression, and pipeline behavior.
 internal sealed class PowerShellWasmAstExecutor(
     PowerShellWasmExecutionContext executionContext,
@@ -78,6 +79,9 @@ internal sealed class PowerShellWasmAstExecutor(
                 break;
             case WhileStatementAst whileStatement:
                 await ExecuteWhileStatementAsync(whileStatement, cancellationToken);
+                break;
+            case DoWhileStatementAst doWhileStatement:
+                await ExecuteDoWhileStatementAsync(doWhileStatement, cancellationToken);
                 break;
             case ForStatementAst forStatement:
                 await ExecuteForStatementAsync(forStatement, cancellationToken);
@@ -167,6 +171,37 @@ internal sealed class PowerShellWasmAstExecutor(
                 continue;
             }
             catch (LoopBreakFlowException)
+            {
+                break;
+            }
+        }
+    }
+
+    private async ValueTask ExecuteDoWhileStatementAsync(DoWhileStatementAst statement, CancellationToken cancellationToken)
+    {
+        var iterations = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (++iterations > MaximumLoopIterations)
+            {
+                throw new InvalidOperationException($"The browser-safe do loop exceeded {MaximumLoopIterations} iterations.");
+            }
+
+            try
+            {
+                await ExecuteScriptAsync(statement.Body, cancellationToken);
+            }
+            catch (LoopContinueFlowException)
+            {
+            }
+            catch (LoopBreakFlowException)
+            {
+                break;
+            }
+
+            var condition = ToBoolean(await EvaluateExpressionAsync(statement.Condition, cancellationToken));
+            if (statement.Until ? condition : !condition)
             {
                 break;
             }
@@ -305,13 +340,7 @@ internal sealed class PowerShellWasmAstExecutor(
             await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
         }
 
-        var value = output.Count switch
-        {
-            0 => null,
-            1 => output[0],
-            _ => output.ToArray()
-        };
-        executionContext.SetVariable(assignment.VariableName, value);
+        executionContext.SetVariable(assignment.VariableName, ToCapturedExpressionValue(output));
     }
 
     private async ValueTask ExecuteParallelStatementAssignmentAsync(
@@ -653,6 +682,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateExpressionAsync(parenthesized.Expression, cancellationToken);
             case StatementExpressionAst statement:
                 return await EvaluateStatementExpressionAsync(statement.Statement, cancellationToken);
+            case ScriptExpressionAst script:
+                return await EvaluateScriptExpressionAsync(script.Script, cancellationToken);
             case TypeLiteralExpressionAst typeLiteral:
                 return PowerShellWasmDotNetBridge.ResolveType(typeLiteral.TypeName);
             case CastExpressionAst cast:
@@ -699,8 +730,15 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var left = EvaluateVariable(variableName);
+        if (op == PowerShellWasmBinaryOperator.NullCoalesce && left is not null)
+        {
+            return left;
+        }
+
         var right = await EvaluateExpressionAsync(expression, cancellationToken);
-        var value = ApplyBinaryOperator(left, op, right);
+        var value = op == PowerShellWasmBinaryOperator.NullCoalesce
+            ? right
+            : ApplyBinaryOperator(left, op, right);
         executionContext.SetVariable(variableName, value);
         return value;
     }
@@ -763,13 +801,29 @@ internal sealed class PowerShellWasmAstExecutor(
             await ExecuteStatementAsync(statement, [], cancellationToken);
         }
 
-        return output.Count switch
+        return ToCapturedExpressionValue(output);
+    }
+
+    private async ValueTask<object?> EvaluateScriptExpressionAsync(
+        ScriptAst script,
+        CancellationToken cancellationToken)
+    {
+        var output = new List<object?>();
+        using (executionContext.CaptureOutput(output))
+        {
+            await ExecuteScriptAsync(script, cancellationToken);
+        }
+
+        return ToCapturedExpressionValue(output);
+    }
+
+    private static object? ToCapturedExpressionValue(IReadOnlyList<object?> output) =>
+        output.Count switch
         {
             0 => null,
             1 => output[0],
             _ => output.ToArray()
         };
-    }
 
     private PowerShellWasmScriptBlock CreateScriptBlock(ScriptBlockExpressionAst scriptBlock)
     {
