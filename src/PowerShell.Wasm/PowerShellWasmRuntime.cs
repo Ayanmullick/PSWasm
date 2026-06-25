@@ -97,6 +97,7 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("throw", new ThrowCommand());
         RegisterCommand("Measure-Object", new MeasureObjectCommand());
         RegisterCommand("Measure", new MeasureObjectCommand());
+        RegisterCommand("New-Object", new NewObjectCommand());
 #if PSWASM_DOM
         RegisterCommand("New-DomSession", new NewDomSessionCommand());
         RegisterCommand("Register-DomEvent", new RegisterDomEventCommand());

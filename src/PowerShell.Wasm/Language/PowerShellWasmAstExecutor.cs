@@ -961,6 +961,17 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static object? CastValue(string typeName, object? value)
     {
+        if (typeName.Trim().Equals("void", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Trim().Equals("System.Void", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (PowerShellWasmDotNetBridge.TryCast(typeName, value, out var dotNetValue))
+        {
+            return dotNetValue;
+        }
+
         var normalizedType = NormalizeCastTypeName(typeName);
         if (normalizedType.EndsWith("[]", StringComparison.Ordinal))
         {
@@ -1321,6 +1332,11 @@ internal sealed class PowerShellWasmAstExecutor(
         if (value is null)
         {
             return false;
+        }
+
+        if (PowerShellWasmDotNetBridge.TryTypeMatches(typeName, value, out var dotNetMatches))
+        {
+            return dotNetMatches;
         }
 
         return NormalizeCastTypeName(typeName) switch

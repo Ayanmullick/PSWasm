@@ -600,6 +600,33 @@ $ConnectionKey
 'MIXED'.ToLowerInvariant()
 '  padded  '.Trim()
 'abcdef'.Substring(1,3)
+[Math]::Max(3,7)
+[Math]::Round(3.14159,2)
+$When = [DateTime]::Parse('2026-06-25T10:30:00Z')
+$When.Year
+$When.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss')
+$Offset = [DateTimeOffset]::Parse('2026-06-25T10:30:00+00:00')
+$Offset.UtcDateTime.Year
+[TimeSpan]::FromHours(2).TotalMinutes
+$Utc = [TimeZoneInfo]::Utc
+$Utc.Id
+$Utc.BaseUtcOffset.TotalHours
+$List = [System.Collections.Generic.List[string]]@('alpha','beta')
+[void]$List.Add('gamma')
+$List.Count
+$List[2]
+$List -is [System.Collections.Generic.List[string]]
+$ArrayList = New-Object System.Collections.ArrayList
+$ArrayList.Add('one')
+[void]$ArrayList.Add('two')
+$ArrayList.Count
+$ArrayList[1]
+$ArrayList -is [System.Collections.ArrayList]
+$Date = New-Object DateTime -ArgumentList @(2026,6,25)
+$Date.ToString('yyyy-MM-dd')
+$NewList = New-Object 'System.Collections.Generic.List[int]' -ArgumentList @(1,2)
+[void]$NewList.Add('3')
+$NewList[2]
 """);
 
     ExpectLines(result, [
@@ -614,7 +641,24 @@ $ConnectionKey
         "+/8=",
         "mixed",
         "padded",
-        "bcd"
+        "bcd",
+        "7",
+        "3.14",
+        "2026",
+        "2026-06-25T10:30:00",
+        "2026",
+        "120",
+        "UTC",
+        "0",
+        "3",
+        "gamma",
+        "True",
+        "0",
+        "2",
+        "two",
+        "True",
+        "2026-06-25",
+        "3"
     ]);
 }
 
