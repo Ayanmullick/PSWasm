@@ -1,6 +1,7 @@
 namespace PSWasm.Language;
 
 // PowerShell source reference: src/System.Management.Automation/engine/parser/ast.cs
+// Ternary reference: System.Management.Automation.Language.TernaryExpressionAst.
 // Browser note: this is a small AST profile for PSWasm, not a verbatim copy of SMA's full AST hierarchy.
 public abstract record PowerShellWasmAst;
 
@@ -160,6 +161,8 @@ public sealed record MethodInvocationExpressionAst(ExpressionAst Target, IReadOn
 public sealed record IndexExpressionAst(ExpressionAst Target, ExpressionAst Index) : ExpressionAst;
 
 public sealed record UnaryExpressionAst(PowerShellWasmUnaryOperator Operator, ExpressionAst Operand) : ExpressionAst;
+
+public sealed record TernaryExpressionAst(ExpressionAst Condition, ExpressionAst IfTrue, ExpressionAst IfFalse) : ExpressionAst;
 
 public sealed record BinaryExpressionAst(ExpressionAst Left, PowerShellWasmBinaryOperator Operator, ExpressionAst Right) : ExpressionAst;
 

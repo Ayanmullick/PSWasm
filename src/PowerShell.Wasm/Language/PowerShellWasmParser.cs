@@ -3,6 +3,7 @@ using System.Globalization;
 namespace PSWasm.Language;
 
 // PowerShell source reference: src/System.Management.Automation/engine/parser/Parser.cs
+// Ternary reference: ExpressionRule handling for QuestionMark / Colon and TernaryExpressionAst construction.
 // Browser note: this parser models a browser-safe PowerShell subset and produces the PSWasm AST profile.
 public sealed class PowerShellWasmParser
 {
@@ -1160,6 +1161,7 @@ public sealed class PowerShellWasmParser
 
     private static bool IsCommandNameToken(PowerShellWasmToken token) =>
         token.Kind == PowerShellWasmTokenKind.Identifier ||
+        token.Kind == PowerShellWasmTokenKind.Question ||
         token.Kind == PowerShellWasmTokenKind.Remainder;
 
     private static string GetCommandName(PowerShellWasmToken token) =>
@@ -1586,7 +1588,22 @@ public sealed class PowerShellWasmParser
                 return new AssignmentExpressionAst(variable, ParseAssignment());
             }
 
-            return ParseBinaryExpression(1);
+            return ParseTernaryExpression();
+        }
+
+        private ExpressionAst ParseTernaryExpression()
+        {
+            var condition = ParseBinaryExpression(1);
+            if (!IsTernaryQuestion())
+            {
+                return condition;
+            }
+
+            _position++;
+            var ifTrue = ParseCommaExpression();
+            Consume(PowerShellWasmTokenKind.Colon);
+            var ifFalse = ParseCommaExpression();
+            return new TernaryExpressionAst(condition, ifTrue, ifFalse);
         }
 
         private ExpressionAst ParseBinaryExpression(int minimumPrecedence)
@@ -1932,8 +1949,20 @@ public sealed class PowerShellWasmParser
             return position < tokens.Count ? tokens[position] : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
         }
 
+        private PowerShellWasmToken Previous =>
+            _position > 0 && _position - 1 < tokens.Count
+                ? tokens[_position - 1]
+                : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
+
         private PowerShellWasmToken TokenAt(int position) =>
             position < tokens.Count ? tokens[position] : new(PowerShellWasmTokenKind.EndOfInput, string.Empty, 0, 0, false);
+
+        private bool IsTernaryQuestion() =>
+            Current.Kind == PowerShellWasmTokenKind.Question &&
+            (Current.HasLeadingWhitespace ||
+                Previous.Kind is PowerShellWasmTokenKind.RParen or PowerShellWasmTokenKind.RBrace or
+                    PowerShellWasmTokenKind.RBracket or PowerShellWasmTokenKind.StringLiteral or
+                    PowerShellWasmTokenKind.ExpandableStringLiteral);
 
         private bool TryReadTypeName(int startPosition, out string typeName, out int afterTypePosition)
         {

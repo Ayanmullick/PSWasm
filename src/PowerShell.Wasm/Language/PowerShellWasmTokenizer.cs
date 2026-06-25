@@ -5,6 +5,7 @@ namespace PSWasm.Language;
 // PowerShell source references:
 // - src/System.Management.Automation/engine/parser/tokenizer.cs
 // - src/System.Management.Automation/engine/parser/CharTraits.cs
+// Ternary reference: tokenization of '?' / ':' into QuestionMark / Colon tokens.
 // Browser note: this tokenizer intentionally avoids desktop host/runtime dependencies.
 public static class PowerShellWasmTokenizer
 {
@@ -91,7 +92,7 @@ public static class PowerShellWasmTokenizer
                     }
                     else
                     {
-                        ReadIdentifier();
+                        Add(PowerShellWasmTokenKind.Colon, ":", 1);
                     }
 
                     break;
@@ -151,7 +152,7 @@ public static class PowerShellWasmTokenizer
                     }
                     else
                     {
-                        ReadIdentifier();
+                        Add(PowerShellWasmTokenKind.Question, "?", 1);
                     }
 
                     break;

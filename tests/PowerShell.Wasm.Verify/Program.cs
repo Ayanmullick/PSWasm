@@ -6,6 +6,7 @@ using PSWasm;
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
     ("operators and expressions", VerifyOperatorsAsync),
+    ("ternary operator", VerifyTernaryOperatorAsync),
     ("regular expressions", VerifyRegularExpressionsAsync),
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),
@@ -138,6 +139,42 @@ $null -isnot [string]
         "null",
         "True",
         "True"
+    ]);
+}
+
+static async ValueTask VerifyTernaryOperatorAsync()
+{
+    var result = await ExecuteAsync("""
+$true ? 'yes' : 'no'
+$false ? 'yes' : 'no'
+1 + 2 -eq 3 ? 'math' : 'bad'
+$missing ?? $true ? 'coalesce' : 'bad'
+$false ? (throw 'bad true branch') : 'lazy false'
+$true ? 'lazy true' : (throw 'bad false branch')
+$flag = $false
+$flag ? 'a' : $true ? 'b' : 'c'
+$true ? $false ? 'inner-a' : 'inner-b' : 'outer-c'
+"literal"? 'string true' : 'string false'
+@($true)[0]? 'index true' : 'index false'
+$numbers = $true ? @(1,2) : @(3,4)
+$numbers.Count
+1..3 | ? { $_ -gt 1 }
+""");
+
+    ExpectLines(result, [
+        "yes",
+        "no",
+        "math",
+        "coalesce",
+        "lazy false",
+        "lazy true",
+        "b",
+        "inner-b",
+        "string true",
+        "index true",
+        "2",
+        "2",
+        "3"
     ]);
 }
 

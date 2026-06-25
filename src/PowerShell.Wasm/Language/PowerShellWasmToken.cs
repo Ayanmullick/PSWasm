@@ -1,6 +1,7 @@
 namespace PSWasm.Language;
 
 // PowerShell source reference: src/System.Management.Automation/engine/parser/token.cs
+// Ternary reference: TokenKind.QuestionMark, TokenKind.Colon, and TokenFlags.TernaryOperator.
 // Browser note: this token model keeps only the token kinds currently needed by the PSWasm parser profile.
 public enum PowerShellWasmTokenKind
 {
@@ -11,6 +12,8 @@ public enum PowerShellWasmTokenKind
     PipelineChainAnd,
     PipelineChainOr,
     Equals,
+    Question,
+    Colon,
     Comma,
     LParen,
     RParen,

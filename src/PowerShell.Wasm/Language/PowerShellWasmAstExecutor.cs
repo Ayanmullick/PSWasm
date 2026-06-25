@@ -10,6 +10,8 @@ namespace PSWasm.Language;
 // - src/System.Management.Automation/engine/CommandProcessorBase.cs
 // - src/System.Management.Automation/engine/ParameterBinderController.cs
 // - src/System.Management.Automation/engine/SessionState*.cs
+// - src/System.Management.Automation/engine/parser/Compiler.cs
+// Ternary reference: VisitTernaryExpression-style lazy conditional branch evaluation.
 // Browser note: this executor keeps only browser-safe command dispatch, state, expression, and pipeline behavior.
 internal sealed class PowerShellWasmAstExecutor(
     PowerShellWasmExecutionContext executionContext,
@@ -665,6 +667,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateIndexAsync(index, cancellationToken);
             case UnaryExpressionAst unary:
                 return await EvaluateUnaryAsync(unary, cancellationToken);
+            case TernaryExpressionAst ternary:
+                return await EvaluateTernaryAsync(ternary, cancellationToken);
             case BinaryExpressionAst binary:
                 return await EvaluateBinaryAsync(binary, cancellationToken);
             default:
@@ -1193,6 +1197,11 @@ internal sealed class PowerShellWasmAstExecutor(
             _ => value ?? string.Empty
         };
     }
+
+    private async ValueTask<object?> EvaluateTernaryAsync(TernaryExpressionAst ternary, CancellationToken cancellationToken) =>
+        ToBoolean(await EvaluateExpressionAsync(ternary.Condition, cancellationToken))
+            ? await EvaluateExpressionAsync(ternary.IfTrue, cancellationToken)
+            : await EvaluateExpressionAsync(ternary.IfFalse, cancellationToken);
 
     private async ValueTask<object?> EvaluateBinaryAsync(BinaryExpressionAst binary, CancellationToken cancellationToken)
     {
