@@ -1978,23 +1978,24 @@ public sealed class PowerShellWasmParser
             return new HashtableExpressionAst(entries);
         }
 
-        private ArrayExpressionAst ParseArray()
+        private ExpressionAst ParseArray()
         {
-            var items = new List<ExpressionAst>();
-            while (Current.Kind is not PowerShellWasmTokenKind.RParen and not PowerShellWasmTokenKind.EndOfInput)
+            var start = _position;
+            var depth = 0;
+            while (Current.Kind is not PowerShellWasmTokenKind.EndOfInput)
             {
-                SkipExpressionSeparators();
-                if (Current.Kind is PowerShellWasmTokenKind.RParen or PowerShellWasmTokenKind.EndOfInput)
+                if (Current.Kind == PowerShellWasmTokenKind.RParen && depth == 0)
                 {
                     break;
                 }
 
-                items.Add(ParseAssignment());
-                SkipExpressionSeparators();
+                UpdateDepth(Current, ref depth);
+                _position++;
             }
 
+            var scriptTokens = tokens.Skip(start).Take(_position - start).ToArray();
             Consume(PowerShellWasmTokenKind.RParen);
-            return new ArrayExpressionAst(items);
+            return new ArraySubexpressionAst(ParseScript(scriptTokens));
         }
 
         private ExpressionAst ReadHashtableKeyExpression()

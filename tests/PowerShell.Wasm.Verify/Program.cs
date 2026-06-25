@@ -62,6 +62,17 @@ $var
 'abc' -replace 'b','x'
 @('red','blue') -contains 'blue'
 'blue' -in @('red','blue')
+$one = @(1,2,3) -eq 2
+$one
+$one.Count
+$none = @(1,2,3) -eq 9
+$none.Count
+@(1,2,3,4) -gt 2
+@('prod-a','dev','prod-b') -like 'prod*'
+@('prod-a','dev','prod-b') -notlike 'prod*'
+@('a1','b2','a3') -match '^a'
+@('A','a') -ceq 'a'
+([byte[]]@(65,66)) -eq 65
 @('a','b') -join '-'
 'a b c' -split ' '
 '{0}-{1}' -f @('left','right')
@@ -129,6 +140,18 @@ $null -isnot [string]
         "axc",
         "True",
         "True",
+        "2",
+        "1",
+        "0",
+        "3",
+        "4",
+        "prod-a",
+        "prod-b",
+        "dev",
+        "a1",
+        "a3",
+        "a",
+        "65",
         "a-b",
         "a",
         "b",
@@ -438,6 +461,15 @@ $single = ,7
 $single.Count
 @("Hello World").Count
 @().Count
+$sub = @(Write-Output 'left'; Write-Output 'right')
+$sub.Count
+$sub -join ','
+$assignOnly = @($subValue = 1)
+$assignOnly.Count
+$subValue
+@(1,2).Count
+@(, (1,2)).Count
+@([byte[]]@(65,66)).Count
 $range = 5..8
 $range
 ($a + @(99,100)).Count
@@ -456,6 +488,13 @@ $range
         "1",
         "1",
         "0",
+        "2",
+        "left,right",
+        "0",
+        "1",
+        "2",
+        "1",
+        "2",
         "5",
         "6",
         "7",
@@ -1058,6 +1097,13 @@ $rows | Where-Object Tags -contains 'api' | Select-Object -ExpandProperty Name
 $rows | ForEach-Object Name
 @('aa','bbb') | ForEach-Object Length
 @(' abc ',' def ') | ForEach-Object Trim
+$rows.Name
+$rows.Name.ToUpperInvariant()
+@(' left ',' right ').Trim()
+$missingMembers = @($rows[0],$null,$rows[1]).Missing
+$missingMembers.Count
+$missingMembers[0] ?? 'missing-null'
+$missingMembers[1] ?? 'missing-null'
 'abcdef' | ForEach-Object Substring 1 3
 $rows | Select-Object @{Name='Label';Expression={$_.Name.ToUpperInvariant()}},@{N='Next';E={$_.Value + 1}} | ConvertTo-Json -Compress
 $rows | Select-Object @{Name='Copied';Expression='Name'} | ConvertTo-Json -Compress
@@ -1094,6 +1140,17 @@ $sum = 0
         "3",
         "abc",
         "def",
+        "one",
+        "two",
+        "three",
+        "ONE",
+        "TWO",
+        "THREE",
+        "left",
+        "right",
+        "2",
+        "missing-null",
+        "missing-null",
         "bcd",
         "[{\"Label\":\"ONE\",\"Next\":2},{\"Label\":\"TWO\",\"Next\":3},{\"Label\":\"THREE\",\"Next\":4}]",
         "[{\"Copied\":\"one\"},{\"Copied\":\"two\"},{\"Copied\":\"three\"}]",

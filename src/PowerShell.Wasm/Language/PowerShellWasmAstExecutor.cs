@@ -676,6 +676,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateTypedHashtableAsync(typedHashtable, cancellationToken);
             case ArrayExpressionAst array:
                 return await EvaluateArrayAsync(array, cancellationToken);
+            case ArraySubexpressionAst arraySubexpression:
+                return await EvaluateArraySubexpressionAsync(arraySubexpression, cancellationToken);
             case ScriptBlockExpressionAst scriptBlock:
                 return CreateScriptBlock(scriptBlock);
             case ParenthesizedExpressionAst parenthesized:
@@ -789,6 +791,43 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         return result;
+    }
+
+    private async ValueTask<object?[]> EvaluateArraySubexpressionAsync(
+        ArraySubexpressionAst array,
+        CancellationToken cancellationToken)
+    {
+        var output = new List<object?>();
+        using (executionContext.CaptureOutput(output))
+        {
+            await ExecuteScriptAsync(array.Script, cancellationToken);
+        }
+
+        return ExpandArraySubexpressionOutput(executionContext.GetCapturedOutput(output)).ToArray();
+    }
+
+    private static IEnumerable<object?> ExpandArraySubexpressionOutput(IEnumerable<object?> output)
+    {
+        foreach (var item in output)
+        {
+            if (item is null or string or System.Collections.IDictionary or IReadOnlyDictionary<string, object?>)
+            {
+                yield return item;
+                continue;
+            }
+
+            if (item is System.Collections.IEnumerable enumerable)
+            {
+                foreach (var value in enumerable)
+                {
+                    yield return value;
+                }
+
+                continue;
+            }
+
+            yield return item;
+        }
     }
 
     private async ValueTask<object?> EvaluateStatementExpressionAsync(
@@ -1113,41 +1152,86 @@ internal sealed class PowerShellWasmAstExecutor(
             return null;
         }
 
-        if (target is IReadOnlyDictionary<string, object?> readOnlyDictionary &&
-            readOnlyDictionary.TryGetValue(member.MemberName, out var readOnlyValue))
+        if (TryGetDirectMemberAccess(target, member.MemberName, out var directValue))
         {
-            return readOnlyValue;
+            return directValue;
+        }
+
+        if (TryGetEnumeratedMemberAccess(target, member.MemberName, out var enumeratedValue))
+        {
+            return enumeratedValue;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetDirectMemberAccess(object target, string memberName, out object? value)
+    {
+        value = null;
+        if (target is IReadOnlyDictionary<string, object?> readOnlyDictionary &&
+            readOnlyDictionary.TryGetValue(memberName, out var readOnlyValue))
+        {
+            value = readOnlyValue;
+            return true;
         }
 
         if (target is IDictionary<string, object?> dictionary &&
-            dictionary.TryGetValue(member.MemberName, out var value))
+            dictionary.TryGetValue(memberName, out var dictionaryValue))
         {
-            return value;
+            value = dictionaryValue;
+            return true;
         }
 
         if (target is System.Collections.IDictionary legacyDictionary)
         {
             foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
             {
-                if (string.Equals(Convert.ToString(entry.Key, CultureInfo.InvariantCulture), member.MemberName,
+                if (string.Equals(Convert.ToString(entry.Key, CultureInfo.InvariantCulture), memberName,
                     StringComparison.OrdinalIgnoreCase))
                 {
-                    return entry.Value;
+                    value = entry.Value;
+                    return true;
                 }
             }
         }
 
-        if (PowerShellWasmDotNetBridge.TryGetInstanceMember(target, member.MemberName, out var dotNetMember))
+        if (PowerShellWasmDotNetBridge.TryGetInstanceMember(target, memberName, out var dotNetMember))
         {
-            return dotNetMember;
+            value = dotNetMember;
+            return true;
         }
 
-        if (TryGetCollectionProperty(target, member.MemberName, out var collectionValue))
+        if (TryGetCollectionProperty(target, memberName, out var collectionValue))
         {
-            return collectionValue;
+            value = collectionValue;
+            return true;
         }
 
-        return null;
+        return false;
+    }
+
+    private static bool TryGetEnumeratedMemberAccess(object target, string memberName, out object? value)
+    {
+        value = null;
+        if (target is string or byte[] or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
+            target is not System.Collections.IEnumerable enumerable)
+        {
+            return false;
+        }
+
+        var selected = new List<object?>();
+        foreach (var item in enumerable)
+        {
+            if (item is null)
+            {
+                continue;
+            }
+
+            selected.Add(TryGetDirectMemberAccess(item, memberName, out var itemValue) ? itemValue : null);
+        }
+
+        value = ToCapturedExpressionValue(selected);
+        return true;
     }
 
     private async ValueTask<object?> EvaluateStaticMemberAccessAsync(
@@ -1179,7 +1263,39 @@ internal sealed class PowerShellWasmAstExecutor(
             return value;
         }
 
+        if (TryInvokeEnumeratedMethods(target, arguments, out var enumeratedValue))
+        {
+            return enumeratedValue;
+        }
+
         throw new InvalidOperationException("Only allowlisted browser-safe .NET methods can be invoked.");
+    }
+
+    private static bool TryInvokeEnumeratedMethods(
+        object? target,
+        IReadOnlyList<object?> arguments,
+        out object? value)
+    {
+        value = null;
+        if (target is string or byte[] or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
+            target is not System.Collections.IEnumerable enumerable)
+        {
+            return false;
+        }
+
+        var selected = new List<object?>();
+        foreach (var item in enumerable)
+        {
+            if (!PowerShellWasmDotNetBridge.TryInvoke(item, arguments, out var itemValue))
+            {
+                return false;
+            }
+
+            selected.Add(itemValue);
+        }
+
+        value = ToCapturedExpressionValue(selected);
+        return true;
     }
 
     private async ValueTask<object?> EvaluateIndexAsync(IndexExpressionAst index, CancellationToken cancellationToken)
@@ -1292,8 +1408,92 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         var right = await EvaluateExpressionAsync(binary.Right, cancellationToken);
+        if (TryApplyCollectionComparison(left, binary.Operator, right, out var collectionComparison))
+        {
+            return collectionComparison;
+        }
+
         return ApplyBinaryOperator(left, binary.Operator, right);
     }
+
+    private static bool TryApplyCollectionComparison(
+        object? left,
+        PowerShellWasmBinaryOperator op,
+        object? right,
+        out object? value)
+    {
+        value = null;
+        if (!IsCollectionComparisonOperator(op) || !TryEnumerateCollectionComparisonOperand(left, out var items))
+        {
+            return false;
+        }
+
+        value = items.Where(item => ApplyCollectionComparison(item, op, right)).ToArray();
+        return true;
+    }
+
+    private static bool TryEnumerateCollectionComparisonOperand(
+        object? value,
+        out IEnumerable<object?> items)
+    {
+        items = [];
+        if (value is null or string or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
+            value is not System.Collections.IEnumerable enumerable)
+        {
+            return false;
+        }
+
+        items = enumerable.Cast<object?>();
+        return true;
+    }
+
+    private static bool IsCollectionComparisonOperator(PowerShellWasmBinaryOperator op) =>
+        op is PowerShellWasmBinaryOperator.Equal
+            or PowerShellWasmBinaryOperator.NotEqual
+            or PowerShellWasmBinaryOperator.GreaterThan
+            or PowerShellWasmBinaryOperator.GreaterThanOrEqual
+            or PowerShellWasmBinaryOperator.LessThan
+            or PowerShellWasmBinaryOperator.LessThanOrEqual
+            or PowerShellWasmBinaryOperator.Like
+            or PowerShellWasmBinaryOperator.NotLike
+            or PowerShellWasmBinaryOperator.Match
+            or PowerShellWasmBinaryOperator.NotMatch
+            or PowerShellWasmBinaryOperator.CaseSensitiveEqual
+            or PowerShellWasmBinaryOperator.CaseSensitiveNotEqual
+            or PowerShellWasmBinaryOperator.CaseSensitiveGreaterThan
+            or PowerShellWasmBinaryOperator.CaseSensitiveGreaterThanOrEqual
+            or PowerShellWasmBinaryOperator.CaseSensitiveLessThan
+            or PowerShellWasmBinaryOperator.CaseSensitiveLessThanOrEqual
+            or PowerShellWasmBinaryOperator.CaseSensitiveLike
+            or PowerShellWasmBinaryOperator.CaseSensitiveNotLike
+            or PowerShellWasmBinaryOperator.CaseSensitiveMatch
+            or PowerShellWasmBinaryOperator.CaseSensitiveNotMatch;
+
+    private static bool ApplyCollectionComparison(object? item, PowerShellWasmBinaryOperator op, object? right) =>
+        op switch
+        {
+            PowerShellWasmBinaryOperator.Equal => CompareValues(item, right, caseSensitive: false) == 0,
+            PowerShellWasmBinaryOperator.NotEqual => CompareValues(item, right, caseSensitive: false) != 0,
+            PowerShellWasmBinaryOperator.GreaterThan => CompareValues(item, right, caseSensitive: false) > 0,
+            PowerShellWasmBinaryOperator.GreaterThanOrEqual => CompareValues(item, right, caseSensitive: false) >= 0,
+            PowerShellWasmBinaryOperator.LessThan => CompareValues(item, right, caseSensitive: false) < 0,
+            PowerShellWasmBinaryOperator.LessThanOrEqual => CompareValues(item, right, caseSensitive: false) <= 0,
+            PowerShellWasmBinaryOperator.Like => WildcardMatch(item, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotLike => !WildcardMatch(item, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.Match => RegexIsMatch(item, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotMatch => !RegexIsMatch(item, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.CaseSensitiveEqual => CompareValues(item, right, caseSensitive: true) == 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveNotEqual => CompareValues(item, right, caseSensitive: true) != 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveGreaterThan => CompareValues(item, right, caseSensitive: true) > 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveGreaterThanOrEqual => CompareValues(item, right, caseSensitive: true) >= 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveLessThan => CompareValues(item, right, caseSensitive: true) < 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveLessThanOrEqual => CompareValues(item, right, caseSensitive: true) <= 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveLike => WildcardMatch(item, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotLike => !WildcardMatch(item, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveMatch => RegexIsMatch(item, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotMatch => !RegexIsMatch(item, right, caseSensitive: true),
+            _ => false
+        };
 
     private object? ApplyBinaryOperator(object? left, PowerShellWasmBinaryOperator op, object? right) =>
         op switch
@@ -1472,6 +1672,9 @@ internal sealed class PowerShellWasmAstExecutor(
         var pattern = "^" + Regex.Escape(ToInvariantString(right)).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
         return Regex.IsMatch(ToInvariantString(left), pattern, RegexOptionsFor(caseSensitive));
     }
+
+    private static bool RegexIsMatch(object? left, object? right, bool caseSensitive) =>
+        Regex.IsMatch(ToInvariantString(left), ToInvariantString(right), RegexOptionsFor(caseSensitive));
 
     private bool RegexMatch(object? left, object? right, bool caseSensitive)
     {

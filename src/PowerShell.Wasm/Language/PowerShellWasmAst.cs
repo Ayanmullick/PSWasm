@@ -142,6 +142,8 @@ public sealed record TypedHashtableExpressionAst(string TypeName, HashtableExpre
 
 public sealed record ArrayExpressionAst(IReadOnlyList<ExpressionAst> Items) : ExpressionAst;
 
+public sealed record ArraySubexpressionAst(ScriptAst Script) : ExpressionAst;
+
 public sealed record ScriptBlockExpressionAst(ScriptAst Body) : ExpressionAst;
 
 public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : ExpressionAst;
