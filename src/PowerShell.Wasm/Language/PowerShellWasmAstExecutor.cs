@@ -271,51 +271,23 @@ internal sealed class PowerShellWasmAstExecutor(
             var matched = false;
             var continueInput = false;
 
-            foreach (var clause in statement.Clauses)
+            using (executionContext.WithPipelineItem(input))
             {
-                if (!SwitchMatches(
-                    input,
-                    await EvaluateExpressionAsync(clause.Pattern, cancellationToken),
-                    statement.UseRegex,
-                    statement.CaseSensitive))
+                foreach (var clause in statement.Clauses)
                 {
-                    continue;
-                }
+                    if (!SwitchMatches(
+                        input,
+                        await EvaluateExpressionAsync(clause.Pattern, cancellationToken),
+                        statement.MatchMode,
+                        statement.CaseSensitive))
+                    {
+                        continue;
+                    }
 
-                matched = true;
-                try
-                {
-                    await ExecuteScriptAsync(clause.Body, cancellationToken);
-                }
-                catch (LoopContinueFlowException)
-                {
-                    continueInput = true;
-                    break;
-                }
-                catch (LoopBreakFlowException)
-                {
-                    breakSwitch = true;
-                    break;
-                }
-            }
-
-            if (breakSwitch)
-            {
-                break;
-            }
-
-            if (continueInput)
-            {
-                continue;
-            }
-
-            if (!matched)
-            {
-                foreach (var defaultBlock in statement.DefaultBlocks)
-                {
+                    matched = true;
                     try
                     {
-                        await ExecuteScriptAsync(defaultBlock, cancellationToken);
+                        await ExecuteScriptAsync(clause.Body, cancellationToken);
                     }
                     catch (LoopContinueFlowException)
                     {
@@ -328,6 +300,37 @@ internal sealed class PowerShellWasmAstExecutor(
                         break;
                     }
                 }
+
+                if (breakSwitch)
+                {
+                    break;
+                }
+
+                if (continueInput)
+                {
+                    continue;
+                }
+
+                if (!matched)
+                {
+                    foreach (var defaultBlock in statement.DefaultBlocks)
+                    {
+                        try
+                        {
+                            await ExecuteScriptAsync(defaultBlock, cancellationToken);
+                        }
+                        catch (LoopContinueFlowException)
+                        {
+                            continueInput = true;
+                            break;
+                        }
+                        catch (LoopBreakFlowException)
+                        {
+                            breakSwitch = true;
+                            break;
+                        }
+                    }
+                }
             }
 
             if (breakSwitch)
@@ -337,16 +340,15 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    private bool SwitchMatches(object? input, object? pattern, bool useRegex, bool caseSensitive) =>
+    private bool SwitchMatches(object? input, object? pattern, SwitchMatchMode matchMode, bool caseSensitive) =>
         Enumerate(pattern).Any(patternItem =>
         {
-            if (useRegex)
+            if (matchMode == SwitchMatchMode.Regex)
             {
                 return RegexMatch(input, patternItem, caseSensitive);
             }
 
-            var patternText = ToInvariantString(patternItem);
-            return patternText.Contains('*', StringComparison.Ordinal) || patternText.Contains('?', StringComparison.Ordinal)
+            return matchMode == SwitchMatchMode.Wildcard
                 ? WildcardMatch(input, patternItem, caseSensitive)
                 : CompareValues(input, patternItem, caseSensitive) == 0;
         });
@@ -718,6 +720,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateArrayAsync(array, cancellationToken);
             case ArraySubexpressionAst arraySubexpression:
                 return await EvaluateArraySubexpressionAsync(arraySubexpression, cancellationToken);
+            case SubexpressionAst subexpression:
+                return await EvaluateScriptExpressionAsync(subexpression.Script, cancellationToken);
             case ScriptBlockExpressionAst scriptBlock:
                 return CreateScriptBlock(scriptBlock);
             case ParenthesizedExpressionAst parenthesized:
@@ -732,6 +736,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateCastAsync(cast, cancellationToken);
             case MemberAccessExpressionAst member:
                 return await EvaluateMemberAccessAsync(member, cancellationToken);
+            case ComputedMemberAccessExpressionAst member:
+                return await EvaluateComputedMemberAccessAsync(member, cancellationToken);
             case NullConditionalMemberAccessExpressionAst member:
                 return await EvaluateNullConditionalMemberAccessAsync(member, cancellationToken);
             case StaticMemberAccessExpressionAst member:
@@ -863,6 +869,12 @@ internal sealed class PowerShellWasmAstExecutor(
                 SetMemberValue(
                     await EvaluateExpressionAsync(member.Target, cancellationToken),
                     member.MemberName,
+                    value);
+                return;
+            case ComputedMemberAccessExpressionAst member:
+                SetMemberValue(
+                    await EvaluateExpressionAsync(member.Target, cancellationToken),
+                    ToInvariantString(await EvaluateExpressionAsync(member.MemberName, cancellationToken)),
                     value);
                 return;
             case IndexExpressionAst index:
@@ -1281,6 +1293,15 @@ internal sealed class PowerShellWasmAstExecutor(
         return EvaluateMemberAccess(target, member.MemberName);
     }
 
+    private async ValueTask<object?> EvaluateComputedMemberAccessAsync(
+        ComputedMemberAccessExpressionAst member,
+        CancellationToken cancellationToken)
+    {
+        var target = await EvaluateExpressionAsync(member.Target, cancellationToken);
+        var memberName = ToInvariantString(await EvaluateExpressionAsync(member.MemberName, cancellationToken));
+        return EvaluateMemberAccess(target, memberName);
+    }
+
     private async ValueTask<object?> EvaluateNullConditionalMemberAccessAsync(
         NullConditionalMemberAccessExpressionAst member,
         CancellationToken cancellationToken)
@@ -1395,6 +1416,33 @@ internal sealed class PowerShellWasmAstExecutor(
         MethodInvocationExpressionAst invocation,
         CancellationToken cancellationToken)
     {
+        if (invocation.Target is NullConditionalMemberAccessExpressionAst nullConditionalMember)
+        {
+            var nullConditionalTarget = await EvaluateExpressionAsync(nullConditionalMember.Target, cancellationToken);
+            if (nullConditionalTarget is null)
+            {
+                return null;
+            }
+
+            var nullConditionalArguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
+            if (IsIntrinsicCollectionMethod(nullConditionalMember.MemberName))
+            {
+                var intrinsicResult = await TryInvokeIntrinsicCollectionMethodAsync(
+                    nullConditionalTarget,
+                    nullConditionalMember.MemberName,
+                    nullConditionalArguments,
+                    cancellationToken);
+                if (intrinsicResult.Handled)
+                {
+                    return intrinsicResult.Value;
+                }
+            }
+
+            return InvokeMethodTarget(
+                EvaluateMemberAccess(nullConditionalTarget, nullConditionalMember.MemberName),
+                nullConditionalArguments);
+        }
+
         if (invocation.Target is MemberAccessExpressionAst member &&
             IsIntrinsicCollectionMethod(member.MemberName))
         {
@@ -1414,6 +1462,11 @@ internal sealed class PowerShellWasmAstExecutor(
         var target = await EvaluateExpressionAsync(invocation.Target, cancellationToken);
         var arguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
 
+        return InvokeMethodTarget(target, arguments);
+    }
+
+    private static object? InvokeMethodTarget(object? target, IReadOnlyList<object?> arguments)
+    {
         if (PowerShellWasmDotNetBridge.TryInvoke(target, arguments, out var value))
         {
             return value;

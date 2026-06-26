@@ -4,6 +4,7 @@ namespace PSWasm.Language;
 
 // PowerShell source reference: src/System.Management.Automation/engine/parser/Parser.cs
 // Ternary reference: ExpressionRule handling for QuestionMark / Colon and TernaryExpressionAst construction.
+// Null-conditional member reference: member-access parsing for the QuestionDot token.
 // Null coalescing assignment reference: compound assignment parsing for the QuestionQuestion token followed by Equals.
 // Browser note: this parser models a browser-safe PowerShell subset and produces the PSWasm AST profile.
 public sealed class PowerShellWasmParser
@@ -366,7 +367,7 @@ public sealed class PowerShellWasmParser
     private static SwitchStatementAst ParseSwitchStatement(IReadOnlyList<PowerShellWasmToken> tokens)
     {
         var position = 1;
-        var (useRegex, caseSensitive) = ReadSwitchOptions(tokens, ref position);
+        var (matchMode, caseSensitive) = ReadSwitchOptions(tokens, ref position);
         var input = ReadParenthesizedExpression(tokens, ref position, "switch");
         var (clauses, defaultBlocks) = ReadSwitchClauses(tokens, ref position);
         SkipStatementSeparators(tokens, ref position);
@@ -376,14 +377,14 @@ public sealed class PowerShellWasmParser
             throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' after switch statement.");
         }
 
-        return new SwitchStatementAst(input, clauses, defaultBlocks, useRegex, caseSensitive);
+        return new SwitchStatementAst(input, clauses, defaultBlocks, matchMode, caseSensitive);
     }
 
-    private static (bool UseRegex, bool CaseSensitive) ReadSwitchOptions(
+    private static (SwitchMatchMode MatchMode, bool CaseSensitive) ReadSwitchOptions(
         IReadOnlyList<PowerShellWasmToken> tokens,
         ref int position)
     {
-        var useRegex = false;
+        var matchMode = SwitchMatchMode.Wildcard;
         var caseSensitive = false;
 
         while (position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.Parameter)
@@ -391,7 +392,7 @@ public sealed class PowerShellWasmParser
             var option = tokens[position++].Text;
             if (option.Equals("Regex", StringComparison.OrdinalIgnoreCase))
             {
-                useRegex = true;
+                matchMode = SwitchMatchMode.Regex;
                 continue;
             }
 
@@ -403,14 +404,20 @@ public sealed class PowerShellWasmParser
 
             if (option.Equals("Wildcard", StringComparison.OrdinalIgnoreCase))
             {
-                useRegex = false;
+                matchMode = SwitchMatchMode.Wildcard;
+                continue;
+            }
+
+            if (option.Equals("Exact", StringComparison.OrdinalIgnoreCase))
+            {
+                matchMode = SwitchMatchMode.Exact;
                 continue;
             }
 
             throw new InvalidOperationException($"Unsupported browser-safe switch option '-{option}'.");
         }
 
-        return (useRegex, caseSensitive);
+        return (matchMode, caseSensitive);
     }
 
     private static (IReadOnlyList<SwitchClauseAst> Clauses, IReadOnlyList<ScriptAst> DefaultBlocks) ReadSwitchClauses(
@@ -1056,7 +1063,8 @@ public sealed class PowerShellWasmParser
     {
         var start = position;
         if (tokens[position].Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or
-            PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.LBracket)
+            PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen or
+            PowerShellWasmTokenKind.DollarLParen or PowerShellWasmTokenKind.LBracket)
         {
             var depth = 0;
             do
@@ -1300,6 +1308,7 @@ public sealed class PowerShellWasmParser
             PowerShellWasmTokenKind.At or
             PowerShellWasmTokenKind.AtLBrace or
             PowerShellWasmTokenKind.AtLParen or
+            PowerShellWasmTokenKind.DollarLParen or
             PowerShellWasmTokenKind.DoubleColon) &&
         !kind.IsBinaryOperator();
 
@@ -1421,7 +1430,7 @@ public sealed class PowerShellWasmParser
     }
 
     private static bool IsSettableAssignmentTarget(ExpressionAst target) =>
-        target is VariableExpressionAst or MemberAccessExpressionAst or IndexExpressionAst;
+        target is VariableExpressionAst or MemberAccessExpressionAst or ComputedMemberAccessExpressionAst or IndexExpressionAst;
 
     private static bool TryFindTopLevelCompoundAssignment(
         IReadOnlyList<PowerShellWasmToken> tokens,
@@ -1755,7 +1764,8 @@ public sealed class PowerShellWasmParser
         depth += token.Kind switch
         {
             PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or PowerShellWasmTokenKind.AtLBrace or
-                PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.LBracket => 1,
+                PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.DollarLParen or
+                PowerShellWasmTokenKind.LBracket => 1,
             PowerShellWasmTokenKind.RParen or PowerShellWasmTokenKind.RBrace or PowerShellWasmTokenKind.RBracket => -1,
             _ => 0
         };
@@ -1936,6 +1946,14 @@ public sealed class PowerShellWasmParser
                     continue;
                 }
 
+                if (Current.Kind == PowerShellWasmTokenKind.Identifier &&
+                    Current.Text.Equals(".", StringComparison.Ordinal))
+                {
+                    _position++;
+                    expression = new ComputedMemberAccessExpressionAst(expression, ParseComputedMemberName());
+                    continue;
+                }
+
                 if (Current.Kind == PowerShellWasmTokenKind.DoubleColon)
                 {
                     _position++;
@@ -1971,7 +1989,7 @@ public sealed class PowerShellWasmParser
                 }
 
                 if (Current.Kind == PowerShellWasmTokenKind.LParen &&
-                    expression is MemberAccessExpressionAst or StaticMemberAccessExpressionAst)
+                    expression is MemberAccessExpressionAst or NullConditionalMemberAccessExpressionAst or StaticMemberAccessExpressionAst)
                 {
                     expression = new MethodInvocationExpressionAst(expression, ParseArgumentList());
                     continue;
@@ -2016,6 +2034,7 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.LBrace => ParseScriptBlock(),
                 PowerShellWasmTokenKind.AtLBrace => ParseHashtable(),
                 PowerShellWasmTokenKind.AtLParen => ParseArray(),
+                PowerShellWasmTokenKind.DollarLParen => ParseSubexpression(),
                 PowerShellWasmTokenKind.LBracket => ParseTypeLiteral(),
                 _ => new BareWordExpressionAst(token.Text)
             };
@@ -2069,6 +2088,31 @@ public sealed class PowerShellWasmParser
 
             Consume(PowerShellWasmTokenKind.RParen);
             return arguments;
+        }
+
+        private ExpressionAst ParseComputedMemberName()
+        {
+            if (Current.Kind is PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral)
+            {
+                var token = Current;
+                _position++;
+                return new StringExpressionAst(token.Text, token.Kind == PowerShellWasmTokenKind.ExpandableStringLiteral);
+            }
+
+            if (Current.Kind == PowerShellWasmTokenKind.Variable)
+            {
+                var token = Current;
+                _position++;
+                return ParseVariable(token.Text);
+            }
+
+            if (Current.Kind == PowerShellWasmTokenKind.LParen)
+            {
+                _position++;
+                return ParseParenthesized();
+            }
+
+            throw new InvalidOperationException("Expected a quoted string, variable, or parenthesized expression after '.'.");
         }
 
         private IndexExpressionAst ParseIndex(ExpressionAst target)
@@ -2169,6 +2213,26 @@ public sealed class PowerShellWasmParser
             var scriptTokens = tokens.Skip(start).Take(_position - start).ToArray();
             Consume(PowerShellWasmTokenKind.RParen);
             return new ArraySubexpressionAst(ParseScript(scriptTokens));
+        }
+
+        private ExpressionAst ParseSubexpression()
+        {
+            var start = _position;
+            var depth = 0;
+            while (Current.Kind is not PowerShellWasmTokenKind.EndOfInput)
+            {
+                if (Current.Kind == PowerShellWasmTokenKind.RParen && depth == 0)
+                {
+                    break;
+                }
+
+                UpdateDepth(Current, ref depth);
+                _position++;
+            }
+
+            var scriptTokens = tokens.Skip(start).Take(_position - start).ToArray();
+            Consume(PowerShellWasmTokenKind.RParen);
+            return new SubexpressionAst(ParseScript(scriptTokens));
         }
 
         private ExpressionAst ReadHashtableKeyExpression()
@@ -2275,6 +2339,7 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.LParen or
                 PowerShellWasmTokenKind.LBrace or
                 PowerShellWasmTokenKind.AtLParen or
+                PowerShellWasmTokenKind.DollarLParen or
                 PowerShellWasmTokenKind.LBracket or
                 PowerShellWasmTokenKind.Plus or
                 PowerShellWasmTokenKind.Minus or

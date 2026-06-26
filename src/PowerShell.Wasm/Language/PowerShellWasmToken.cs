@@ -24,6 +24,7 @@ public enum PowerShellWasmTokenKind
     At,
     AtLBrace,
     AtLParen,
+    DollarLParen,
     Plus,
     PlusPlus,
     Minus,

@@ -198,7 +198,15 @@ public static class PowerShellWasmTokenizer
 
                     break;
                 case '$':
-                    ReadVariable();
+                    if (position + 1 < script.Length && script[position + 1] == '(')
+                    {
+                        Add(PowerShellWasmTokenKind.DollarLParen, "$(", 2);
+                    }
+                    else
+                    {
+                        ReadVariable();
+                    }
+
                     break;
                 case '\'':
                     ReadString(PowerShellWasmTokenKind.StringLiteral, '\'');
@@ -409,5 +417,5 @@ public static class PowerShellWasmTokenizer
             and not '[' and not ']' and not '\'' and not '"' and not '+' and not '*' and not '/' and not '@';
 
     private static bool IsDottedMemberCharacter(char ch) =>
-        IsBareWordCharacter(ch) && ch is not '.' and not '-' and not '?' and not '%';
+        IsBareWordCharacter(ch) && ch is not '.' and not '-' and not '?' and not '%' and not '$';
 }

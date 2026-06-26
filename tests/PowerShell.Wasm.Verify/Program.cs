@@ -7,11 +7,13 @@ var tests = new (string Name, Func<ValueTask> Run)[]
 {
     ("operators and expressions", VerifyOperatorsAsync),
     ("ternary operator", VerifyTernaryOperatorAsync),
+    ("null conditional member access", VerifyNullConditionalMemberAccessAsync),
     ("regular expressions", VerifyRegularExpressionsAsync),
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),
     ("member and index assignment", VerifyMemberAndIndexAssignmentAsync),
     ("expandable strings", VerifyExpandableStringsAsync),
+    ("subexpression operator", VerifySubexpressionOperatorAsync),
     ("parallel assignment", VerifyParallelAssignmentAsync),
     ("browser-safe dotnet interop", VerifyBrowserSafeDotNetInteropAsync),
     ("variable commands", VerifyVariableCommandsAsync),
@@ -251,6 +253,33 @@ $numbers.Count
         "2",
         "2",
         "3"
+    ]);
+}
+
+static async ValueTask VerifyNullConditionalMemberAccessAsync()
+{
+    var result = await ExecuteAsync("""
+$missingObject = $null
+$missingObject?.Name ?? 'missing'
+$missingObject?.Nested.Value ?? 'missing-deep'
+$item = @{Name='ready'; Nested=@{Value=7}}
+$item?.Name
+$item?.Nested.Value
+$text = ' abc '
+$text?.Trim()
+$missingObject?.Trim() ?? 'no-call'
+$rows = @(@{Name='one'}, @{Name='two'})
+($rows?.Name) -join ','
+""");
+
+    ExpectLines(result, [
+        "missing",
+        "missing-deep",
+        "ready",
+        "7",
+        "abc",
+        "no-call",
+        "one,two"
     ]);
 }
 
@@ -552,6 +581,13 @@ $Map = @{
 }
 $Map['#tenant-id']
 $Map['#client-id']
+$Map.'#tenant-id'
+$MemberKey = '#client-id'
+$Map.$MemberKey
+$Prefix = '#tenant'
+$Map."$Prefix-id"
+$Map.('#' + 'client-id')
+($Map.'#tenant-id').ToUpperInvariant()
 $KeyName = '#computed-client-id'
 $ComputedMap = @{
     ('#' + 'computed-tenant-id') = 'computedTenant'
@@ -588,6 +624,11 @@ $Map
         "2",
         "cosmosTenant",
         "cosmosClientId",
+        "cosmosTenant",
+        "cosmosClientId",
+        "cosmosTenant",
+        "cosmosClientId",
+        "COSMOSTENANT",
         "computedTenant",
         "computedClient",
         "typed",
@@ -643,9 +684,15 @@ $h.Name += '-three'
 $h['CountValue'] += 3
 $h['Missing'] ??= 'created'
 $h['Missing'] ??= 'ignored'
+$selector = '#output'
+$h.'Display Name' = 'shown'
+$h.$selector = 'target'
+$h."$selector" += '-ready'
 $h.Name
 $h['CountValue']
 $h.Missing
+$h.('Display Name')
+$h.$selector
 
 $array[0] += '1'
 $array -join ','
@@ -719,6 +766,8 @@ $env:PSWASM_INCREMENT_TEST
         "two-three",
         "5",
         "created",
+        "shown",
+        "target-ready",
         "a1,B,C",
         "yZ",
         "left-done",
@@ -768,6 +817,39 @@ $OFS = '|'
         "Bearer abc123",
         "Trimmed=abc",
         "Items=a|b"
+    ]);
+}
+
+static async ValueTask VerifySubexpressionOperatorAsync()
+{
+    var result = await ExecuteAsync("""
+$single = $(Write-Output 'x')
+$single
+$multi = $(Write-Output 'a'; Write-Output 'b')
+$multi.Count
+$multi[0]
+$multi[1]
+$empty = $($x = 1)
+$empty ?? 'empty'
+$x
+$(1 + 2)
+$(Write-Output ' padded ').Trim()
+Write-Output $(Write-Output 'argument')
+$nested = $($($value = 'nested'; $value))
+$nested
+""");
+
+    ExpectLines(result, [
+        "x",
+        "2",
+        "a",
+        "b",
+        "empty",
+        "1",
+        "3",
+        "padded",
+        "argument",
+        "nested"
     ]);
 }
 
@@ -1979,6 +2061,24 @@ switch ('cat') {
     'c*' { 'wild' }
     'cat' { 'exact' }
 }
+switch -Wildcard ('cat') {
+    'c*' { 'explicit-wild' }
+}
+switch -Exact ('cat') {
+    'c*' { 'bad-exact-wild' }
+    'cat' { 'exact-cat' }
+}
+switch -Exact ('c*') {
+    'c*' { 'literal-star' }
+}
+switch -Exact -CaseSensitive ('Cat') {
+    'cat' { 'bad-case' }
+    'Cat' { 'case-exact' }
+}
+switch -CaseSensitive -Wildcard ('Cat') {
+    'cat' { 'bad-case-wild' }
+    'C*' { 'case-wild' }
+}
 switch ('other') {
     'x' { 'x' }
     default { 'default' }
@@ -1994,16 +2094,39 @@ $captured = switch (42) {
     42 { 'yes' }
 }
 $captured
+$_ = 'outer-under'
+$PSItem = 'outer-item'
+switch (@('red','blue')) {
+    'red' { 'switch-current=' + $_ + '/' + $PSItem }
+    default { 'switch-default-current=' + $_ + '/' + $PSItem }
+}
+'switch-after=' + $_ + '/' + $PSItem
+switch ('pattern') {
+    $_ { 'switch-pattern-current=' + $_ }
+}
+switch -Regex ('id42') {
+    'id(?<Number>\d+)' { 'switch-regex-current=' + $_ + '/' + $Matches.Number }
+}
 """);
 
     ExpectLines(result, [
         "two",
         "wild",
         "exact",
+        "explicit-wild",
+        "exact-cat",
+        "literal-star",
+        "case-exact",
+        "case-wild",
         "default",
         "r",
         "g",
-        "yes"
+        "yes",
+        "switch-current=red/red",
+        "switch-default-current=blue/blue",
+        "switch-after=outer-under/outer-item",
+        "switch-pattern-current=pattern",
+        "switch-regex-current=id42/42"
     ]);
 }
 

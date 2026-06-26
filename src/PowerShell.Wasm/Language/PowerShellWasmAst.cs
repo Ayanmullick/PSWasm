@@ -2,6 +2,7 @@ namespace PSWasm.Language;
 
 // PowerShell source reference: src/System.Management.Automation/engine/parser/ast.cs
 // Ternary reference: System.Management.Automation.Language.TernaryExpressionAst.
+// Member-access reference: System.Management.Automation.Language.MemberExpressionAst, including null-conditional member access.
 // Browser note: this is a small AST profile for PSWasm, not a verbatim copy of SMA's full AST hierarchy.
 public abstract record PowerShellWasmAst;
 
@@ -80,10 +81,17 @@ public sealed record SwitchStatementAst(
     ExpressionAst Input,
     IReadOnlyList<SwitchClauseAst> Clauses,
     IReadOnlyList<ScriptAst> DefaultBlocks,
-    bool UseRegex,
+    SwitchMatchMode MatchMode,
     bool CaseSensitive) : StatementAst;
 
 public sealed record SwitchClauseAst(ExpressionAst Pattern, ScriptAst Body) : PowerShellWasmAst;
+
+public enum SwitchMatchMode
+{
+    Wildcard,
+    Exact,
+    Regex
+}
 
 public sealed record FunctionDefinitionStatementAst(
     string Name,
@@ -162,6 +170,8 @@ public sealed record ArrayExpressionAst(IReadOnlyList<ExpressionAst> Items) : Ex
 
 public sealed record ArraySubexpressionAst(ScriptAst Script) : ExpressionAst;
 
+public sealed record SubexpressionAst(ScriptAst Script) : ExpressionAst;
+
 public sealed record ScriptBlockExpressionAst(ScriptAst Body) : ExpressionAst;
 
 public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : ExpressionAst;
@@ -175,6 +185,8 @@ public sealed record TypeLiteralExpressionAst(string TypeName) : ExpressionAst;
 public sealed record CastExpressionAst(string TypeName, ExpressionAst Operand) : ExpressionAst;
 
 public sealed record MemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
+
+public sealed record ComputedMemberAccessExpressionAst(ExpressionAst Target, ExpressionAst MemberName) : ExpressionAst;
 
 public sealed record NullConditionalMemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 

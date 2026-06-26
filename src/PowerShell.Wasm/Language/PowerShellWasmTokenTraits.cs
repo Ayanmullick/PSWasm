@@ -131,6 +131,7 @@ internal static class PowerShellWasmTokenTraits
             PowerShellWasmTokenKind.PlusPlus => "++",
             PowerShellWasmTokenKind.MinusMinus => "--",
             PowerShellWasmTokenKind.DotDot => "..",
+            PowerShellWasmTokenKind.DollarLParen => "$(",
             PowerShellWasmTokenKind.QuestionDot => "?.",
             PowerShellWasmTokenKind.QuestionQuestion => "??",
             PowerShellWasmTokenKind.Format => "-f",
