@@ -6,11 +6,9 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
-        var begin = GetParameterScriptBlock(context, "Begin");
-        var process = GetParameterScriptBlock(context, "Process") ?? context.Arguments.OfType<PowerShellWasmScriptBlock>().FirstOrDefault();
-        var end = GetParameterScriptBlock(context, "End");
+        var (begin, processBlocks, end) = GetScriptBlockBinding(context);
         var memberName = GetMemberName(context);
-        if (begin is null && process is null && end is null && string.IsNullOrWhiteSpace(memberName))
+        if (begin is null && processBlocks.Count == 0 && end is null && string.IsNullOrWhiteSpace(memberName))
         {
             foreach (var item in context.PipelineInput)
             {
@@ -27,9 +25,13 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmCommand
 
         foreach (var item in PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput))
         {
-            if (process is not null)
+            if (processBlocks.Count > 0)
             {
-                await WriteScriptBlockOutputAsync(context, process, item.Value, item.Variables, cancellationToken);
+                foreach (var process in processBlocks)
+                {
+                    await WriteScriptBlockOutputAsync(context, process, item.Value, item.Variables, cancellationToken);
+                }
+
                 continue;
             }
 
@@ -43,6 +45,30 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmCommand
         {
             await WriteScriptBlockOutputAsync(context, end, null, NoPipelineVariables, cancellationToken);
         }
+    }
+
+    private static (
+        PowerShellWasmScriptBlock? Begin,
+        IReadOnlyList<PowerShellWasmScriptBlock> Process,
+        PowerShellWasmScriptBlock? End) GetScriptBlockBinding(PowerShellWasmCommandContext context)
+    {
+        var begin = GetParameterScriptBlock(context, "Begin");
+        var process = GetParameterScriptBlock(context, "Process");
+        var end = GetParameterScriptBlock(context, "End");
+        var positional = context.Arguments.OfType<PowerShellWasmScriptBlock>().ToArray();
+
+        if (begin is not null || process is not null || end is not null)
+        {
+            return (begin, process is not null ? [process] : positional.Take(1).ToArray(), end);
+        }
+
+        return positional.Length switch
+        {
+            0 => (null, [], null),
+            1 => (null, positional, null),
+            2 => (positional[0], [positional[1]], null),
+            _ => (positional[0], positional.Skip(1).Take(positional.Length - 2).ToArray(), positional[^1])
+        };
     }
 
     private static async ValueTask WriteScriptBlockOutputAsync(

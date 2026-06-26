@@ -60,6 +60,17 @@ $var
 1..3
 'abc' -replace @('b','x')
 'abc' -replace 'b','x'
+@('abc','bcd') -replace 'b','x'
+(@('abc') -replace 'b','x').Count
+@('a b','c d') -split ' '
+@('abc','ABC') -creplace 'b','x' -join ','
+$splitEdge = 'a--b' -split '-'
+$splitEdge.Count
+"split-empty=[$($splitEdge[1])]"
+$caseSplit = @('A B','a b') -csplit 'b'
+$caseSplit.Count
+"case-split-last=[$($caseSplit[-1])]"
+([byte[]]@(65,66)) -replace '6','x'
 @('red','blue') -contains 'blue'
 'blue' -in @('red','blue')
 $one = @(1,2,3) -eq 2
@@ -138,6 +149,20 @@ $null -isnot [string]
         "3",
         "axc",
         "axc",
+        "axc",
+        "xcd",
+        "1",
+        "a",
+        "b",
+        "c",
+        "d",
+        "axc,ABC",
+        "3",
+        "split-empty=[]",
+        "3",
+        "case-split-last=[]",
+        "x5",
+        "xx",
         "True",
         "True",
         "2",
@@ -1100,6 +1125,11 @@ $rows | ForEach-Object Name
 $rows.Name
 $rows.Name.ToUpperInvariant()
 @(' left ',' right ').Trim()
+@('a','bb').ForEach({ $_.Length })
+@('a','bb').Where({ $_.Length -gt 1 })
+@('missing').Where({ $_.Length -gt 10 }).Count
+"foreach-many=$(@(1,2).ForEach({ $_; $_ * 10 }) -join ',')"
+"scalar-foreach=$('abc'.ForEach({ $_.Length }) -join ',')"
 $missingMembers = @($rows[0],$null,$rows[1]).Missing
 $missingMembers.Count
 $missingMembers[0] ?? 'missing-null'
@@ -1113,6 +1143,9 @@ $rows | Select-Object * | Select-Object -First 1 | ConvertTo-Json -Compress
 $sum = 0
 1..3 | ForEach-Object -Begin { $sum = 10 } -Process { $sum += $_ } -End { $sum }
 1..2 | ForEach-Object -Begin { 'only-begin' } -End { 'only-end' }
+1..2 | ForEach-Object { 'pos-begin' } { 'pos-process=' + $_ }
+1..2 | ForEach-Object { 'pos3-begin' } { 'pos3-process=' + $_ } { 'pos3-end' }
+1..2 | ForEach-Object { 'multi-begin' } { 'multi-a=' + $_ } { 'multi-b=' + $_ } { 'multi-end' }
 """);
 
     ExpectLines(result, [
@@ -1148,6 +1181,12 @@ $sum = 0
         "THREE",
         "left",
         "right",
+        "1",
+        "2",
+        "bb",
+        "0",
+        "foreach-many=1,10,2,20",
+        "scalar-foreach=3",
         "2",
         "missing-null",
         "missing-null",
@@ -1163,7 +1202,20 @@ $sum = 0
         "end",
         "16",
         "only-begin",
-        "only-end"
+        "only-end",
+        "pos-begin",
+        "pos-process=1",
+        "pos-process=2",
+        "pos3-begin",
+        "pos3-process=1",
+        "pos3-process=2",
+        "pos3-end",
+        "multi-begin",
+        "multi-a=1",
+        "multi-b=1",
+        "multi-a=2",
+        "multi-b=2",
+        "multi-end"
     ]);
 }
 
@@ -1366,6 +1418,40 @@ if (@()) {
 } else {
     'array false'
 }
+if (@($false)) {
+    'single false array true'
+} else {
+    'single false array false'
+}
+if (@(0)) {
+    'single zero array true'
+} else {
+    'single zero array false'
+}
+if (@('')) {
+    'single empty array true'
+} else {
+    'single empty array false'
+}
+if (@($null)) {
+    'single null array true'
+} else {
+    'single null array false'
+}
+if (@(1)) {
+    'single one array true'
+} else {
+    'single one array false'
+}
+if (@($false,$false)) {
+    'multi false array true'
+} else {
+    'multi false array false'
+}
+$drop = 1 | Where-Object { @($false) }
+$null -eq $drop
+$keep = 1 | Where-Object { @($false,$false) }
+$keep
 if ('text') {
     'string true'
 }
@@ -1375,6 +1461,14 @@ if ('text') {
         "matched",
         "assigned",
         "array false",
+        "single false array false",
+        "single zero array false",
+        "single empty array false",
+        "single null array false",
+        "single one array true",
+        "multi false array true",
+        "True",
+        "1",
         "string true"
     ]);
 }

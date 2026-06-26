@@ -74,7 +74,15 @@ internal static class PowerShellWasmCommandUtilities
             double doubleValue => Math.Abs(doubleValue) > 0.0000000001,
             decimal decimalValue => decimalValue != 0,
             string stringValue => stringValue.Length > 0,
-            object?[] arrayValue => arrayValue.Any(ToBoolean),
+            object?[] arrayValue => ToCollectionBoolean(arrayValue),
+            _ => true
+        };
+
+    private static bool ToCollectionBoolean(IReadOnlyList<object?> values) =>
+        values.Count switch
+        {
+            0 => false,
+            1 => ToBoolean(values[0]),
             _ => true
         };
 

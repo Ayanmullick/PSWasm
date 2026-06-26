@@ -1251,12 +1251,24 @@ internal sealed class PowerShellWasmAstExecutor(
         MethodInvocationExpressionAst invocation,
         CancellationToken cancellationToken)
     {
-        var target = await EvaluateExpressionAsync(invocation.Target, cancellationToken);
-        var arguments = new object?[invocation.Arguments.Count];
-        for (var i = 0; i < invocation.Arguments.Count; i++)
+        if (invocation.Target is MemberAccessExpressionAst member &&
+            IsIntrinsicCollectionMethod(member.MemberName))
         {
-            arguments[i] = await EvaluateExpressionAsync(invocation.Arguments[i], cancellationToken);
+            var collectionTarget = await EvaluateExpressionAsync(member.Target, cancellationToken);
+            var intrinsicArguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
+            var intrinsicResult = await TryInvokeIntrinsicCollectionMethodAsync(
+                collectionTarget,
+                member.MemberName,
+                intrinsicArguments,
+                cancellationToken);
+            if (intrinsicResult.Handled)
+            {
+                return intrinsicResult.Value;
+            }
         }
+
+        var target = await EvaluateExpressionAsync(invocation.Target, cancellationToken);
+        var arguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
 
         if (PowerShellWasmDotNetBridge.TryInvoke(target, arguments, out var value))
         {
@@ -1269,6 +1281,62 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         throw new InvalidOperationException("Only allowlisted browser-safe .NET methods can be invoked.");
+    }
+
+    private async ValueTask<object?[]> EvaluateMethodArgumentsAsync(
+        IReadOnlyList<ExpressionAst> arguments,
+        CancellationToken cancellationToken)
+    {
+        var result = new object?[arguments.Count];
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            result[i] = await EvaluateExpressionAsync(arguments[i], cancellationToken);
+        }
+
+        return result;
+    }
+
+    private static bool IsIntrinsicCollectionMethod(string memberName) =>
+        memberName.Equals("ForEach", StringComparison.OrdinalIgnoreCase) ||
+        memberName.Equals("Where", StringComparison.OrdinalIgnoreCase);
+
+    private async ValueTask<(bool Handled, object? Value)> TryInvokeIntrinsicCollectionMethodAsync(
+        object? target,
+        string memberName,
+        IReadOnlyList<object?> arguments,
+        CancellationToken cancellationToken)
+    {
+        if (arguments.Count == 0 || arguments[0] is not PowerShellWasmScriptBlock scriptBlock)
+        {
+            return (false, null);
+        }
+
+        if (memberName.Equals("ForEach", StringComparison.OrdinalIgnoreCase))
+        {
+            var output = new List<object?>();
+            foreach (var item in Enumerate(target))
+            {
+                output.AddRange(await scriptBlock.InvokeAsync(item, null, null, cancellationToken));
+            }
+
+            return (true, output.ToArray());
+        }
+
+        if (memberName.Equals("Where", StringComparison.OrdinalIgnoreCase))
+        {
+            var selected = new List<object?>();
+            foreach (var item in Enumerate(target))
+            {
+                if (ToBoolean(ToCapturedExpressionValue(await scriptBlock.InvokeAsync(item, null, null, cancellationToken))))
+                {
+                    selected.Add(item);
+                }
+            }
+
+            return (true, selected.ToArray());
+        }
+
+        return (false, null);
     }
 
     private static bool TryInvokeEnumeratedMethods(
@@ -1413,6 +1481,11 @@ internal sealed class PowerShellWasmAstExecutor(
             return collectionComparison;
         }
 
+        if (TryApplyCollectionStringOperator(left, binary.Operator, right, out var collectionStringValue))
+        {
+            return collectionStringValue;
+        }
+
         return ApplyBinaryOperator(left, binary.Operator, right);
     }
 
@@ -1423,7 +1496,7 @@ internal sealed class PowerShellWasmAstExecutor(
         out object? value)
     {
         value = null;
-        if (!IsCollectionComparisonOperator(op) || !TryEnumerateCollectionComparisonOperand(left, out var items))
+        if (!IsCollectionComparisonOperator(op) || !TryEnumerateCollectionOperatorOperand(left, out var items))
         {
             return false;
         }
@@ -1432,7 +1505,7 @@ internal sealed class PowerShellWasmAstExecutor(
         return true;
     }
 
-    private static bool TryEnumerateCollectionComparisonOperand(
+    private static bool TryEnumerateCollectionOperatorOperand(
         object? value,
         out IEnumerable<object?> items)
     {
@@ -1494,6 +1567,46 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.CaseSensitiveNotMatch => !RegexIsMatch(item, right, caseSensitive: true),
             _ => false
         };
+
+    private static bool TryApplyCollectionStringOperator(
+        object? left,
+        PowerShellWasmBinaryOperator op,
+        object? right,
+        out object? value)
+    {
+        value = null;
+        if (!IsCollectionStringOperator(op) || !TryEnumerateCollectionOperatorOperand(left, out var items))
+        {
+            return false;
+        }
+
+        value = op switch
+        {
+            PowerShellWasmBinaryOperator.Replace => items
+                .Select(item => ReplaceString(item, right, caseSensitive: false))
+                .Cast<object?>()
+                .ToArray(),
+            PowerShellWasmBinaryOperator.CaseSensitiveReplace => items
+                .Select(item => ReplaceString(item, right, caseSensitive: true))
+                .Cast<object?>()
+                .ToArray(),
+            PowerShellWasmBinaryOperator.Split => items
+                .SelectMany(item => SplitString(ToInvariantString(item), ToInvariantString(right), ignoreCase: true))
+                .ToArray(),
+            PowerShellWasmBinaryOperator.CaseSensitiveSplit => items
+                .SelectMany(item => SplitString(ToInvariantString(item), ToInvariantString(right), ignoreCase: false))
+                .ToArray(),
+            _ => null
+        };
+
+        return value is not null;
+    }
+
+    private static bool IsCollectionStringOperator(PowerShellWasmBinaryOperator op) =>
+        op is PowerShellWasmBinaryOperator.Replace
+            or PowerShellWasmBinaryOperator.CaseSensitiveReplace
+            or PowerShellWasmBinaryOperator.Split
+            or PowerShellWasmBinaryOperator.CaseSensitiveSplit;
 
     private object? ApplyBinaryOperator(object? left, PowerShellWasmBinaryOperator op, object? right) =>
         op switch
@@ -1720,7 +1833,7 @@ internal sealed class PowerShellWasmAstExecutor(
     private static object?[] SplitString(string value, string pattern, bool ignoreCase)
     {
         var options = ignoreCase ? RegexOptions.CultureInvariant | RegexOptions.IgnoreCase : RegexOptions.CultureInvariant;
-        return Regex.Split(value, pattern, options).Where(static item => item.Length > 0).Cast<object?>().ToArray();
+        return Regex.Split(value, pattern, options).Cast<object?>().ToArray();
     }
 
     private static bool Contains(object? collection, object? value, bool caseSensitive) =>
@@ -2106,7 +2219,15 @@ internal sealed class PowerShellWasmAstExecutor(
             double doubleValue => Math.Abs(doubleValue) > 0.0000000001,
             decimal decimalValue => decimalValue != 0,
             string stringValue => stringValue.Length > 0,
-            object?[] arrayValue => arrayValue.Length > 0,
+            object?[] arrayValue => ToCollectionBoolean(arrayValue),
+            _ => true
+        };
+
+    private static bool ToCollectionBoolean(IReadOnlyList<object?> values) =>
+        values.Count switch
+        {
+            0 => false,
+            1 => ToBoolean(values[0]),
             _ => true
         };
 
