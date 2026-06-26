@@ -41,6 +41,12 @@ internal sealed class PowerShellWasmAstExecutor(
             case AssignmentStatementAst assignment:
                 executionContext.SetVariable(assignment.VariableName, await EvaluateExpressionAsync(assignment.Value, cancellationToken));
                 break;
+            case SettableAssignmentStatementAst assignment:
+                await SetAssignmentTargetAsync(
+                    assignment.Target,
+                    await EvaluateExpressionAsync(assignment.Value, cancellationToken),
+                    cancellationToken);
+                break;
             case CompoundAssignmentStatementAst assignment:
                 await EvaluateCompoundAssignmentAsync(assignment.VariableName, assignment.Operator, assignment.Value, cancellationToken);
                 break;
@@ -52,6 +58,9 @@ internal sealed class PowerShellWasmAstExecutor(
                 break;
             case StatementAssignmentAst assignment:
                 await ExecuteStatementAssignmentAsync(assignment, cancellationToken);
+                break;
+            case SettableStatementAssignmentAst assignment:
+                await ExecuteSettableStatementAssignmentAsync(assignment, cancellationToken);
                 break;
             case ParallelStatementAssignmentAst assignment:
                 await ExecuteParallelStatementAssignmentAsync(assignment, cancellationToken);
@@ -341,6 +350,19 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         executionContext.SetVariable(assignment.VariableName, ToCapturedExpressionValue(output));
+    }
+
+    private async ValueTask ExecuteSettableStatementAssignmentAsync(
+        SettableStatementAssignmentAst assignment,
+        CancellationToken cancellationToken)
+    {
+        var output = new List<object?>();
+        using (executionContext.CaptureOutput(output))
+        {
+            await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
+        }
+
+        await SetAssignmentTargetAsync(assignment.Target, ToCapturedExpressionValue(output), cancellationToken);
     }
 
     private async ValueTask ExecuteParallelStatementAssignmentAsync(
@@ -664,6 +686,8 @@ internal sealed class PowerShellWasmAstExecutor(
                     : EvaluateVariable(variable.Name);
             case AssignmentExpressionAst assignment:
                 return await EvaluateAssignmentAsync(assignment, cancellationToken);
+            case SettableAssignmentExpressionAst assignment:
+                return await EvaluateSettableAssignmentAsync(assignment, cancellationToken);
             case CompoundAssignmentExpressionAst assignment:
                 return await EvaluateCompoundAssignmentAsync(
                     assignment.VariableName,
@@ -725,6 +749,15 @@ internal sealed class PowerShellWasmAstExecutor(
         return value;
     }
 
+    private async ValueTask<object?> EvaluateSettableAssignmentAsync(
+        SettableAssignmentExpressionAst assignment,
+        CancellationToken cancellationToken)
+    {
+        var value = await EvaluateExpressionAsync(assignment.Value, cancellationToken);
+        await SetAssignmentTargetAsync(assignment.Target, value, cancellationToken);
+        return value;
+    }
+
     private async ValueTask<object?> EvaluateCompoundAssignmentAsync(
         string variableName,
         PowerShellWasmBinaryOperator op,
@@ -743,6 +776,41 @@ internal sealed class PowerShellWasmAstExecutor(
             : ApplyBinaryOperator(left, op, right);
         executionContext.SetVariable(variableName, value);
         return value;
+    }
+
+    private async ValueTask SetAssignmentTargetAsync(
+        ExpressionAst target,
+        object? value,
+        CancellationToken cancellationToken)
+    {
+        switch (target)
+        {
+            case VariableExpressionAst variable:
+                if (variable.IsEnvironment)
+                {
+                    executionContext.SetEnvironmentVariable(variable.Name, value is null ? null : ToInvariantString(value));
+                }
+                else
+                {
+                    executionContext.SetVariable(variable.Name, value);
+                }
+
+                return;
+            case MemberAccessExpressionAst member:
+                SetMemberValue(
+                    await EvaluateExpressionAsync(member.Target, cancellationToken),
+                    member.MemberName,
+                    value);
+                return;
+            case IndexExpressionAst index:
+                SetIndexValue(
+                    await EvaluateExpressionAsync(index.Target, cancellationToken),
+                    await EvaluateExpressionAsync(index.Index, cancellationToken),
+                    value);
+                return;
+            default:
+                throw new InvalidOperationException("Only variables, members, and indexers can be assigned in this browser-safe runtime.");
+        }
     }
 
     private async ValueTask<PowerShellWasmHashtable> EvaluateHashtableAsync(
@@ -1993,6 +2061,74 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static bool TryGetDictionaryValue(Dictionary<string, object?> dictionary, string key, out object? value) =>
         dictionary.TryGetValue(key, out value);
+
+    private static void SetMemberValue(object? target, string memberName, object? value)
+    {
+        if (TrySetDictionaryValue(target, memberName, value))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Member '{memberName}' cannot be assigned in this browser-safe runtime.");
+    }
+
+    private static void SetIndexValue(object? target, object? index, object? value)
+    {
+        var indexes = Enumerate(index).ToArray();
+        if (indexes.Length != 1)
+        {
+            throw new InvalidOperationException("Index assignment requires exactly one index value.");
+        }
+
+        if (TrySetDictionaryValue(target, ToInvariantString(indexes[0]), value))
+        {
+            return;
+        }
+
+        if (target is System.Collections.IList list)
+        {
+            var itemIndex = Convert.ToInt32(ToNumber(indexes[0]), CultureInfo.InvariantCulture);
+            if (itemIndex < 0)
+            {
+                itemIndex = list.Count + itemIndex;
+            }
+
+            if (itemIndex < 0 || itemIndex >= list.Count)
+            {
+                throw new InvalidOperationException($"Index {indexes[0]} is outside the target collection.");
+            }
+
+            list[itemIndex] = value;
+            return;
+        }
+
+        throw new InvalidOperationException("Index assignment is supported only for dictionaries, arrays, and lists.");
+    }
+
+    private static bool TrySetDictionaryValue(object? target, string key, object? value)
+    {
+        switch (target)
+        {
+            case IDictionary<string, object?> genericDictionary:
+                genericDictionary[key] = value;
+                return true;
+            case System.Collections.IDictionary legacyDictionary:
+                foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
+                {
+                    if (string.Equals(ToInvariantString(entry.Key), key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        legacyDictionary[entry.Key] = value;
+                        return true;
+                    }
+                }
+
+                legacyDictionary[key] = value;
+                return true;
+            default:
+                return false;
+        }
+    }
 
     private async ValueTask<string> ExpandStringAsync(string value, CancellationToken cancellationToken)
     {

@@ -17,6 +17,8 @@ public abstract record StatementAst : PowerShellWasmAst;
 
 public sealed record AssignmentStatementAst(string VariableName, ExpressionAst Value) : StatementAst;
 
+public sealed record SettableAssignmentStatementAst(ExpressionAst Target, ExpressionAst Value) : StatementAst;
+
 public sealed record CompoundAssignmentStatementAst(
     string VariableName,
     PowerShellWasmBinaryOperator Operator,
@@ -27,6 +29,8 @@ public sealed record ParallelAssignmentStatementAst(IReadOnlyList<string> Variab
 public sealed record VariableIncrementStatementAst(string VariableName, int Delta) : StatementAst;
 
 public sealed record StatementAssignmentAst(string VariableName, StatementAst Statement) : StatementAst;
+
+public sealed record SettableStatementAssignmentAst(ExpressionAst Target, StatementAst Statement) : StatementAst;
 
 public sealed record ParallelStatementAssignmentAst(IReadOnlyList<string> VariableNames, StatementAst Statement) : StatementAst;
 
@@ -128,6 +132,8 @@ public sealed record StringExpressionAst(string Value, bool IsExpandable) : Expr
 public sealed record VariableExpressionAst(string Name, bool IsEnvironment) : ExpressionAst;
 
 public sealed record AssignmentExpressionAst(string VariableName, ExpressionAst Value) : ExpressionAst;
+
+public sealed record SettableAssignmentExpressionAst(ExpressionAst Target, ExpressionAst Value) : ExpressionAst;
 
 public sealed record CompoundAssignmentExpressionAst(
     string VariableName,

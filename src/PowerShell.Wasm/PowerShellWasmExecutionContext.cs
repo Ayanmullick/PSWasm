@@ -37,6 +37,17 @@ public sealed class PowerShellWasmExecutionContext
     public string? GetEnvironmentVariable(string name) =>
         _environment.TryGetValue(name, out var value) ? value : Environment.GetEnvironmentVariable(name);
 
+    public void SetEnvironmentVariable(string name, string? value)
+    {
+        if (value is null)
+        {
+            _environment.Remove(name);
+            return;
+        }
+
+        _environment[name] = value;
+    }
+
     public object? GetVariable(string name) =>
         _variables.TryGetValue(name, out var value) ? value : null;
 
@@ -67,14 +78,38 @@ public sealed class PowerShellWasmExecutionContext
     internal PowerShellWasmResult CreateResult(IEnumerable<object?> output) =>
         new(output.Select(FormatRecord).ToArray());
 
-    public void SetVariable(string name, object? value) =>
+    public void SetVariable(string name, object? value)
+    {
+        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            SetEnvironmentVariable(name[4..], value is null ? null : Convert.ToString(value, CultureInfo.InvariantCulture));
+            return;
+        }
+
         _variables[name] = value;
+    }
 
-    public void ClearVariable(string name) =>
+    public void ClearVariable(string name)
+    {
+        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            SetEnvironmentVariable(name[4..], null);
+            return;
+        }
+
         _variables[name] = null;
+    }
 
-    public void RemoveVariable(string name) =>
+    public void RemoveVariable(string name)
+    {
+        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            SetEnvironmentVariable(name[4..], null);
+            return;
+        }
+
         _variables.Remove(name);
+    }
 
     internal void SetFunction(PowerShellWasmScriptFunction function) =>
         _functions[function.Name] = function;

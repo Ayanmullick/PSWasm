@@ -10,6 +10,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("regular expressions", VerifyRegularExpressionsAsync),
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),
+    ("member and index assignment", VerifyMemberAndIndexAssignmentAsync),
     ("expandable strings", VerifyExpandableStringsAsync),
     ("parallel assignment", VerifyParallelAssignmentAsync),
     ("browser-safe dotnet interop", VerifyBrowserSafeDotNetInteropAsync),
@@ -598,6 +599,59 @@ $Map
         "----        -----",
         "#tenant-id  cosmosTenant",
         "#client-id  cosmosClientId"
+    ]);
+}
+
+static async ValueTask VerifyMemberAndIndexAssignmentAsync()
+{
+    var result = await ExecuteAsync("""
+$h = @{Name='one'; CountValue=1}
+$h.Name = 'two'
+$h['CountValue'] = 2
+$h.Name
+$h['CountValue']
+
+$o = [pscustomobject]@{Name='one'; Value=1}
+$o.Name = 'two'
+$o['Value'] = 2
+$o.Name
+$o.Value
+
+$array = @('a','b','c')
+$array[1] = 'B'
+$array[-1] = 'C'
+$array -join ','
+
+$list = [System.Collections.ArrayList]@('x','y')
+$list[0] = 'X'
+$list[0]
+
+$generic = [System.Collections.Generic.List[string]]@('left','right')
+$generic[1] = 'RIGHT'
+$generic[1]
+
+$env:PSWASM_ASSIGN_TEST = 'env-value'
+$env:PSWASM_ASSIGN_TEST
+
+($h.ExpressionAssigned = 'yes')
+$h.ExpressionAssigned
+
+$h.FromCommand = Write-Output 'cmd'
+$h.FromCommand
+""");
+
+    ExpectLines(result, [
+        "two",
+        "2",
+        "two",
+        "2",
+        "a,B,C",
+        "X",
+        "RIGHT",
+        "env-value",
+        "yes",
+        "yes",
+        "cmd"
     ]);
 }
 

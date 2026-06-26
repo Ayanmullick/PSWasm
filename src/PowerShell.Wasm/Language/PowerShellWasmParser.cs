@@ -156,22 +156,30 @@ public sealed class PowerShellWasmParser
         var equals = FindTopLevel(tokens, PowerShellWasmTokenKind.Equals);
         if (tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Variable && equals > 0)
         {
-            if (!TryReadAssignmentTargets(tokens, equals, out var variableNames))
+            var valueTokens = tokens.Skip(equals + 1).ToArray();
+            if (TryReadAssignmentTargets(tokens, equals, out var variableNames))
             {
-                throw new InvalidOperationException("Expected one or more variable assignment targets before '='.");
+                if (variableNames.Count == 1)
+                {
+                    return IsStatementAssignmentValue(valueTokens)
+                        ? new StatementAssignmentAst(variableNames[0], ParseStatement(valueTokens))
+                        : new AssignmentStatementAst(variableNames[0], ParseExpression(valueTokens));
+                }
+
+                return IsStatementAssignmentValue(valueTokens)
+                    ? new ParallelStatementAssignmentAst(variableNames, ParseStatement(valueTokens))
+                    : new ParallelAssignmentStatementAst(variableNames, ParseExpression(valueTokens));
             }
 
-            var valueTokens = tokens.Skip(equals + 1).ToArray();
-            if (variableNames.Count == 1)
+            var target = ParseExpression(tokens.Take(equals).ToArray());
+            if (!IsSettableAssignmentTarget(target))
             {
-                return IsStatementAssignmentValue(valueTokens)
-                    ? new StatementAssignmentAst(variableNames[0], ParseStatement(valueTokens))
-                    : new AssignmentStatementAst(variableNames[0], ParseExpression(valueTokens));
+                throw new InvalidOperationException("Expected one or more assignment targets before '='.");
             }
 
             return IsStatementAssignmentValue(valueTokens)
-                ? new ParallelStatementAssignmentAst(variableNames, ParseStatement(valueTokens))
-                : new ParallelAssignmentStatementAst(variableNames, ParseExpression(valueTokens));
+                ? new SettableStatementAssignmentAst(target, ParseStatement(valueTokens))
+                : new SettableAssignmentStatementAst(target, ParseExpression(valueTokens));
         }
 
         var pipelineChain = SplitTopLevelPipelineChain(tokens);
@@ -1351,6 +1359,9 @@ public sealed class PowerShellWasmParser
         return names.Count > 0 && !expectVariable;
     }
 
+    private static bool IsSettableAssignmentTarget(ExpressionAst target) =>
+        target is VariableExpressionAst or MemberAccessExpressionAst or IndexExpressionAst;
+
     private static bool TryMapCompoundAssignmentOperator(PowerShellWasmTokenKind kind, out PowerShellWasmBinaryOperator op)
     {
         op = kind switch
@@ -1686,7 +1697,14 @@ public sealed class PowerShellWasmParser
                 return new AssignmentExpressionAst(variable, ParseAssignment());
             }
 
-            return ParseTernaryExpression();
+            var target = ParseTernaryExpression();
+            if (Current.Kind == PowerShellWasmTokenKind.Equals && IsSettableAssignmentTarget(target))
+            {
+                _position++;
+                return new SettableAssignmentExpressionAst(target, ParseAssignment());
+            }
+
+            return target;
         }
 
         private ExpressionAst ParseTernaryExpression()
