@@ -50,11 +50,21 @@ internal sealed class PowerShellWasmAstExecutor(
             case CompoundAssignmentStatementAst assignment:
                 await EvaluateCompoundAssignmentAsync(assignment.VariableName, assignment.Operator, assignment.Value, cancellationToken);
                 break;
+            case SettableCompoundAssignmentStatementAst assignment:
+                await EvaluateSettableCompoundAssignmentAsync(
+                    assignment.Target,
+                    assignment.Operator,
+                    assignment.Value,
+                    cancellationToken);
+                break;
             case ParallelAssignmentStatementAst assignment:
                 AssignParallel(assignment.VariableNames, await EvaluateExpressionAsync(assignment.Value, cancellationToken));
                 break;
             case VariableIncrementStatementAst increment:
                 IncrementVariable(increment.VariableName, increment.Delta);
+                break;
+            case SettableIncrementStatementAst increment:
+                await EvaluateIncrementAsync(increment.Target, increment.Delta, isPrefix: true, cancellationToken);
                 break;
             case StatementAssignmentAst assignment:
                 await ExecuteStatementAssignmentAsync(assignment, cancellationToken);
@@ -694,6 +704,12 @@ internal sealed class PowerShellWasmAstExecutor(
                     assignment.Operator,
                     assignment.Value,
                     cancellationToken);
+            case SettableCompoundAssignmentExpressionAst assignment:
+                return await EvaluateSettableCompoundAssignmentAsync(
+                    assignment.Target,
+                    assignment.Operator,
+                    assignment.Value,
+                    cancellationToken);
             case HashtableExpressionAst hashtable:
                 return await EvaluateHashtableAsync(hashtable, cancellationToken);
             case TypedHashtableExpressionAst typedHashtable:
@@ -716,6 +732,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateCastAsync(cast, cancellationToken);
             case MemberAccessExpressionAst member:
                 return await EvaluateMemberAccessAsync(member, cancellationToken);
+            case NullConditionalMemberAccessExpressionAst member:
+                return await EvaluateNullConditionalMemberAccessAsync(member, cancellationToken);
             case StaticMemberAccessExpressionAst member:
                 return await EvaluateStaticMemberAccessAsync(member, cancellationToken);
             case MethodInvocationExpressionAst invocation:
@@ -724,6 +742,8 @@ internal sealed class PowerShellWasmAstExecutor(
                 return await EvaluateIndexAsync(index, cancellationToken);
             case UnaryExpressionAst unary:
                 return await EvaluateUnaryAsync(unary, cancellationToken);
+            case IncrementExpressionAst increment:
+                return await EvaluateIncrementAsync(increment.Target, increment.Delta, increment.IsPrefix, cancellationToken);
             case TernaryExpressionAst ternary:
                 return await EvaluateTernaryAsync(ternary, cancellationToken);
             case BinaryExpressionAst binary:
@@ -764,7 +784,7 @@ internal sealed class PowerShellWasmAstExecutor(
         ExpressionAst expression,
         CancellationToken cancellationToken)
     {
-        var left = EvaluateVariable(variableName);
+        var left = EvaluateVariableAssignmentTarget(variableName);
         if (op == PowerShellWasmBinaryOperator.NullCoalesce && left is not null)
         {
             return left;
@@ -776,6 +796,49 @@ internal sealed class PowerShellWasmAstExecutor(
             : ApplyBinaryOperator(left, op, right);
         executionContext.SetVariable(variableName, value);
         return value;
+    }
+
+    private async ValueTask<object?> EvaluateSettableCompoundAssignmentAsync(
+        ExpressionAst target,
+        PowerShellWasmBinaryOperator op,
+        ExpressionAst expression,
+        CancellationToken cancellationToken)
+    {
+        var left = await EvaluateExpressionAsync(target, cancellationToken);
+        if (op == PowerShellWasmBinaryOperator.NullCoalesce && left is not null)
+        {
+            return left;
+        }
+
+        var right = await EvaluateExpressionAsync(expression, cancellationToken);
+        var value = op == PowerShellWasmBinaryOperator.NullCoalesce
+            ? right
+            : ApplyBinaryOperator(left, op, right);
+        await SetAssignmentTargetAsync(target, value, cancellationToken);
+        return value;
+    }
+
+    private object? EvaluateVariableAssignmentTarget(string variableName)
+    {
+        if (variableName.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        {
+            return executionContext.GetEnvironmentVariable(variableName[4..]) ?? string.Empty;
+        }
+
+        return EvaluateVariable(variableName);
+    }
+
+    private async ValueTask<object?> EvaluateIncrementAsync(
+        ExpressionAst target,
+        int delta,
+        bool isPrefix,
+        CancellationToken cancellationToken)
+    {
+        var current = await EvaluateExpressionAsync(target, cancellationToken);
+        var number = current is null ? 0 : ToNumber(current);
+        var updated = NormalizeNumber(number + delta);
+        await SetAssignmentTargetAsync(target, updated, cancellationToken);
+        return isPrefix ? updated : NormalizeNumber(number);
     }
 
     private async ValueTask SetAssignmentTargetAsync(
@@ -1215,17 +1278,30 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var target = await EvaluateExpressionAsync(member.Target, cancellationToken);
+        return EvaluateMemberAccess(target, member.MemberName);
+    }
+
+    private async ValueTask<object?> EvaluateNullConditionalMemberAccessAsync(
+        NullConditionalMemberAccessExpressionAst member,
+        CancellationToken cancellationToken)
+    {
+        var target = await EvaluateExpressionAsync(member.Target, cancellationToken);
+        return target is null ? null : EvaluateMemberAccess(target, member.MemberName);
+    }
+
+    private static object? EvaluateMemberAccess(object? target, string memberName)
+    {
         if (target is null)
         {
             return null;
         }
 
-        if (TryGetDirectMemberAccess(target, member.MemberName, out var directValue))
+        if (TryGetDirectMemberAccess(target, memberName, out var directValue))
         {
             return directValue;
         }
 
-        if (TryGetEnumeratedMemberAccess(target, member.MemberName, out var enumeratedValue))
+        if (TryGetEnumeratedMemberAccess(target, memberName, out var enumeratedValue))
         {
             return enumeratedValue;
         }
@@ -2099,11 +2175,24 @@ internal sealed class PowerShellWasmAstExecutor(
                 throw new InvalidOperationException($"Index {indexes[0]} is outside the target collection.");
             }
 
-            list[itemIndex] = value;
+            list[itemIndex] = CoerceListItemValue(list[itemIndex], value);
             return;
         }
 
         throw new InvalidOperationException("Index assignment is supported only for dictionaries, arrays, and lists.");
+    }
+
+    private static object? CoerceListItemValue(object? existingValue, object? value)
+    {
+        if (existingValue is null || value is null)
+        {
+            return value;
+        }
+
+        var targetType = existingValue.GetType();
+        return targetType.IsInstanceOfType(value)
+            ? value
+            : Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
     }
 
     private static bool TrySetDictionaryValue(object? target, string key, object? value)
@@ -2428,7 +2517,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private void IncrementVariable(string variableName, int delta)
     {
-        var value = executionContext.GetVariable(variableName);
+        var value = EvaluateVariableAssignmentTarget(variableName);
         var number = value is null ? 0 : ToNumber(value);
         executionContext.SetVariable(variableName, NormalizeNumber(number + delta));
     }

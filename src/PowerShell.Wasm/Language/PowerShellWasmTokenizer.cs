@@ -150,6 +150,10 @@ public static class PowerShellWasmTokenizer
                     {
                         Add(PowerShellWasmTokenKind.QuestionQuestion, "??", 2);
                     }
+                    else if (position + 1 < script.Length && script[position + 1] == '.')
+                    {
+                        Add(PowerShellWasmTokenKind.QuestionDot, "?.", 2);
+                    }
                     else
                     {
                         Add(PowerShellWasmTokenKind.Question, "?", 1);
@@ -355,7 +359,7 @@ public static class PowerShellWasmTokenizer
             if (position < script.Length && script[position] == '.')
             {
                 position++;
-                while (position < script.Length && IsBareWordCharacter(script[position]) && script[position] != '.')
+                while (position < script.Length && IsDottedMemberCharacter(script[position]))
                 {
                     position++;
                 }
@@ -403,4 +407,7 @@ public static class PowerShellWasmTokenizer
     private static bool IsBareWordCharacter(char ch) =>
         !char.IsWhiteSpace(ch) && ch is not ';' and not '|' and not '=' and not ',' and not '(' and not ')' and not '{' and not '}'
             and not '[' and not ']' and not '\'' and not '"' and not '+' and not '*' and not '/' and not '@';
+
+    private static bool IsDottedMemberCharacter(char ch) =>
+        IsBareWordCharacter(ch) && ch is not '.' and not '-' and not '?' and not '%';
 }

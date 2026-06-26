@@ -153,6 +153,11 @@ public sealed class PowerShellWasmParser
             return compoundAssignment;
         }
 
+        if (TryParseSettableCompoundAssignmentStatement(tokens, out var settableCompoundAssignment))
+        {
+            return settableCompoundAssignment;
+        }
+
         var equals = FindTopLevel(tokens, PowerShellWasmTokenKind.Equals);
         if (tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Variable && equals > 0)
         {
@@ -200,6 +205,11 @@ public sealed class PowerShellWasmParser
         if (TryParseVariableIncrementStatement(tokens, out var incrementStatement))
         {
             return incrementStatement;
+        }
+
+        if (TryParseSettableIncrementStatement(tokens, out var settableIncrementStatement))
+        {
+            return settableIncrementStatement;
         }
 
         if (IsCommandSegment(tokens))
@@ -1153,8 +1163,36 @@ public sealed class PowerShellWasmParser
 
     private static ExpressionAst ParseExpression(IReadOnlyList<PowerShellWasmToken> tokens)
     {
+        if (TryParseSettableCompoundAssignmentExpression(tokens, out var assignment))
+        {
+            return assignment;
+        }
+
         var parser = new ExpressionParser(tokens);
         return parser.Parse();
+    }
+
+    private static bool TryParseSettableCompoundAssignmentExpression(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        out SettableCompoundAssignmentExpressionAst expression)
+    {
+        expression = null!;
+        if (!TryFindTopLevelCompoundAssignment(tokens, out var operatorPosition, out var op))
+        {
+            return false;
+        }
+
+        var target = ParseExpression(tokens.Take(operatorPosition).ToArray());
+        if (!IsSettableAssignmentTarget(target))
+        {
+            return false;
+        }
+
+        expression = new SettableCompoundAssignmentExpressionAst(
+            target,
+            op,
+            ParseExpression(tokens.Skip(operatorPosition + 2).ToArray()));
+        return true;
     }
 
     private static ExpressionAst ParseParenthesizedExpressionValue(IReadOnlyList<PowerShellWasmToken> tokens)
@@ -1323,6 +1361,29 @@ public sealed class PowerShellWasmParser
         return true;
     }
 
+    private static bool TryParseSettableCompoundAssignmentStatement(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        out SettableCompoundAssignmentStatementAst statement)
+    {
+        statement = null!;
+        if (!TryFindTopLevelCompoundAssignment(tokens, out var operatorPosition, out var op))
+        {
+            return false;
+        }
+
+        var target = ParseExpression(tokens.Take(operatorPosition).ToArray());
+        if (!IsSettableAssignmentTarget(target))
+        {
+            return false;
+        }
+
+        statement = new SettableCompoundAssignmentStatementAst(
+            target,
+            op,
+            ParseExpression(tokens.Skip(operatorPosition + 2).ToArray()));
+        return true;
+    }
+
     private static bool TryReadAssignmentTargets(
         IReadOnlyList<PowerShellWasmToken> tokens,
         int equals,
@@ -1361,6 +1422,30 @@ public sealed class PowerShellWasmParser
 
     private static bool IsSettableAssignmentTarget(ExpressionAst target) =>
         target is VariableExpressionAst or MemberAccessExpressionAst or IndexExpressionAst;
+
+    private static bool TryFindTopLevelCompoundAssignment(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        out int operatorPosition,
+        out PowerShellWasmBinaryOperator op)
+    {
+        var depth = 0;
+        for (var i = 0; i + 1 < tokens.Count; i++)
+        {
+            if (depth == 0 &&
+                tokens[i + 1].Kind == PowerShellWasmTokenKind.Equals &&
+                TryMapCompoundAssignmentOperator(tokens[i].Kind, out op))
+            {
+                operatorPosition = i;
+                return true;
+            }
+
+            UpdateDepth(tokens[i], ref depth);
+        }
+
+        operatorPosition = -1;
+        op = default;
+        return false;
+    }
 
     private static bool TryMapCompoundAssignmentOperator(PowerShellWasmTokenKind kind, out PowerShellWasmBinaryOperator op)
     {
@@ -1401,6 +1486,38 @@ public sealed class PowerShellWasmParser
 
         statement = null!;
         return false;
+    }
+
+    private static bool TryParseSettableIncrementStatement(
+        IReadOnlyList<PowerShellWasmToken> tokens,
+        out SettableIncrementStatementAst statement)
+    {
+        statement = null!;
+        if (tokens.Count < 2)
+        {
+            return false;
+        }
+
+        var delta = tokens[^1].Kind switch
+        {
+            PowerShellWasmTokenKind.PlusPlus => 1,
+            PowerShellWasmTokenKind.MinusMinus => -1,
+            _ => 0
+        };
+
+        if (delta == 0)
+        {
+            return false;
+        }
+
+        var target = ParseExpression(tokens.Take(tokens.Count - 1).ToArray());
+        if (!IsSettableAssignmentTarget(target))
+        {
+            return false;
+        }
+
+        statement = new SettableIncrementStatementAst(target, delta);
+        return true;
     }
 
     private static bool IsKeyword(IReadOnlyList<PowerShellWasmToken> tokens, int position, string keyword) =>
@@ -1767,6 +1884,19 @@ public sealed class PowerShellWasmParser
                 return cast;
             }
 
+            if (Current.Kind is PowerShellWasmTokenKind.PlusPlus or PowerShellWasmTokenKind.MinusMinus)
+            {
+                var delta = Current.Kind == PowerShellWasmTokenKind.PlusPlus ? 1 : -1;
+                _position++;
+                var target = ParseUnary();
+                if (!IsSettableAssignmentTarget(target))
+                {
+                    throw new InvalidOperationException("Increment and decrement operators require a variable, member, or index target.");
+                }
+
+                return new IncrementExpressionAst(target, delta, IsPrefix: true);
+            }
+
             if (Current.Kind.IsUnaryOperator())
             {
                 var op = MapUnaryOperator(Current.Kind);
@@ -1819,6 +1949,19 @@ public sealed class PowerShellWasmParser
                     continue;
                 }
 
+                if (Current.Kind == PowerShellWasmTokenKind.QuestionDot)
+                {
+                    _position++;
+                    var memberPath = ReadMemberPath("?.");
+                    expression = new NullConditionalMemberAccessExpressionAst(expression, memberPath[0]);
+                    foreach (var memberName in memberPath.Skip(1))
+                    {
+                        expression = new MemberAccessExpressionAst(expression, memberName);
+                    }
+
+                    continue;
+                }
+
                 if (Current.Kind == PowerShellWasmTokenKind.AtLBrace &&
                     expression is TypeLiteralExpressionAst typeLiteral)
                 {
@@ -1838,6 +1981,18 @@ public sealed class PowerShellWasmParser
                 {
                     expression = ParseIndex(expression);
                     continue;
+                }
+
+                if (Current.Kind is PowerShellWasmTokenKind.PlusPlus or PowerShellWasmTokenKind.MinusMinus)
+                {
+                    var delta = Current.Kind == PowerShellWasmTokenKind.PlusPlus ? 1 : -1;
+                    _position++;
+                    if (!IsSettableAssignmentTarget(expression))
+                    {
+                        throw new InvalidOperationException("Increment and decrement operators require a variable, member, or index target.");
+                    }
+
+                    return new IncrementExpressionAst(expression, delta, IsPrefix: false);
                 }
 
                 return expression;

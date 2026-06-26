@@ -638,6 +638,70 @@ $h.ExpressionAssigned
 
 $h.FromCommand = Write-Output 'cmd'
 $h.FromCommand
+
+$h.Name += '-three'
+$h['CountValue'] += 3
+$h['Missing'] ??= 'created'
+$h['Missing'] ??= 'ignored'
+$h.Name
+$h['CountValue']
+$h.Missing
+
+$array[0] += '1'
+$array -join ','
+
+$list[1] += 'Z'
+$list[1]
+
+$generic[0] += '-done'
+$generic[0]
+
+$env:PSWASM_ASSIGN_TEST += '-more'
+$env:PSWASM_ASSIGN_TEST
+
+($h.CountValue += 5)
+$h.CountValue
+
+$h.Counter = 1
+$h.Counter++
+$h.Counter
+($h.Counter++)
+$h.Counter
+++$h.Counter
+$h.Counter
+$h.Counter--
+$h.Counter
+--$h.Counter
+$h.Counter
+
+$numbers = @(1,2)
+$numbers[1]++
+$numbers[1]
+($numbers[0]--)
+$numbers[0]
+++$numbers[0]
+$numbers[0]
+
+$listNumbers = [System.Collections.ArrayList]@(1,2)
+$listNumbers[0]++
+$listNumbers[0]
+
+$genericNumbers = [System.Collections.Generic.List[int]]@(3,4)
+$genericNumbers[1]--
+$genericNumbers[1]
+
+$h.MissingIncrement++
+$h.MissingIncrement
+($h.PostMissing++)
+$h.PostMissing
+++$h.PreMissing
+$h.PreMissing
+
+$env:PSWASM_INCREMENT_TEST = 1
+$env:PSWASM_INCREMENT_TEST++
+$env:PSWASM_INCREMENT_TEST
+($env:PSWASM_INCREMENT_TEST++)
+$env:PSWASM_INCREMENT_TEST
 """);
 
     ExpectLines(result, [
@@ -651,7 +715,39 @@ $h.FromCommand
         "env-value",
         "yes",
         "yes",
-        "cmd"
+        "cmd",
+        "two-three",
+        "5",
+        "created",
+        "a1,B,C",
+        "yZ",
+        "left-done",
+        "env-value-more",
+        "10",
+        "10",
+        "2",
+        "2",
+        "3",
+        "4",
+        "4",
+        "3",
+        "2",
+        "2",
+        "3",
+        "1",
+        "0",
+        "1",
+        "1",
+        "2",
+        "3",
+        "1",
+        "0",
+        "1",
+        "1",
+        "1",
+        "2",
+        "2",
+        "3"
     ]);
 }
 

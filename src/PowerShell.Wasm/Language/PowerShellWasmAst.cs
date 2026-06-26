@@ -24,9 +24,16 @@ public sealed record CompoundAssignmentStatementAst(
     PowerShellWasmBinaryOperator Operator,
     ExpressionAst Value) : StatementAst;
 
+public sealed record SettableCompoundAssignmentStatementAst(
+    ExpressionAst Target,
+    PowerShellWasmBinaryOperator Operator,
+    ExpressionAst Value) : StatementAst;
+
 public sealed record ParallelAssignmentStatementAst(IReadOnlyList<string> VariableNames, ExpressionAst Value) : StatementAst;
 
 public sealed record VariableIncrementStatementAst(string VariableName, int Delta) : StatementAst;
+
+public sealed record SettableIncrementStatementAst(ExpressionAst Target, int Delta) : StatementAst;
 
 public sealed record StatementAssignmentAst(string VariableName, StatementAst Statement) : StatementAst;
 
@@ -140,6 +147,11 @@ public sealed record CompoundAssignmentExpressionAst(
     PowerShellWasmBinaryOperator Operator,
     ExpressionAst Value) : ExpressionAst;
 
+public sealed record SettableCompoundAssignmentExpressionAst(
+    ExpressionAst Target,
+    PowerShellWasmBinaryOperator Operator,
+    ExpressionAst Value) : ExpressionAst;
+
 public sealed record HashtableExpressionAst(IReadOnlyList<HashtableEntryAst> Entries) : ExpressionAst;
 
 public sealed record HashtableEntryAst(ExpressionAst Key, ExpressionAst Value) : PowerShellWasmAst;
@@ -164,6 +176,8 @@ public sealed record CastExpressionAst(string TypeName, ExpressionAst Operand) :
 
 public sealed record MemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 
+public sealed record NullConditionalMemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
+
 public sealed record StaticMemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 
 public sealed record MethodInvocationExpressionAst(ExpressionAst Target, IReadOnlyList<ExpressionAst> Arguments) : ExpressionAst;
@@ -171,6 +185,8 @@ public sealed record MethodInvocationExpressionAst(ExpressionAst Target, IReadOn
 public sealed record IndexExpressionAst(ExpressionAst Target, ExpressionAst Index) : ExpressionAst;
 
 public sealed record UnaryExpressionAst(PowerShellWasmUnaryOperator Operator, ExpressionAst Operand) : ExpressionAst;
+
+public sealed record IncrementExpressionAst(ExpressionAst Target, int Delta, bool IsPrefix) : ExpressionAst;
 
 public sealed record TernaryExpressionAst(ExpressionAst Condition, ExpressionAst IfTrue, ExpressionAst IfFalse) : ExpressionAst;
 
