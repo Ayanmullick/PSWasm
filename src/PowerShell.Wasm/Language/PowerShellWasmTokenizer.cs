@@ -5,6 +5,7 @@ namespace PSWasm.Language;
 // PowerShell source references:
 // - src/System.Management.Automation/engine/parser/tokenizer.cs
 // - src/System.Management.Automation/engine/parser/CharTraits.cs
+// - src/System.Management.Automation/engine/parser/token.cs: expandable and literal string tokens, including here-string forms.
 // Ternary reference: tokenization of '?' / ':' into QuestionMark / Colon tokens.
 // Browser note: this tokenizer intentionally avoids desktop host/runtime dependencies.
 public static class PowerShellWasmTokenizer
@@ -49,6 +50,40 @@ public static class PowerShellWasmTokenizer
                     position++;
                 }
 
+                continue;
+            }
+
+            if (ch == '<' && position + 1 < script.Length && script[position + 1] == '#')
+            {
+                position += 2;
+                while (position + 1 < script.Length && !(script[position] == '#' && script[position + 1] == '>'))
+                {
+                    position++;
+                }
+
+                if (position + 1 >= script.Length)
+                {
+                    throw new InvalidOperationException("The terminator '#>' is missing from the multiline comment.");
+                }
+
+                position += 2;
+                leadingWhitespace = true;
+                continue;
+            }
+
+            if (ch == '`' && position + 1 < script.Length && script[position + 1] is '\r' or '\n')
+            {
+                position++;
+                if (script[position] == '\r' && position + 1 < script.Length && script[position + 1] == '\n')
+                {
+                    position += 2;
+                }
+                else
+                {
+                    position++;
+                }
+
+                leadingWhitespace = true;
                 continue;
             }
 
@@ -191,6 +226,15 @@ public static class PowerShellWasmTokenizer
                     {
                         Add(PowerShellWasmTokenKind.AtLParen, "@(", 2);
                     }
+                    else if (position + 1 < script.Length && script[position + 1] is '\'' or '"')
+                    {
+                        var quote = script[position + 1];
+                        ReadHereString(
+                            quote == '\''
+                                ? PowerShellWasmTokenKind.StringLiteral
+                                : PowerShellWasmTokenKind.ExpandableStringLiteral,
+                            quote);
+                    }
                     else
                     {
                         Add(PowerShellWasmTokenKind.At, "@", 1);
@@ -327,6 +371,78 @@ public static class PowerShellWasmTokenizer
 
             tokens.Add(new(kind, value.ToString(), tokenStart, position - tokenStart, leadingWhitespace));
             leadingWhitespace = false;
+        }
+
+        void ReadHereString(PowerShellWasmTokenKind kind, char quote)
+        {
+            var tokenStart = position;
+            position += 2;
+            if (!TryConsumeLineEnding())
+            {
+                throw new InvalidOperationException("No characters are allowed after a here-string header but before the end of the line.");
+            }
+
+            var contentStart = position;
+            while (position < script.Length)
+            {
+                if (IsLineStart(position) &&
+                    script[position] == quote &&
+                    position + 1 < script.Length &&
+                    script[position + 1] == '@')
+                {
+                    var text = TrimFinalLineEnding(script[contentStart..position]);
+                    position += 2;
+                    tokens.Add(new(kind, text, tokenStart, position - tokenStart, leadingWhitespace));
+                    leadingWhitespace = false;
+                    return;
+                }
+
+                position++;
+            }
+
+            throw new InvalidOperationException("The string is missing the terminator: " + quote + "@.");
+
+            bool TryConsumeLineEnding()
+            {
+                if (position >= script.Length)
+                {
+                    return false;
+                }
+
+                if (script[position] == '\r')
+                {
+                    position++;
+                    if (position < script.Length && script[position] == '\n')
+                    {
+                        position++;
+                    }
+
+                    return true;
+                }
+
+                if (script[position] == '\n')
+                {
+                    position++;
+                    return true;
+                }
+
+                return false;
+            }
+
+            bool IsLineStart(int index) =>
+                index == 0 || script[index - 1] is '\r' or '\n';
+
+            static string TrimFinalLineEnding(string text)
+            {
+                if (text.EndsWith("\r\n", StringComparison.Ordinal))
+                {
+                    return text[..^2];
+                }
+
+                return text.EndsWith('\n') || text.EndsWith('\r')
+                    ? text[..^1]
+                    : text;
+            }
         }
 
         void ReadNumber()

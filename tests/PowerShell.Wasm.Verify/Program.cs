@@ -897,13 +897,25 @@ $Token = @{Token='abc123'}
 "Trimmed=$((Write-Output ' abc ').Trim())"
 $OFS = '|'
 "Items=$(Write-Output 'a'; Write-Output 'b')"
+$LiteralHereString = @'
+literal $Name
+line 2
+'@
+$LiteralHereString -replace "`r?`n",'|'
+$ExpandableHereString = @"
+Hello $Name
+Count=$((1,2,3).Count)
+"@
+$ExpandableHereString -replace "`r?`n",'|'
 """);
 
     ExpectLines(result, [
         "Hello World World",
         "Bearer abc123",
         "Trimmed=abc",
-        "Items=a|b"
+        "Items=a|b",
+        "literal $Name|line 2",
+        "Hello World|Count=3"
     ]);
 }
 
@@ -1680,11 +1692,24 @@ Write-Output (2 + 2)
 # region data
 @{Name='region'; Value=5} | ConvertTo-Json -Compress
 # endregion
+<#
+This block comment should be ignored by the tokenizer.
+#>
+$Commented = 'left' <# inline comment #> + 'right'
+$Commented
+$Continued = 'hello ' + `
+    'world'
+$Continued
+Write-Output `
+    'continued command'
 """);
 
     ExpectLines(result, [
         "4",
-        "{\"Name\":\"region\",\"Value\":5}"
+        "{\"Name\":\"region\",\"Value\":5}",
+        "leftright",
+        "hello world",
+        "continued command"
     ]);
 }
 
