@@ -59,6 +59,10 @@ public sealed class PowerShellWasmRuntime
         RegisterCommand("Get-AzAccessToken", new GetAzAccessTokenCommand(azureAuthHost));
         RegisterCommand("Get-AzContext", new GetAzContextCommand(azureAuthHost));
 #endif
+#if PSWASM_AZURE_AUTH && PSWASM_WEB
+        RegisterCommand("Invoke-AzRestMethod", new InvokeAzRestMethodCommand(httpClient, azureAuthHost));
+        RegisterCommand("Invoke-AzRest", new InvokeAzRestMethodCommand(httpClient, azureAuthHost));
+#endif
         RegisterCommand("Get-Time", new GetDateCommand(timeOnly: true));
         RegisterCommand("Get-TimeZone", new GetTimeZoneCommand());
         RegisterCommand("Get-UICulture", new GetCultureCommand(uiCulture: true));

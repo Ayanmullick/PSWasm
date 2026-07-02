@@ -21,6 +21,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("stream records", VerifyStreamRecordsAsync),
     ("invoke web request", VerifyInvokeWebRequestAsync),
     ("azure auth commands", VerifyAzureAuthCommandsAsync),
+    ("invoke az rest method", VerifyInvokeAzRestMethodAsync),
     ("pipeline chain operators", VerifyPipelineChainOperatorsAsync),
     ("dom session commands", VerifyDomSessionCommandsAsync),
     ("dom interaction commands", VerifyDomInteractionCommandsAsync),
@@ -500,6 +501,92 @@ $AfterDisconnect.Authenticated
         error.Message.Equals("Identity is not supported by browser-safe Azure authentication.", StringComparison.Ordinal))
     {
     }
+}
+
+static async ValueTask VerifyInvokeAzRestMethodAsync()
+{
+    var handler = new FakeHttpMessageHandler(async (request, cancellationToken) =>
+    {
+        var host = request.RequestUri?.Host ?? string.Empty;
+        if (host.Equals("management.azure.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    $"{request.Method}|{request.RequestUri}|{request.Headers.Authorization?.Scheme}|{request.Headers.Authorization?.Parameter}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        }
+
+        if (host.Equals("api.loganalytics.azure.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    $"{request.Method}|{request.Headers.Authorization?.Parameter}|{body}|{request.Content?.Headers.ContentType?.MediaType}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        }
+
+        if (host.EndsWith(".documents.azure.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+            var authorization = HeaderValue(request, "Authorization");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    $"{authorization.StartsWith("type%3Daad%26ver%3D1.0%26sig%3Dtoken%3Ahttps%3A%2F%2Fcosmos.azure.com%2Fuser_impersonation", StringComparison.Ordinal)}|{HeaderValue(request, "x-ms-version")}|{request.Content?.Headers.ContentType?.MediaType}|{body}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            ReasonPhrase = "Not Found",
+            Content = new StringContent("missing", Encoding.UTF8)
+        };
+    });
+
+    var runtime = new PowerShellWasmRuntime(httpMessageHandler: handler, azureAuthHost: new FakeAzureAuthHost());
+    var result = await runtime.ExecuteAsync("""
+$arm = Invoke-AzRestMethod -Path '/subscriptions/sub-1/providers/Microsoft.Resources/resources?api-version=2021-04-01' -Method GET
+$arm.StatusCode
+$arm.Method
+$arm.RequestUri
+$arm.Content
+$payload = @{query='AzureActivity'; timespan='PT1H'} | ConvertTo-Json -Compress
+$logs = Invoke-AzRest -Uri 'https://api.loganalytics.azure.com/v1/workspaces/ws-1/query' -Method POST -Payload $payload
+$logs.Content
+$cosmos = Invoke-AzRestMethod -Uri 'https://acct.documents.azure.com/dbs/db/colls/c/docs' -Method POST -Headers @{'x-ms-version'='2018-12-31'} -ContentType 'application/query+json' -Payload '{"query":"SELECT * FROM c"}'
+$cosmos.Content
+Get-Command Invoke-AzRest | Select-Object -ExpandProperty Name
+try {
+    Invoke-AzRestMethod -Path '/subscriptions/sub-1' -AsJob
+} catch {
+    $_.Message
+}
+try {
+    Invoke-AzRestMethod -Uri 'https://management.azure.com/subscriptions/sub-1' -Headers @{Authorization='Bearer custom'}
+} catch {
+    $_.Message
+}
+""");
+
+    ExpectLines(result, [
+        "200",
+        "GET",
+        "https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Resources/resources?api-version=2021-04-01",
+        "GET|https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Resources/resources?api-version=2021-04-01|Bearer|token:https://management.azure.com/user_impersonation",
+        """POST|token:https://api.loganalytics.azure.com/user_impersonation|{"query":"AzureActivity","timespan":"PT1H"}|application/json""",
+        """True|2018-12-31|application/query+json|{"query":"SELECT * FROM c"}""",
+        "Invoke-AzRest",
+        "AsJob is not supported by browser-safe Azure authentication.",
+        "Invoke-AzRestMethod manages the Authorization header."
+    ]);
 }
 
 static async ValueTask VerifyArrayBasicsAsync()

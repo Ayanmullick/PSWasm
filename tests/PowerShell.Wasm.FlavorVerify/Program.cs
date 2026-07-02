@@ -7,6 +7,8 @@ Get-Command Invoke-WebRequest
 Get-Command Invoke-RestMethod
 Get-Command Connect-AzAccount
 Get-Command Get-AzAccessToken
+Get-Command Invoke-AzRestMethod
+Get-Command Invoke-AzRest
 Get-Command New-DomSession
 Get-Command Register-DomEvent
 Get-Command Set-DomHtml
@@ -46,6 +48,11 @@ await ExpectRuntimeErrorAsync(
     runtime,
     "Get-AzAccessToken -ResourceUrl 'https://cosmos.azure.com/'",
     "Command 'Get-AzAccessToken' is not registered in this browser runtime.");
+
+await ExpectRuntimeErrorAsync(
+    runtime,
+    "Invoke-AzRestMethod -Path '/subscriptions/sub-1?api-version=2021-04-01'",
+    "Command 'Invoke-AzRestMethod' is not registered in this browser runtime.");
 
 await ExpectRuntimeErrorAsync(
     runtime,
