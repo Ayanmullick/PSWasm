@@ -23,6 +23,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("azure auth commands", VerifyAzureAuthCommandsAsync),
     ("invoke az rest method", VerifyInvokeAzRestMethodAsync),
     ("pipeline chain operators", VerifyPipelineChainOperatorsAsync),
+    ("implicit line continuation", VerifyImplicitLineContinuationAsync),
     ("dom session commands", VerifyDomSessionCommandsAsync),
     ("dom interaction commands", VerifyDomInteractionCommandsAsync),
     ("browser-safe built-ins", VerifyBuiltInsAsync),
@@ -129,6 +130,10 @@ $list[1]
 [string]123
 [bool]0
 [bool]'text'
+!$true
+! $false
+!(@())
+!(@(1))
 ([byte[]]@(65,66)).Length
 ([byte[]]@(65,66))[0]
 [string[]]@(1,2) -join ':'
@@ -205,6 +210,10 @@ $null -isnot [string]
         "123",
         "False",
         "True",
+        "False",
+        "True",
+        "True",
+        "False",
         "2",
         "65",
         "1:2",
@@ -1113,6 +1122,36 @@ try {
         "NewLineLeft",
         "NewLineRight",
         "ChainStop"
+    ]);
+}
+
+static async ValueTask VerifyImplicitLineContinuationAsync()
+{
+    var result = await ExecuteAsync("""
+$Sum = 1 +
+    2
+$Sum
+$Values = 'a',
+    'b',
+    'c'
+$Values.Count
+$Values -join ''
+1..3 |
+    Where-Object { $_ -gt 1 } |
+    ForEach-Object { $_ * 10 }
+$Choice = $true ?
+    'yes' :
+    'no'
+$Choice
+""");
+
+    ExpectLines(result, [
+        "3",
+        "3",
+        "abc",
+        "20",
+        "30",
+        "yes"
     ]);
 }
 

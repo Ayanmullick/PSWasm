@@ -1570,20 +1570,10 @@ public sealed class PowerShellWasmParser
 
             if (depth == 0 && token.Kind is PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.Semicolon)
             {
-                if (token.Kind == PowerShellWasmTokenKind.NewLine && LastSignificantTokenKind(tokens, start, position) is
-                    PowerShellWasmTokenKind.Pipe or PowerShellWasmTokenKind.PipelineChainAnd or PowerShellWasmTokenKind.PipelineChainOr)
-                {
-                    position++;
-                    continue;
-                }
-
-                if (IsTryContinuation(tokens, start, position))
-                {
-                    position++;
-                    continue;
-                }
-
-                if (IsIfContinuation(tokens, start, position))
+                if (token.Kind == PowerShellWasmTokenKind.NewLine &&
+                    (IsTryContinuation(tokens, start, position) ||
+                        IsIfContinuation(tokens, start, position) ||
+                        !IsStatementBoundaryNewLine(tokens, position)))
                 {
                     position++;
                     continue;

@@ -195,6 +195,9 @@ public static class PowerShellWasmTokenizer
                     }
 
                     break;
+                case '!':
+                    Add(PowerShellWasmTokenKind.Not, "!", 1);
+                    break;
                 case '-':
                     if (position + 1 < script.Length && script[position + 1] == '-')
                     {
