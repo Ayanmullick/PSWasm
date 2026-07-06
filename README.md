@@ -186,3 +186,7 @@ Manual Pages workflow runs can provide a version folder, such as `v0.1.0`, for s
 ```html
 <script type="module" src="https://ayanmullick.github.io/PSWasm/v0.1.0/web/app.js"></script>
 ```
+
+## License
+
+PSWasm is available under the [MIT License](https://choosealicense.com/licenses/mit/).
