@@ -13,9 +13,10 @@
   <p id="dom-sample-status"></p>
   <div id="dom-sample-html"></div>
 
-  <script type="pwsh">
+  <!-- This inert script is executed explicitly by the browser smoke runner. -->
+  <script id="dom-smoke-pwsh" type="text/pswasm-smoke">
 $Dom = New-DomSession -Name Smoke -Target document
-Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSmokeName'}
+$StorageBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSmokeName'}
 Set-DomValue '#dom-sample-name' 'PSWasm'
 if ((Get-DomProperty '#dom-sample-name' Value) -ne 'PSWasm') { throw 'DOM property bridge failed.' }
 $TemporaryBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Selector '#dom-sample-name' -Key 'pswasm.domSmokeTemporary'
@@ -27,7 +28,7 @@ $TemporaryEvent = Register-DomEvent -Session $Dom -Selector '#dom-sample-button'
     Set-DomText '#dom-sample-status' 'Unexpected temporary handler.'
 }
 Unregister-DomEvent $TemporaryEvent
-Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -PreventDefault -ScriptBlock {
+$SubmitEvent = Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -PreventDefault -ScriptBlock {
     Set-DomProperty '#dom-sample-button' Disabled $true
     $Name = Get-DomValue '#dom-sample-name'
     Set-DomText '#dom-sample-status' "Hello $Name from a PowerShell DOM event."
@@ -35,6 +36,6 @@ Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Event Submit -Prev
 }
   </script>
 
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="./browser-dom-smoke.mjs"></script>
 </body>
 </html>

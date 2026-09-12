@@ -1,35 +1,7 @@
-bin/
-obj/
-artifacts/
-publish/
-TestResults/
+# Local generated output and working files
+/.WorkDir/
 
-.vs/
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
-
-# Local workspace agent instructions
-.codex/
-.agents/
-AGENTS.md
-# Local Copilot instructions
-.github/instructions/
-.github/copilot-instructions.md
-
-
-.idea/
-*.user
-*.suo
-
-*.nupkg
-*.snupkg
-*.pdb
-*.binlog
-
-.DS_Store
-Thumbs.db
-
+# Local environment files; allow the example template
 .env
 .env.*
 !.env.example

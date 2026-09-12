@@ -1,0 +1,20 @@
+[
+  "fixture-elements",
+  "module-import",
+  "dom-readiness",
+  "dom-table-encoding",
+  "dom-temporary-event-unregister",
+  "dom-event-submit-prevent-default",
+  "dom-button-reset",
+  "dom-storage-binding",
+  "dom-temporary-binding-unregister",
+  "api-text",
+  "api-stream-records",
+  "api-environment",
+  "api-session-persistence",
+  "api-session-output-reset",
+  "api-session-disposal",
+  "external-script-order-shared-session",
+  "browser-errors",
+  "cleanup"
+]

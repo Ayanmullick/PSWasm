@@ -87,33 +87,40 @@ Install a .NET 10 SDK and, for the browser sample, the WebAssembly workload:
 dotnet workload install wasm-tools
 ```
 
+The build commands below assume dependencies are already restored. A fresh checkout or changed intermediate-output path requires an approved restore before using `--no-restore` or `-NoRestore`. Each feature combination has its own intermediate directory: restore `core`, `web`, and `full`/`AzAuth` with their matching feature flags before publishing those flavors without restore.
+
 Build the core runtime:
 
 ```powershell
-dotnet build .\src\PowerShell.Wasm\PowerShell.Wasm.csproj
+.\tools\Invoke-WorkspaceCommand.ps1 dotnet build .\src\PowerShell.Wasm\PowerShell.Wasm.csproj --no-restore
 ```
 
 Publish the browser host:
 
 ```powershell
-dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r browser-wasm -o publish /p:UseAppHost=false
+.\tools\Invoke-WorkspaceCommand.ps1 dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj `
+  -c Release -r browser-wasm -o .\.WorkDir\build\publish\BrowserHost /p:UseAppHost=false --no-restore
 ```
 
 The static files are emitted under:
 
 ```text
-publish/wwwroot
+.WorkDir/build/publish/BrowserHost/wwwroot
 ```
+
+Build output, publish output, test results, and temporary files used by the workspace scripts live under `.WorkDir/`. Run direct tool commands through `tools/Invoke-WorkspaceCommand.ps1` to keep their temporary files there for the command's lifetime.
+
+`.WorkDir/checkouts/` holds local Git checkouts, including `PSWasm.wiki`, and must be preserved. Clean only the generated output that needs rebuilding; never delete `.WorkDir/` as a whole. See [Build and Validation](https://github.com/Ayanmullick/PSWasm/wiki/Build-and-Validation) for the workspace layout and validation workflow.
 
 Publish clean browser flavors for payload comparison:
 
 ```powershell
-.\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full -NoRestore
 ```
 
 Use `web` for static pages that need DOM event binding, `Invoke-WebRequest`, and `Invoke-RestMethod`.
 Use `AzAuth` for static pages that need DOM event binding, browser HTTP commands, browser-safe HMAC/Base64/URI helper coverage, user-delegated Entra access tokens, and authenticated Azure REST calls.
-Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `artifacts/BrowserFlavors/<flavor>/wwwroot` into your static app.
+Flavor output is package-shaped by default: copy `app.js`, `app.d.ts`, and `_framework/**` from `.WorkDir/build/publish/BrowserFlavors/<flavor>/wwwroot` into your static app.
 
 For browser DOM output, generate HTML as PowerShell output and render it explicitly:
 
@@ -124,29 +131,32 @@ $Rows | ConvertTo-Html -Fragment -Property Id,Name,Status | Set-DomHtml '#output
 Publish host-ready flavor folders for static hosting:
 
 ```powershell
-.\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full -HostedRoot .\artifacts\HostedBrowserFlavors -HostedVersion v0.1.0
+.\tools\Publish-BrowserFlavors.ps1 -Flavor core,web,AzAuth,full `
+  -HostedRoot .\.WorkDir\build\publish\BrowserFlavorHosted -HostedVersion v0.1.0 -NoRestore
 ```
 
-That creates `artifacts/HostedBrowserFlavors/<flavor>/app.js` and `artifacts/HostedBrowserFlavors/v0.1.0/<flavor>/app.js`, with each `app.js` loading its own sibling `_framework/**` folder.
+That creates `.WorkDir/build/publish/BrowserFlavorHosted/<flavor>/app.js` and `.WorkDir/build/publish/BrowserFlavorHosted/v0.1.0/<flavor>/app.js`, with each `app.js` loading its own sibling `_framework/**` folder.
 
 ## Maintainer Checks
 
 Run assertion-based runtime verification:
 
 ```powershell
-dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.csproj --configuration Release
+.\tools\Invoke-WorkspaceCommand.ps1 dotnet run --project .\tests\PowerShell.Wasm.Verify\PowerShell.Wasm.Verify.csproj `
+  --configuration Release --no-restore
 ```
 
 Publish-check the browser host:
 
 ```powershell
-dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj -c Release -r browser-wasm -o .\artifacts\BrowserHost /p:UseAppHost=false --no-restore
+.\tools\Invoke-WorkspaceCommand.ps1 dotnet publish .\samples\BrowserHost\PSWasm.BrowserHost.csproj `
+  -c Release -r browser-wasm -o .\.WorkDir\build\publish\BrowserHost /p:UseAppHost=false --no-restore
 ```
 
 Measure a published browser payload:
 
 ```powershell
-.\tools\Measure-BrowserPayload.ps1 -Path .\artifacts\BrowserHost\wwwroot -SummaryOnly
+.\tools\Measure-BrowserPayload.ps1 -Path .\.WorkDir\build\publish\BrowserHost\wwwroot -SummaryOnly
 ```
 
 Run package-shape and flavor-gating smoke checks:
@@ -155,17 +165,13 @@ Run package-shape and flavor-gating smoke checks:
 .\tests\BrowserFlavorSmoke\Invoke-BrowserFlavorSmoke.ps1 -NoRestore
 ```
 
-Run the real browser DOM smoke test after DOM command or browser DOM bridge changes:
+Run the browser DOM smoke test after DOM command or browser DOM bridge changes. It requires the VS Code `integrated_browser` MCP; check `browser_status` before starting:
 
 ```powershell
 .\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1
 ```
 
-If headless Edge or Chrome cannot be launched in the current environment, run the manual smoke server and open the printed URL in Microsoft Edge Tools for VS Code or the VS Code integrated browser:
-
-```powershell
-.\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1 -Manual
-```
+The script starts an isolated local test site and waits for an MCP-connected agent to run the assertions and submit their JSON report. An unavailable MCP blocks the check; there is no external-browser fallback. See [Browser DOM Smoke](tests/BrowserDomSmoke/README.md) for the complete run and report-submission workflow.
 
 ## GitHub Pages
 

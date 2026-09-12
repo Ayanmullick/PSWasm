@@ -1,388 +1,346 @@
-import { spawn } from "node:child_process";
-import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, extname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+// Browser-only: importing this module exposes the runner without starting a test.
+let runPromise;
+globalThis.runPSWasmBrowserSmoke = (options = {}) => runPromise ??= runSmoke(options);
 
-const scriptRoot = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(scriptRoot, "..", "..");
-const options = parseArgs(process.argv.slice(2));
-const root = resolve(options.root ?? join(repoRoot, "artifacts", "BrowserHost", "wwwroot"));
-const fixture = resolve(options.fixture ?? join(scriptRoot, "dom-smoke.html"));
-const port = Number(options.port ?? 5010);
-const debugPort = Number(options["debug-port"] ?? 9222);
-const timeout = Number(options.timeout ?? 45_000);
-const userDataDir = resolve(options["user-data-dir"] ?? join(repoRoot, "artifacts", "BrowserDomSmoke", "user-data"));
+async function runSmoke(options) {
+  const report = {
+    schemaVersion: 1, runId: new URL(location.href).searchParams.get("runId") ?? "", status: "failed",
+    startedAt: new Date().toISOString(), finishedAt: "", checks: [], errors: []
+  };
+  const timeoutMs = options?.timeoutMs ?? 45_000;
+  const deadline = performance.now() + timeoutMs;
+  const storageKeys = ["pswasm.domSmokeName", "pswasm.domSmokeTemporary"];
+  const storedValues = new Map(), sessions = new Set(), pendingOperations = new Set(), nodes = [], bridgeHooks = [];
+  const events = new Set(), bindings = new Set();
+  const originalAutoRun = Object.getOwnPropertyDescriptor(globalThis, "pswasmDisableAutoRun");
+  const originalConsoleError = console.error;
+  const originalStyle = document.getElementById("pswasm-default-styles");
+  let api, domSession, apiSession, expectedChecks, fixture, stopped = false;
 
-if (!globalThis.WebSocket) {
-  throw new Error("This smoke test requires a Node.js runtime with global WebSocket support.");
-}
+  const captureError = event => report.errors.push(event.error ? errorText(event.error) :
+    event.message || `Resource error: ${event.target?.src || event.target?.href || "unknown resource"}`);
+  const captureRejection = event => report.errors.push(`Unhandled rejection: ${errorText(event.reason)}`);
+  const consoleHook = (...args) => {
+    report.errors.push(`console.error: ${args.map(errorText).join(" ")}`);
+    Reflect.apply(originalConsoleError, console, args);
+  };
+  console.error = consoleHook;
+  window.addEventListener("error", captureError, true);
+  window.addEventListener("unhandledrejection", captureRejection);
 
-if (!existsSync(join(root, "app.js"))) {
-  throw new Error(`Published BrowserHost assets were not found under '${root}'. Run the publish step first.`);
-}
-
-if (!existsSync(fixture)) {
-  throw new Error(`DOM smoke fixture was not found: '${fixture}'.`);
-}
-
-const server = await startStaticServer(root, fixture, port);
-
-if (options.manual) {
-  console.log("PSWasm Browser DOM smoke server is running.");
-  console.log(`Open http://127.0.0.1:${server.port}/dom-smoke.html in Edge Tools or the VS Code integrated browser.`);
-  console.log("Expected manual check: status starts as 'DOM event handler ready.', a two-column HTML table is visible, changing the name and clicking the button updates the status text.");
-  console.log("Press Ctrl+C to stop the server.");
-  await waitForever();
-  process.exit(0);
-}
-
-const browserPath = resolveBrowserPath(options.browser);
-const browser = launchBrowser(browserPath, debugPort, userDataDir);
-
-try {
-  const cdp = await connectToBrowser(debugPort, timeout);
-  const { sessionId } = await createPageSession(cdp, `http://127.0.0.1:${server.port}/dom-smoke.html`);
-  const browserErrors = collectBrowserErrors(cdp);
-
-  await waitFor(
-    () => evaluate(cdp, sessionId, "document.querySelector('#dom-sample-status')?.textContent"),
-    text => text === "DOM event handler ready.",
-    timeout,
-    "DOM event handler did not become ready.");
-
-  await waitFor(
-    () => evaluate(cdp, sessionId, `
-Array.from(document.querySelectorAll('#dom-sample-html td')).map(td => td.textContent).join('|') +
-  '|' + document.querySelector('#dom-sample-html')?.innerHTML.includes('&lt;Ready&gt;')
-`),
-    value => value === "PowerShell|<Ready>|true",
-    timeout,
-    "DOM HTML rendering did not create the expected encoded table.");
-
-  await evaluate(cdp, sessionId, `
-(() => {
-  const input = document.querySelector('#dom-sample-name');
-  input.value = 'Browser Smoke';
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  document.querySelector('#dom-sample-button').click();
-})()
-`);
-
-  const expected = "Hello Browser Smoke from a PowerShell DOM event.";
-  await waitFor(
-    () => evaluate(cdp, sessionId, "document.querySelector('#dom-sample-status')?.textContent"),
-    text => text === expected,
-    timeout,
-    `DOM event did not update status text to '${expected}'.`);
-
-  await waitFor(
-    () => evaluate(cdp, sessionId, "localStorage.getItem('pswasm.domSmokeName')"),
-    value => value === "Browser Smoke",
-    timeout,
-    "DOM storage binding did not persist the input value.");
-
-  if (browserErrors.length > 0) {
-    throw new Error(`Browser console errors were reported:${SystemLineBreak}${browserErrors.join(SystemLineBreak)}`);
-  }
-
-  console.log("PASS browser DOM smoke");
-} finally {
-  browser.kill();
-  await closeServer(server);
-}
-
-function parseArgs(args) {
-  const parsed = {};
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg.startsWith("--")) {
-      continue;
-    }
-
-    const key = arg.slice(2);
-    const next = args[index + 1];
-    if (next === undefined || next.startsWith("--")) {
-      parsed[key] = true;
-      continue;
-    }
-
-    parsed[key] = next;
-    index += 1;
-  }
-
-  return parsed;
-}
-
-function resolveBrowserPath(explicitPath) {
-  if (explicitPath) {
-    return explicitPath;
-  }
-
-  if (process.env.PSWASM_BROWSER) {
-    return process.env.PSWASM_BROWSER;
-  }
-
-  const candidates = process.platform === "win32"
-    ? [
-        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
-      ]
-    : process.platform === "darwin"
-      ? [
-          "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-          "/Applications/Chromium.app/Contents/MacOS/Chromium"
-        ]
-      : [
-          "/usr/bin/microsoft-edge",
-          "/usr/bin/google-chrome",
-          "/usr/bin/chromium",
-          "/usr/bin/chromium-browser"
-        ];
-
-  const candidate = candidates.find(existsSync);
-  if (!candidate) {
-    throw new Error("No supported browser was found. Set --browser or PSWASM_BROWSER to an Edge, Chrome, or Chromium executable.");
-  }
-
-  return candidate;
-}
-
-function launchBrowser(browserPath, remoteDebuggingPort, profileDir) {
-  rmSync(profileDir, { recursive: true, force: true });
-  mkdirSync(profileDir, { recursive: true });
-
-  const args = [
-    "--headless=new",
-    `--remote-debugging-port=${remoteDebuggingPort}`,
-    `--user-data-dir=${profileDir}`,
-    "--no-first-run",
-    "--disable-background-networking",
-    "--disable-default-apps",
-    "--disable-extensions",
-    "--disable-gpu",
-    "about:blank"
-  ];
-
-  return spawn(browserPath, args, { stdio: "ignore" });
-}
-
-async function startStaticServer(staticRoot, fixturePath, requestedPort) {
-  const fixtureHtml = readFileSync(fixturePath);
-  const server = createServer((request, response) => {
+  const assert = (condition, message) => { if (!condition) throw new Error(message); };
+  const ensureTime = () => {
+    if (stopped || performance.now() >= deadline) throw new Error(`Browser smoke timed out after ${timeoutMs} ms.`);
+  };
+  async function bounded(task) {
+    const source = Promise.resolve(task);
+    pendingOperations.add(source);
+    source.then(() => pendingOperations.delete(source), () => pendingOperations.delete(source));
+    ensureTime();
+    let timer;
     try {
-      const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
-      if (url.pathname === "/dom-smoke.html") {
-        send(response, 200, "text/html; charset=utf-8", fixtureHtml);
-        return;
-      }
-
-      const filePath = resolve(staticRoot, "." + decodeURIComponent(url.pathname));
-      if (!isInside(staticRoot, filePath) || !existsSync(filePath)) {
-        send(response, 404, "text/plain; charset=utf-8", "Not Found");
-        return;
-      }
-
-      send(response, 200, contentType(filePath), readFileSync(filePath));
-    } catch (error) {
-      send(response, 500, "text/plain; charset=utf-8", String(error));
-    }
-  });
-
-  await new Promise((resolveListen, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(requestedPort, "127.0.0.1", resolveListen);
-  });
-
-  return { server, port: server.address().port };
-}
-
-function closeServer({ server }) {
-  return new Promise(resolveClose => server.close(resolveClose));
-}
-
-function isInside(parent, child) {
-  const normalizedParent = resolve(parent);
-  const normalizedChild = resolve(child);
-  return normalizedChild === normalizedParent || normalizedChild.startsWith(normalizedParent + sep);
-}
-
-function contentType(filePath) {
-  return {
-    ".css": "text/css; charset=utf-8",
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".wasm": "application/wasm"
-  }[extname(filePath).toLowerCase()] ?? "application/octet-stream";
-}
-
-function send(response, statusCode, type, body) {
-  response.writeHead(statusCode, { "Content-Type": type });
-  response.end(body);
-}
-
-async function connectToBrowser(remoteDebuggingPort, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+      const result = await Promise.race([source, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Browser smoke timed out after ${timeoutMs} ms.`)),
+          Math.max(1, deadline - performance.now()));
+      })]);
+      ensureTime();
+      return result;
+    } finally { clearTimeout(timer); }
+  }
+  async function check(name, action) {
+    const entry = { name, status: "failed" };
+    report.checks.push(entry);
     try {
-      const response = await fetch(`http://127.0.0.1:${remoteDebuggingPort}/json/version`);
-      if (response.ok) {
-        const info = await response.json();
-        return await CdpClient.connect(info.webSocketDebuggerUrl);
-      }
-    } catch {
-    }
-
-    await delay(100);
+      const details = await bounded(Promise.resolve().then(() => { ensureTime(); return action(); }));
+      entry.status = "passed";
+      if (details !== undefined) entry.details = details;
+    } catch (error) { entry.error = errorText(error); throw error; }
   }
-
-  throw new Error("Timed out waiting for browser DevTools endpoint.");
-}
-
-async function createPageSession(cdp, url) {
-  const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
-  await cdp.send("Runtime.enable", {}, sessionId);
-  await cdp.send("Log.enable", {}, sessionId);
-  await cdp.send("Page.enable", {}, sessionId);
-  await cdp.send("Page.navigate", { url }, sessionId);
-  await waitFor(
-    () => evaluate(cdp, sessionId, "document.readyState"),
-    state => state === "interactive" || state === "complete",
-    timeout,
-    "Page did not load.");
-  return { targetId, sessionId };
-}
-
-function collectBrowserErrors(cdp) {
-  const errors = [];
-  cdp.on("Runtime.exceptionThrown", event => {
-    errors.push(event.params?.exceptionDetails?.text ?? "Runtime exception");
-  });
-  cdp.on("Runtime.consoleAPICalled", event => {
-    if (event.params?.type === "error") {
-      errors.push((event.params.args ?? []).map(formatRemoteValue).join(" "));
+  async function waitFor(predicate, message) {
+    while (!predicate()) {
+      ensureTime();
+      await bounded(new Promise(resolve => setTimeout(resolve, 20)));
     }
-  });
-  cdp.on("Log.entryAdded", event => {
-    if (event.params?.entry?.level === "error") {
-      errors.push(event.params.entry.text);
-    }
-  });
-  return errors;
-}
-
-async function evaluate(cdp, sessionId, expression) {
-  const response = await cdp.send("Runtime.evaluate", {
-    expression,
-    awaitPromise: true,
-    returnByValue: true
-  }, sessionId);
-
-  if (response.exceptionDetails) {
-    throw new Error(response.exceptionDetails.text ?? "Runtime.evaluate failed.");
+    assert(!stopped, message);
   }
-
-  return response.result?.value;
-}
-
-function formatRemoteValue(value) {
-  if (value?.value !== undefined) {
-    return String(value.value);
+  async function createSession(environment = {}) {
+    ensureTime();
+    return bounded(api.createPowerShellSession({ environment }).then(async session => {
+      sessions.add(session);
+      // A creation that finishes after a timeout must not leak an unreachable session.
+      if (stopped) { await session.dispose(); sessions.delete(session); }
+      return session;
+    }));
   }
-
-  return value?.description ?? value?.type ?? "";
-}
-
-async function waitFor(getValue, predicate, timeoutMs, failureMessage) {
-  const deadline = Date.now() + timeoutMs;
-  let lastValue;
-  while (Date.now() < deadline) {
-    lastValue = await getValue();
-    if (predicate(lastValue)) {
-      return lastValue;
-    }
-
-    await delay(100);
+  function addNode(tag, parent = document.body) {
+    const node = document.createElement(tag);
+    nodes.push(node);
+    parent.append(node);
+    return node;
   }
-
-  throw new Error(`${failureMessage} Last value: ${JSON.stringify(lastValue)}`);
-}
-
-function delay(ms) {
-  return new Promise(resolveDelay => setTimeout(resolveDelay, ms));
-}
-
-function waitForever() {
-  return new Promise(resolveWait => {
-    const stop = async () => {
-      await closeServer(server);
-      resolveWait();
+  function trackBridge(method, ids) {
+    const bridge = globalThis.pswasmDom, original = bridge[method];
+    const hook = (id, ...args) => {
+      ids.add(id);
+      return Reflect.apply(original, bridge, [id, ...args]);
     };
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
-  });
+    bridge[method] = hook;
+    bridgeHooks.push({ bridge, method, original, hook });
+  }
+
+  try {
+    await check("fixture-elements", () => {
+      assert(Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= 120_000,
+        "timeoutMs must be a positive number no greater than 120000.");
+      assert(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(report.runId), "The URL must contain a GUID runId.");
+      const required = selector => {
+        const node = document.querySelector(selector);
+        assert(node, `Missing required fixture element: ${selector}`);
+        return node;
+      };
+      fixture = {
+        form: required("#dom-sample-form"), input: required("#dom-sample-name"), button: required("#dom-sample-button"),
+        status: required("#dom-sample-status"), html: required("#dom-sample-html"), script: required("#dom-smoke-pwsh")
+      };
+      fixture.snapshot = {
+        value: fixture.input.value, disabled: fixture.button.disabled,
+        status: fixture.status.textContent, html: fixture.html.innerHTML
+      };
+      for (const key of storageKeys) storedValues.set(key, localStorage.getItem(key));
+      for (const key of storageKeys) localStorage.removeItem(key);
+    });
+
+    await check("module-import", async () => {
+      globalThis.pswasmDisableAutoRun = true;
+      const manifest = await bounded(fetch(new URL("./checks.json", import.meta.url)));
+      assert(manifest.ok, `Unable to load checks.json (${manifest.status}).`);
+      expectedChecks = await bounded(manifest.json());
+      assert(Array.isArray(expectedChecks) && expectedChecks.length > 0 &&
+        expectedChecks.every(name => typeof name === "string"), "Invalid smoke check manifest.");
+      api = await bounded(import("/app.js"));
+      for (const name of ["executePowerShell", "executePowerShellResult", "createPowerShellSession",
+        "executePowerShellSession", "executePowerShellSessionResult", "disposePowerShellSession",
+        "runPowerShellScripts", "renderPowerShellResult"]) {
+        assert(typeof api[name] === "function", `Missing browser API export: ${name}`);
+      }
+      trackBridge("registerEvent", events);
+      trackBridge("registerStorageBinding", bindings);
+    });
+
+    await check("dom-readiness", async () => {
+      domSession = await createSession();
+      const output = addNode("pre");
+      output.hidden = true;
+      await bounded(api.runPowerShellScripts({ selector: "#dom-smoke-pwsh", session: domSession, output }));
+      assert(!output.querySelector(".pswasm-stream-error"), `Fixture script returned an error: ${output.textContent}`);
+      await waitFor(() => fixture.status.textContent === "DOM event handler ready.", "DOM handler did not become ready.");
+      assert(fixture.input.value === "PSWasm", "DOM value/property bridge did not initialize the input.");
+    });
+    await check("dom-table-encoding", () => {
+      const cells = Array.from(fixture.html.querySelectorAll("td"), cell => cell.textContent);
+      assert(cells.join("|") === "PowerShell|<Ready>", `Unexpected table cells: ${cells.join("|")}`);
+      assert(fixture.html.innerHTML.includes("&lt;Ready&gt;"), "Table markup did not encode <Ready>.");
+      return { cells, encoded: true };
+    });
+    await check("dom-temporary-event-unregister", async () => {
+      fixture.button.dispatchEvent(new FocusEvent("focus"));
+      await bounded(new Promise(resolve => setTimeout(resolve, 30)));
+      assert(fixture.status.textContent === "DOM event handler ready.", "Unregistered focus handler still ran.");
+    });
+    await check("dom-event-submit-prevent-default", async () => {
+      fixture.input.value = "Browser Smoke";
+      fixture.input.dispatchEvent(new Event("input", { bubbles: true }));
+      let submitEvent;
+      const observe = event => { submitEvent = event; };
+      fixture.form.addEventListener("submit", observe);
+      try {
+        fixture.button.click();
+        assert(submitEvent?.defaultPrevented === true, "Submit handler did not prevent default navigation.");
+        await waitFor(() => fixture.status.textContent === "Hello Browser Smoke from a PowerShell DOM event.",
+          "Submit handler did not update the status.");
+      } finally { fixture.form.removeEventListener("submit", observe); }
+      return { defaultPrevented: true, text: fixture.status.textContent };
+    });
+    await check("dom-button-reset", async () => {
+      await waitFor(() => fixture.button.disabled === false, "Submit handler did not re-enable the button.");
+    });
+    await check("dom-storage-binding", () => {
+      assert(localStorage.getItem(storageKeys[0]) === "Browser Smoke", "Input binding did not persist Browser Smoke.");
+    });
+    await check("dom-temporary-binding-unregister", () => {
+      assert(localStorage.getItem(storageKeys[1]) === null, "Unregistered temporary binding still persisted the input.");
+    });
+
+    await check("api-text", async () => {
+      const text = await bounded(api.executePowerShell("'API text smoke'; Write-Host 'Host text'; 2 + 3"));
+      assert(text === "API text smoke\nHost text\n5", `Unexpected text API output: ${text}`);
+    });
+    await check("api-stream-records", async () => {
+      const result = await bounded(api.executePowerShellResult(`
+'Smoke output <safe>'
+Write-Host 'Smoke host'
+$DebugPreference = 'Continue'
+$InformationPreference = 'Continue'
+$VerbosePreference = 'Continue'
+Write-Debug 'Smoke debug'
+Write-Information 'Smoke information'
+Write-Progress -Activity 'SmokeProgress' -Status 'Halfway' -PercentComplete 50
+Write-Verbose 'Smoke verbose'
+Write-Warning 'Smoke warning'
+Write-Error 'Smoke error'
+`));
+      // Write-Host currently follows the runtime's text-compatible Output behavior.
+      const streams = ["Output", "Output", "Debug", "Information", "Progress", "Verbose", "Warning", "Error"];
+      assert(typeof result.text === "string" && Array.isArray(result.records), "Structured result has the wrong shape.");
+      assert(result.records.length === streams.length, `Expected eight records, received ${result.records.length}.`);
+      assert(result.records.map(record => record.stream).join("|") === streams.join("|"), "Stream ordering changed.");
+      const texts = ["Smoke output <safe>", "Smoke host", "Smoke debug", "Smoke information",
+        "SmokeProgress - Halfway - 50%", "Smoke verbose", "Smoke warning", "Smoke error"];
+      assert(JSON.stringify(result.records.map(record => record.text)) === JSON.stringify(texts), "Stream text changed.");
+      assert(result.text === texts.map((text, index) => streams[index] === "Output" ? text : `[${streams[index]}] ${text}`).join("\n"),
+        "Joined stream output did not match the structured records.");
+      const output = addNode("pre");
+      output.hidden = true;
+      api.renderPowerShellResult(result, output);
+      assert(output.textContent.includes("Smoke output <safe>") && !output.querySelector("safe"),
+        "Rendering did not preserve literal output text.");
+      for (const stream of streams.slice(2)) {
+        assert(output.querySelector(`.pswasm-stream-${stream.toLowerCase()}`), `Missing rendered ${stream} stream.`);
+      }
+      return { streams };
+    });
+    await check("api-environment", async () => {
+      const text = await bounded(api.executePowerShell("$env:PSWASM_SMOKE", { environment: { PSWASM_SMOKE: "LocalOnly" } }));
+      assert(text === "LocalOnly", `Environment injection failed: ${text}`);
+    });
+    await check("api-session-persistence", async () => {
+      apiSession = await createSession({ PSWASM_SMOKE_SESSION: "SessionOnly" });
+      assert(typeof apiSession.id === "string" && apiSession.id.length > 0, "Session id is missing.");
+      assert(await bounded(apiSession.execute("$SmokeValue = 7; function Get-SmokeValue { $SmokeValue }; 'first'")) === "first",
+        "Initial session execution failed.");
+      const text = await bounded(api.executePowerShellSession(apiSession,
+        "$SmokeValue += 2; Get-SmokeValue; $env:PSWASM_SMOKE_SESSION"));
+      assert(text === "9\nSessionOnly", `Session state did not persist: ${text}`);
+    });
+    await check("api-session-output-reset", async () => {
+      const result = await bounded(api.executePowerShellSessionResult(apiSession.id, "Get-SmokeValue"));
+      assert(result.text === "9" && result.records.length === 1 && result.records[0].stream === "Output",
+        "Session output accumulated earlier records.");
+      assert(await bounded(api.executePowerShell("Get-SmokeValue", { session: apiSession })) === "9",
+        "Session option routing failed.");
+      assert((await bounded(apiSession.executeResult("Get-SmokeValue"))).text === "9", "Session executeResult helper failed.");
+    });
+    await check("api-session-disposal", async () => {
+      assert(await bounded(apiSession.dispose()) === true, "First disposal did not return true.");
+      sessions.delete(apiSession);
+      assert(await bounded(api.disposePowerShellSession(apiSession.id)) === false, "Repeated disposal did not return false.");
+      let rejected = false;
+      try { await bounded(apiSession.execute("'must not execute'")); }
+      catch (error) {
+        rejected = /does not exist/i.test(errorText(error));
+        assert(rejected, `Disposed session failed unexpectedly: ${errorText(error)}`);
+      }
+      assert(rejected, "Executing a disposed session unexpectedly succeeded.");
+    });
+    await check("external-script-order-shared-session", async () => {
+      const host = addNode("div");
+      host.hidden = true;
+      const output = addNode("pre", host);
+      const addScript = (text, source) => {
+        const script = addNode("script", host);
+        script.type = "text/pswasm-smoke";
+        script.className = "pswasm-smoke-loader-script";
+        if (source) script.setAttribute("src", source);
+        else script.textContent = text;
+      };
+      addScript("$ScriptOrder = 'first'; function Get-SmokeOrder { $ScriptOrder }; 'inline first'");
+      addScript("", "/sample.ps1");
+      addScript("$ScriptOrder += ':last'; Get-SmokeOrder");
+      await bounded(api.runPowerShellScripts({ selector: ".pswasm-smoke-loader-script", output }));
+      const text = output.textContent, order = ["inline first", "PSWasm external PowerShell script", "Loaded from sample.ps1", "first:last"];
+      assert(text === order.join("\n"), `External script order/shared session output changed: ${text}`);
+      assert(!output.querySelector(".pswasm-stream-error"), `Script loader returned an error: ${text}`);
+      return { order };
+    });
+    await check("browser-errors", async () => {
+      await bounded(new Promise(resolve => setTimeout(resolve, 20)));
+      assert(report.errors.length === 0, `Browser errors: ${report.errors.join("; ")}`);
+    });
+  } catch (error) {
+    report.errors.push(errorText(error));
+  } finally {
+    stopped = true;
+    const cleanup = { name: "cleanup", status: "passed" }, cleanupErrors = [];
+    report.checks.push(cleanup);
+    // The public API has no cancellation contract. Drain work before restoring shared state.
+    let drainTimer;
+    try {
+      await Promise.race([Promise.allSettled([...pendingOperations]), new Promise(resolve => {
+        drainTimer = setTimeout(resolve, 2_000);
+      })]);
+    } finally { clearTimeout(drainTimer); }
+    if (pendingOperations.size > 0) {
+      cleanupErrors.push("Runtime work remains pending after timeout; discard this fixture tab.");
+      cleanup.details = { pendingOperations: pendingOperations.size, requiresTabClose: true };
+    }
+    const attempt = async action => {
+      let timer;
+      try {
+        await Promise.race([Promise.resolve().then(action), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Cleanup operation timed out.")), 2_000);
+        })]);
+      } catch (error) { cleanupErrors.push(errorText(error)); }
+      finally { clearTimeout(timer); }
+    };
+    // Track only registrations created by this fixture, including partial initialization.
+    if (api && domSession && pendingOperations.size === 0) {
+      const cleanRuntime = async script => {
+        const result = await domSession.executeResult(script);
+        assert(!result.records.some(record => record.stream === "Error"), `Runtime cleanup failed: ${result.text}`);
+      };
+      for (const id of events) await attempt(() => cleanRuntime(`Unregister-DomEvent ${id}`));
+      for (const id of bindings) await attempt(() => cleanRuntime(`Unregister-DomStorageBinding ${id}`));
+      await attempt(() => cleanRuntime("if ($Dom) { Remove-DomSession $Dom }"));
+    }
+    for (const id of events) await attempt(() => globalThis.pswasmDom.unregisterEvent(id));
+    for (const id of bindings) await attempt(() => globalThis.pswasmDom.unregisterStorageBinding(id));
+    for (const session of sessions) await attempt(() => session.dispose());
+    for (const { bridge, method, original, hook } of bridgeHooks) {
+      if (bridge[method] === hook) bridge[method] = original;
+    }
+    for (const node of nodes.reverse()) node.remove();
+    if (!originalStyle) document.getElementById("pswasm-default-styles")?.remove();
+    if (fixture?.snapshot) {
+      fixture.input.value = fixture.snapshot.value;
+      fixture.button.disabled = fixture.snapshot.disabled;
+      fixture.status.textContent = fixture.snapshot.status;
+      fixture.html.innerHTML = fixture.snapshot.html;
+    }
+    for (const [key, value] of storedValues) {
+      await attempt(() => value === null ? localStorage.removeItem(key) : localStorage.setItem(key, value));
+    }
+    if (originalAutoRun) Object.defineProperty(globalThis, "pswasmDisableAutoRun", originalAutoRun);
+    else delete globalThis.pswasmDisableAutoRun;
+    window.removeEventListener("error", captureError, true);
+    window.removeEventListener("unhandledrejection", captureRejection);
+    if (console.error === consoleHook) console.error = originalConsoleError;
+    if (cleanupErrors.length) {
+      cleanup.status = "failed";
+      cleanup.error = cleanupErrors.join("; ");
+      report.errors.push(`Cleanup failed: ${cleanup.error}`);
+    }
+  }
+  if (!expectedChecks || JSON.stringify(report.checks.map(check => check.name)) !== JSON.stringify(expectedChecks)) {
+    report.errors.push("The required smoke assertion set did not complete.");
+  }
+  if (report.errors.length === 0 && report.checks.every(check => check.status === "passed")) report.status = "passed";
+  report.finishedAt = new Date().toISOString();
+  globalThis.pswasmBrowserSmokeResult = report;
+  return report;
 }
 
-const SystemLineBreak = "\n";
-
-class CdpClient {
-  constructor(socket) {
-    this.socket = socket;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.handlers = new Map();
-
-    socket.addEventListener("message", event => this.handleMessage(event.data));
-  }
-
-  static connect(url) {
-    return new Promise((resolveConnect, rejectConnect) => {
-      const socket = new WebSocket(url);
-      socket.addEventListener("open", () => resolveConnect(new CdpClient(socket)));
-      socket.addEventListener("error", () => rejectConnect(new Error("Failed to connect to browser WebSocket.")));
-    });
-  }
-
-  send(method, params = {}, sessionId = undefined) {
-    const id = this.nextId++;
-    const message = sessionId === undefined ? { id, method, params } : { id, method, params, sessionId };
-    this.socket.send(JSON.stringify(message));
-    return new Promise((resolveSend, rejectSend) => {
-      this.pending.set(id, { resolve: resolveSend, reject: rejectSend });
-    });
-  }
-
-  on(method, handler) {
-    const handlers = this.handlers.get(method) ?? [];
-    handlers.push(handler);
-    this.handlers.set(method, handlers);
-  }
-
-  handleMessage(data) {
-    const message = JSON.parse(data);
-    if (message.id !== undefined) {
-      const pending = this.pending.get(message.id);
-      if (!pending) {
-        return;
-      }
-
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(message.error.message));
-      } else {
-        pending.resolve(message.result ?? {});
-      }
-
-      return;
-    }
-
-    for (const handler of this.handlers.get(message.method) ?? []) {
-      handler(message);
-    }
-  }
+function errorText(error) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try { return JSON.stringify(error) ?? String(error); } catch { return String(error); }
 }

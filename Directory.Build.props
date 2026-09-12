@@ -1,5 +1,22 @@
 <Project>
   <PropertyGroup>
+    <ArtifactsPath>$(MSBuildThisFileDirectory).WorkDir/build</ArtifactsPath>
+    <!-- Keep legacy generated files out of source globs during migration. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/bin/**;**/obj/**;$(MSBuildThisFileDirectory).WorkDir/**</DefaultItemExcludes>
+    <PSWasmEnableDom Condition="'$(PSWasmEnableDom)' == ''">true</PSWasmEnableDom>
+    <PSWasmEnableWeb Condition="'$(PSWasmEnableWeb)' == ''">true</PSWasmEnableWeb>
+    <PSWasmEnableCrypto Condition="'$(PSWasmEnableCrypto)' == ''">true</PSWasmEnableCrypto>
+    <PSWasmEnableAzureAuth Condition="'$(PSWasmEnableAzureAuth)' == ''">true</PSWasmEnableAzureAuth>
+    <!-- Feature flags change the compiled assemblies, not just the publish destination. -->
+    <_DomBit Condition="'$(PSWasmEnableDom)' == 'true'">1</_DomBit>
+    <_DomBit Condition="'$(_DomBit)' == ''">0</_DomBit>
+    <_WebBit Condition="'$(PSWasmEnableWeb)' == 'true'">1</_WebBit>
+    <_WebBit Condition="'$(_WebBit)' == ''">0</_WebBit>
+    <_CryptoBit Condition="'$(PSWasmEnableCrypto)' == 'true'">1</_CryptoBit>
+    <_CryptoBit Condition="'$(_CryptoBit)' == ''">0</_CryptoBit>
+    <_AuthBit Condition="'$(PSWasmEnableAzureAuth)' == 'true'">1</_AuthBit>
+    <_AuthBit Condition="'$(_AuthBit)' == ''">0</_AuthBit>
+    <ArtifactsProjectName>$(MSBuildProjectName)-d$(_DomBit)w$(_WebBit)c$(_CryptoBit)a$(_AuthBit)</ArtifactsProjectName>
     <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <Deterministic>true</Deterministic>

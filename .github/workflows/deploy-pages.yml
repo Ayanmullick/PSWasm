@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -49,25 +49,27 @@ jobs:
         run: dotnet workload install wasm-tools
 
       - name: Build runtime
-        run: dotnet build src/PowerShell.Wasm/PowerShell.Wasm.csproj --configuration Release
+        shell: pwsh
+        run: ./tools/Invoke-WorkspaceCommand.ps1 dotnet build src/PowerShell.Wasm/PowerShell.Wasm.csproj --configuration Release
 
       - name: Verify runtime behavior
-        run: dotnet run --project tests/PowerShell.Wasm.Verify/PowerShell.Wasm.Verify.csproj --configuration Release
+        shell: pwsh
+        run: ./tools/Invoke-WorkspaceCommand.ps1 dotnet run --project tests/PowerShell.Wasm.Verify/PowerShell.Wasm.Verify.csproj --configuration Release
 
       - name: Check browser module syntax
         run: node --check samples/BrowserHost/wwwroot/app.js
 
       - name: Publish browser host
-        run: dotnet publish samples/BrowserHost/PSWasm.BrowserHost.csproj --configuration Release --runtime browser-wasm --output publish /p:UseAppHost=false
+        shell: pwsh
+        run: ./tools/Invoke-WorkspaceCommand.ps1 dotnet publish samples/BrowserHost/PSWasm.BrowserHost.csproj --configuration Release --runtime browser-wasm --output .WorkDir/build/publish/BrowserHost /p:UseAppHost=false
 
       - name: Publish hosted browser flavors
         shell: pwsh
         run: |
           $Params = @{
             Flavor = @('core','web','AzAuth','full')
-            OutputRoot = 'artifacts/BrowserFlavors'
-            HostedRoot = 'publish/wwwroot'
-            NoRestore = $true
+            OutputRoot = '.WorkDir/build/publish/BrowserFlavors'
+            HostedRoot = '.WorkDir/build/publish/BrowserHost/wwwroot'
           }
           $HostedVersion = '${{ github.event.inputs.hosted_version }}'
           if ($HostedVersion -ne '') {
@@ -81,7 +83,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: publish/wwwroot
+          path: .WorkDir/build/publish/BrowserHost/wwwroot
 
   deploy:
     environment:
