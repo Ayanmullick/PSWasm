@@ -14,53 +14,46 @@ param(
     [switch]$NoRestore
 )
 
+$ErrorActionPreference = 'Stop'
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $PSScriptRoot 'WorkspacePathSafety.ps1')
 $WorkspaceCommand = Join-Path $PSScriptRoot 'Invoke-WorkspaceCommand.ps1'
 $WorkRoot = Join-Path $RepoRoot '.WorkDir'
+$PathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
 
 function Resolve-InRepoPath {
     param([string]$Path, [string]$Name)
 
-    $FullPath = if ([IO.Path]::IsPathRooted($Path)) {
-        [IO.Path]::GetFullPath($Path)
-    } else {
-        [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Path))
-    }
+    $FullPath = ConvertTo-WorkspaceFullPath $Path
 
     $AllowedRoots = @((Join-Path $WorkRoot 'build/publish'), (Join-Path $WorkRoot 'TestResults'))
     if (-not ($AllowedRoots | Where-Object {
-        $FullPath.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+        $FullPath.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, $PathComparison)
     })) {
         throw "$Name must be a dedicated folder under .WorkDir/build/publish or .WorkDir/TestResults: $FullPath"
     }
 
-    $Ancestor = $FullPath
-    while ($Ancestor -and $Ancestor.StartsWith($RepoRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        if ((Test-Path -LiteralPath $Ancestor) -and
-            ((Get-Item -LiteralPath $Ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "$Name must not use a symbolic link or junction: $Ancestor"
-        }
-        $Ancestor = [IO.Path]::GetDirectoryName($Ancestor)
-    }
-
-    $FullPath
+    Assert-WorkspacePathSafe $FullPath $RepoRoot
 }
 
 function Copy-BrowserPackage {
     param([string]$SourceRoot, [string]$DestinationRoot)
 
-    $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
+    $SourceRoot = ConvertTo-WorkspaceFullPath $SourceRoot
     $DestinationRoot = Resolve-InRepoPath $DestinationRoot 'Hosted destination'
 
-    if (-not $DestinationRoot.StartsWith($RepoRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not $DestinationRoot.StartsWith($RepoRoot + [IO.Path]::DirectorySeparatorChar, $PathComparison)) {
         throw "Hosted destination must stay inside the repository: $DestinationRoot"
     }
-    if ($SourceRoot.Equals($DestinationRoot, [StringComparison]::OrdinalIgnoreCase) -or
-        $SourceRoot.StartsWith($DestinationRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-        $DestinationRoot.StartsWith($SourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    if ($SourceRoot.Equals($DestinationRoot, $PathComparison) -or
+        $SourceRoot.StartsWith($DestinationRoot + [IO.Path]::DirectorySeparatorChar, $PathComparison) -or
+        $DestinationRoot.StartsWith($SourceRoot + [IO.Path]::DirectorySeparatorChar, $PathComparison)) {
         throw "Hosted destination must not overlap the source package: $DestinationRoot"
     }
 
+    Assert-WorkspaceTreeSafe $SourceRoot $RepoRoot
+    if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) { throw "Package source is missing: $SourceRoot" }
+    Assert-WorkspaceTreeSafe $DestinationRoot $RepoRoot
     if (Test-Path -LiteralPath $DestinationRoot) {
         Remove-Item -LiteralPath $DestinationRoot -Recurse -Force
     }
@@ -71,7 +64,7 @@ function Copy-BrowserPackage {
 
 $OutputRoot = Resolve-InRepoPath $OutputRoot 'OutputRoot'
 $HostedRoot = if ($HostedRoot -ne '') { Resolve-InRepoPath $HostedRoot 'HostedRoot' } else { '' }
-if ($HostedRoot -ne '' -and $HostedRoot.Equals($OutputRoot, [StringComparison]::OrdinalIgnoreCase)) {
+if ($HostedRoot -ne '' -and $HostedRoot.Equals($OutputRoot, $PathComparison)) {
     throw 'HostedRoot must differ from OutputRoot.'
 }
 if ($HostedRoot -eq '' -and $HostedVersion -ne '') {
@@ -80,6 +73,7 @@ if ($HostedRoot -eq '' -and $HostedVersion -ne '') {
 
 # Validate every destination before any flavor output can be removed.
 $FlavorOutputs = @($Flavor | ForEach-Object { Resolve-InRepoPath (Join-Path $OutputRoot $_) 'Flavor output' })
+$HostedDestinations = @()
 if ($HostedRoot -ne '') {
     $HostedDestinations = @($Flavor | ForEach-Object {
         Resolve-InRepoPath (Join-Path $HostedRoot $_) 'Hosted destination'
@@ -90,22 +84,28 @@ if ($HostedRoot -ne '') {
     for ($Index = 0; $Index -lt $HostedDestinations.Count; $Index++) {
         for ($Other = $Index + 1; $Other -lt $HostedDestinations.Count; $Other++) {
             $Left,$Right = $HostedDestinations[$Index], $HostedDestinations[$Other]
-            if ($Left.Equals($Right, [StringComparison]::OrdinalIgnoreCase) -or
-                $Left.StartsWith($Right + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-                $Right.StartsWith($Left + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            if ($Left.Equals($Right, $PathComparison) -or
+                $Left.StartsWith($Right + [IO.Path]::DirectorySeparatorChar, $PathComparison) -or
+                $Right.StartsWith($Left + [IO.Path]::DirectorySeparatorChar, $PathComparison)) {
                 throw "Hosted destinations must not overlap each other: $Left and $Right"
             }
         }
     }
     foreach ($Destination in $HostedDestinations) {
         foreach ($Output in $FlavorOutputs) {
-            if ($Destination.Equals($Output, [StringComparison]::OrdinalIgnoreCase) -or
-                $Destination.StartsWith($Output + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-                $Output.StartsWith($Destination + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            if ($Destination.Equals($Output, $PathComparison) -or
+                $Destination.StartsWith($Output + [IO.Path]::DirectorySeparatorChar, $PathComparison) -or
+                $Output.StartsWith($Destination + [IO.Path]::DirectorySeparatorChar, $PathComparison)) {
                 throw "Hosted destination must not overlap any selected flavor output: $Destination"
             }
         }
     }
+}
+
+# Preflight all affected trees before removing any selected output, including links below a destination root.
+# The shared helper permits documented Cloud Files tags and rejects redirects; local availability is a prerequisite.
+foreach ($Destination in @($FlavorOutputs) + @($HostedDestinations)) {
+    Assert-WorkspaceTreeSafe $Destination $RepoRoot
 }
 
 $Project = [IO.Path]::Combine($RepoRoot, 'samples', 'BrowserHost', 'PSWasm.BrowserHost.csproj')
@@ -120,6 +120,7 @@ foreach ($Name in $Flavor) {
     }
 
     $Out = Resolve-InRepoPath (Join-Path $OutputRoot $Name) 'Flavor output'
+    Assert-WorkspaceTreeSafe $Out $RepoRoot
     if (Test-Path -LiteralPath $Out) {
         Remove-Item -LiteralPath $Out -Recurse -Force
     }
@@ -136,6 +137,7 @@ foreach ($Name in $Flavor) {
         exit $LASTEXITCODE
     }
 
+    Assert-WorkspaceTreeSafe $Out $RepoRoot
     if (-not $IncludeSampleHost) {
         $WwwRoot = Join-Path $Out 'wwwroot'
         foreach ($Pattern in @('index.html','index.html.br','index.html.gz','*.ps1','*.ps1.br','*.ps1.gz')) {

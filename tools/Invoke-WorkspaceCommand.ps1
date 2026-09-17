@@ -9,15 +9,9 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $Command = (Get-Command -Name $Command -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $PSScriptRoot 'WorkspacePathSafety.ps1')
 $TempRoot = Join-Path $Root '.WorkDir/temp'
-$Ancestor = $TempRoot
-while ($Ancestor -and $Ancestor.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) {
-    if ((Test-Path -LiteralPath $Ancestor) -and
-        ((Get-Item -LiteralPath $Ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-        throw "Workspace temporary storage must not use a symbolic link or junction: $Ancestor"
-    }
-    $Ancestor = [IO.Path]::GetDirectoryName($Ancestor)
-}
+Assert-WorkspaceTreeSafe $TempRoot $Root
 New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
 
 # Child processes inherit these values; the caller's environment is restored afterward.

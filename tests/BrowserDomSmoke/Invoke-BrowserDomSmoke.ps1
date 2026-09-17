@@ -12,21 +12,51 @@ $ErrorActionPreference = 'Stop'
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $ResultsRoot = Join-Path $Root '.WorkDir/TestResults/BrowserDomSmoke'
 $WorkspaceCommand = Join-Path $Root 'tools/Invoke-WorkspaceCommand.ps1'
+. (Join-Path $Root 'tools/WorkspacePathSafety.ps1')
 
 function Assert-WorkspacePath([string]$Path, [string]$Parent) {
-    $FullPath = [IO.Path]::GetFullPath($Path)
-    if (-not $FullPath.StartsWith($Parent + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    $FullPath,$Parent = (ConvertTo-WorkspaceFullPath $Path), (ConvertTo-WorkspaceFullPath $Parent)
+    $Comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if (-not $FullPath.StartsWith($Parent + [IO.Path]::DirectorySeparatorChar, $Comparison)) {
         throw "Path must be a dedicated child of ${Parent}: $FullPath"
     }
-    $Ancestor = $FullPath
-    while ($Ancestor -and $Ancestor.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) {
-        if ((Test-Path -LiteralPath $Ancestor) -and
-            ((Get-Item -LiteralPath $Ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Test paths must not traverse a symbolic link or junction: $Ancestor"
+    return Assert-WorkspacePathSafe $FullPath $Root
+}
+
+function Test-SmokeRunId($Id) {
+    if ($Id -isnot [string]) { return $false }
+    $LegacyId = [guid]::Empty
+    if ($Id.Length -eq 36 -and [guid]::TryParseExact($Id, 'D', [ref]$LegacyId)) { return $true }
+    if ($Id -cnotmatch '\A[0-9]{8}-[0-9]{6}Z(?:-(?:0[2-9]|[1-9][0-9]{1,2}))?\z') { return $false }
+    $Timestamp = [datetime]::MinValue
+    return [datetime]::TryParseExact($Id.Substring(0, 16), "yyyyMMdd-HHmmss'Z'",
+        [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$Timestamp)
+}
+
+function New-SmokeRunDirectory([DateTimeOffset]$Timestamp = [DateTimeOffset]::UtcNow) {
+    $null = Assert-WorkspacePath $ResultsRoot $Root
+    New-Item -ItemType Directory -Path $ResultsRoot -Force | Out-Null
+    $LockPath = Assert-WorkspacePath (Join-Path $ResultsRoot '.run-id.lock') $ResultsRoot
+    $Lock,$LockDeadline = $null, [DateTimeOffset]::UtcNow.AddSeconds(5)
+    try {
+        # Serialize allocation across processes. Keep the empty lock file: deleting it introduces an unlink race.
+        while ($null -eq $Lock) {
+            try { $Lock = [IO.File]::Open($LockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
+            catch [IO.IOException] {
+                if ([DateTimeOffset]::UtcNow -ge $LockDeadline) { throw }
+                Start-Sleep -Milliseconds 50
+            }
         }
-        $Ancestor = [IO.Path]::GetDirectoryName($Ancestor)
-    }
-    return $FullPath
+        $BaseId = $Timestamp.UtcDateTime.ToString("yyyyMMdd-HHmmss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+        for ($Sequence = 1; $Sequence -le 999; $Sequence++) {
+            $Id = if ($Sequence -eq 1) { $BaseId } else { '{0}-{1:00}' -f $BaseId, $Sequence }
+            $Directory = Assert-WorkspacePath (Join-Path $ResultsRoot $Id) $ResultsRoot
+            if (Test-Path -LiteralPath $Directory) { continue }
+            [IO.Directory]::CreateDirectory($Directory) | Out-Null
+            return $Directory
+        }
+        throw "No unused browser run name remains for $BaseId. Retry in a later second."
+    } finally { if ($null -ne $Lock) { $Lock.Dispose() } }
 }
 
 function Write-RunJson([string]$Path, $Value, [switch]$New) {
@@ -85,10 +115,10 @@ if ($PSCmdlet.ParameterSetName -ne 'Run') {
         $ResultJson = Get-Content -LiteralPath $ResultPath -Raw
     }
     $Report = $ResultJson | ConvertFrom-Json -AsHashtable
-    $Id = [guid]::Empty
-    if (-not [guid]::TryParseExact($Report.runId, 'D', [ref]$Id)) { throw 'Report runId must be a GUID.' }
-    $RunRoot = Assert-WorkspacePath (Join-Path $ResultsRoot $Id.ToString('D')) $ResultsRoot
-    $Run = Get-Content -LiteralPath (Join-Path $RunRoot 'run.json') -Raw | ConvertFrom-Json -AsHashtable
+    if (-not (Test-SmokeRunId $Report.runId)) { throw 'Report runId must be a UTC run name or a legacy GUID.' }
+    $RunRoot = Assert-WorkspacePath (Join-Path $ResultsRoot $Report.runId) $ResultsRoot
+    $RunPath = Assert-WorkspacePath (Join-Path $RunRoot 'run.json') $RunRoot
+    $Run = Get-Content -LiteralPath $RunPath -Raw | ConvertFrom-Json -AsHashtable
     if ($Run.state -ne 'waiting' -or [DateTimeOffset]::UtcNow -gt [DateTimeOffset]$Run.deadline) {
         throw 'This browser test run is no longer waiting for a report.'
     }
@@ -101,13 +131,7 @@ if ($PSCmdlet.ParameterSetName -ne 'Run') {
 
 $PublishRoot = Assert-WorkspacePath (Join-Path $Root '.WorkDir/build/publish/BrowserHost') $Root
 $PublishedSite = Assert-WorkspacePath (Join-Path $PublishRoot 'wwwroot') $PublishRoot
-if (Test-Path -LiteralPath $PublishRoot) {
-    foreach ($Item in Get-ChildItem -LiteralPath $PublishRoot -Recurse -Force) {
-        if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-            throw "Publish output must not traverse a symbolic link or junction: $($Item.FullName)"
-        }
-    }
-}
+Assert-WorkspaceTreeSafe $PublishRoot $Root
 if (-not $SkipPublish) {
     & $WorkspaceCommand dotnet publish (Join-Path $Root 'samples/BrowserHost/PSWasm.BrowserHost.csproj') `
         -c $Configuration -r browser-wasm -o $PublishRoot /p:UseAppHost=false --no-restore
@@ -116,24 +140,25 @@ if (-not $SkipPublish) {
 if (-not (Test-Path -LiteralPath (Join-Path $PublishedSite 'app.js') -PathType Leaf)) {
     throw 'Publish BrowserHost before using -SkipPublish.'
 }
-$ExpectedChecks = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'checks.json') -Raw | ConvertFrom-Json)
+$ChecksPath = Assert-WorkspacePath (Join-Path $PSScriptRoot 'checks.json') $Root
+$ExpectedChecks = @(Get-Content -LiteralPath $ChecksPath -Raw | ConvertFrom-Json)
 if (-not $ExpectedChecks.Count) { throw 'The browser assertion manifest is empty.' }
 
 # Check the requested port without taking over a server that belongs to someone else.
 $Probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
 try { $Probe.Start() } catch { throw "Port $Port is unavailable. Choose a free port with -Port." } finally { $Probe.Stop() }
 
-$RunId = [guid]::NewGuid().ToString('D')
-$RunRoot = Assert-WorkspacePath (Join-Path $ResultsRoot $RunId) $ResultsRoot
-$SiteRoot = Join-Path $RunRoot 'site'
+$RunRoot = New-SmokeRunDirectory
+$RunId = [IO.Path]::GetFileName($RunRoot)
+$SiteRoot = Assert-WorkspacePath (Join-Path $RunRoot 'site') $RunRoot
+Assert-WorkspaceTreeSafe $PublishedSite $Root
 New-Item -ItemType Directory -Path $SiteRoot -Force | Out-Null
-foreach ($Item in Get-ChildItem -LiteralPath $PublishedSite -Recurse -Force) {
-    if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Published test assets contain a link: $($Item.FullName)" }
-}
 Get-ChildItem -LiteralPath $PublishedSite -Force | Copy-Item -Destination $SiteRoot -Recurse
 foreach ($Name in @('dom-smoke.html','browser-dom-smoke.mjs','checks.json')) {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $Name) -Destination (Join-Path $SiteRoot $Name)
+    $FixturePath = Assert-WorkspacePath (Join-Path $PSScriptRoot $Name) $Root
+    Copy-Item -LiteralPath $FixturePath -Destination (Join-Path $SiteRoot $Name)
 }
+Assert-WorkspaceTreeSafe $SiteRoot $Root
 
 $Url = "http://127.0.0.1:$Port/dom-smoke.html?runId=$RunId"
 $Run = [ordered]@{
@@ -190,6 +215,7 @@ try {
         }
         Start-Sleep -Milliseconds 200
     }
+    $null = Assert-WorkspacePath $ReportPath $RunRoot
     $Report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json -AsHashtable
     Assert-Report $Report $Run
     if ($Report.status -eq 'passed') { $ExitCode = 0 }
@@ -205,7 +231,10 @@ try {
         if ($Stdout -and -not $Server.HasExited) { $Server.Kill($true) }
         if ($Stdout -and -not $Server.WaitForExit(5000)) { throw 'The owned test server did not stop.' }
         foreach ($Log in @(@('server.out.log',$Stdout), @('server.err.log',$Stderr))) {
-            if ($Log[1] -and $Log[1].Wait(5000)) { [IO.File]::WriteAllText((Join-Path $RunRoot $Log[0]), $Log[1].Result) }
+            if ($Log[1] -and $Log[1].Wait(5000)) {
+                $LogPath = Assert-WorkspacePath (Join-Path $RunRoot $Log[0]) $RunRoot
+                [IO.File]::WriteAllText($LogPath, $Log[1].Result)
+            }
         }
     } catch {
         $ExitCode = 1

@@ -10,6 +10,8 @@ The .NET SDK, WebAssembly workload, and `dotnet serve` must already be installed
 
 Run shell commands from the PSWasm repository root. On Windows, use `pwsh.exe -NoProfile`.
 
+The coordinator uses the shared workspace path preflight for its publish, staging, and report paths. Documented Windows Cloud Files tags are allowed, but redirects, unsupported tags, and metadata-query errors stop the check. Keep all workspace files locally available before running the test; availability is a user-managed prerequisite and is not checked automatically. See [Workspace path safety](https://github.com/Ayanmullick/PSWasm/wiki/Build-and-Validation#workspace-path-safety) for the limits of this preflight and post-move validation.
+
 ## Start and Run the Check
 
 Start the CLI and leave it running:
@@ -19,6 +21,10 @@ Start the CLI and leave it running:
 ```
 
 The command publishes BrowserHost, stages an isolated site under `.WorkDir/TestResults/BrowserDomSmoke/<runId>/site/`, starts its own `dotnet serve`, and prints a run ID and URL.
+
+New run IDs use UTC `yyyyMMdd-HHmmssZ`, for example `20260917-143025Z`. If that name already exists, allocation selects the first unused suffix from `-02` through `-999`; it never reuses an existing run directory or file. An exclusive lock serializes allocation across script processes. The empty `.WorkDir/TestResults/BrowserDomSmoke/.run-id.lock` file is intentionally persistent and must not be deleted while allocators may be running.
+
+Existing GUID-named runs and their evidence remain untouched. Legacy GUID IDs are still accepted for report validation, subject to the same exact run-ID match, waiting-state, and deadline checks.
 
 | Option | Purpose |
 | --- | --- |
@@ -48,6 +54,16 @@ Replace `<runId>` with the printed ID. `-ResultPath` accepts an absolute path un
 Submission validates the schema, run ID, timestamps, and expected assertions. A passing report must contain every expected check in order with no failures or errors. Rejected submissions do not complete the waiting run. An accepted report is written to that run's `result.json`.
 
 Wait for the original CLI to finish. It exits `0` for a validated pass or `1` for a failed report, timeout, or server cleanup failure. It stops only the server it started. Close only the MCP tab opened for this run after report capture.
+
+## Run-ID Regression Checks
+
+After changing run naming, allocation, or report routing, run this dependency-free check from a `pwsh.exe -NoProfile` shell:
+
+```powershell
+.\tools\Invoke-WorkspaceCommand.ps1 pwsh -NoProfile -File .\tests\BrowserDomSmoke\Test-RunIdentity.ps1
+```
+
+It tests the coordinator's actual helper functions for timestamp and legacy GUID validation, exact report matching, collision preservation, concurrent allocation, path containment, and projected path lengths. JSON evidence stays under `.WorkDir/TestResults/RunIdentity/`. This check does not launch a browser or replace the integrated-browser smoke, failed-report, timeout, and server-cleanup checks required for orchestration changes.
 
 ## Local Evidence and Scope
 

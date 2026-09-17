@@ -1,4 +1,14 @@
 // Browser-only: importing this module exposes the runner without starting a test.
+export function isSmokeRunId(value) {
+  if (typeof value !== "string") return false;
+  if (/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value) && value.length === 36) return true;
+  const match = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})Z(?:-(?:0[2-9]|[1-9][0-9]{1,2}))?$/.exec(value);
+  if (!match || match[0] !== value || match[1] === "0000") return false;
+  const iso = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}.000Z`;
+  const date = new Date(iso);
+  return Number.isFinite(date.getTime()) && date.toISOString() === iso;
+}
+
 let runPromise;
 globalThis.runPSWasmBrowserSmoke = (options = {}) => runPromise ??= runSmoke(options);
 
@@ -92,7 +102,7 @@ async function runSmoke(options) {
     await check("fixture-elements", () => {
       assert(Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= 120_000,
         "timeoutMs must be a positive number no greater than 120000.");
-      assert(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(report.runId), "The URL must contain a GUID runId.");
+      assert(isSmokeRunId(report.runId), "The URL must contain a UTC run name or legacy GUID runId.");
       const required = selector => {
         const node = document.querySelector(selector);
         assert(node, `Missing required fixture element: ${selector}`);

@@ -112,6 +112,8 @@ Build output, publish output, test results, and temporary files used by the work
 
 `.WorkDir/checkouts/` holds local Git checkouts, including `PSWasm.wiki`, and must be preserved. Clean only the generated output that needs rebuilding; never delete `.WorkDir/` as a whole. See [Build and Validation](https://github.com/Ayanmullick/PSWasm/wiki/Build-and-Validation) for the workspace layout and validation workflow.
 
+The workspace scripts preflight protected paths, allowing documented Windows Cloud Files tags while rejecting redirects, unsupported tags, and metadata-query errors. Keep all workspace files locally available before running these tools; availability is a user-managed prerequisite and is not checked automatically. Build and browser validation is still required after moving a checkout. See [Workspace path safety](https://github.com/Ayanmullick/PSWasm/wiki/Build-and-Validation#workspace-path-safety) for scope and limitations.
+
 Publish clean browser flavors for payload comparison:
 
 ```powershell
@@ -171,7 +173,7 @@ Run the browser DOM smoke test after DOM command or browser DOM bridge changes. 
 .\tests\BrowserDomSmoke\Invoke-BrowserDomSmoke.ps1
 ```
 
-The script starts an isolated local test site and waits for an MCP-connected agent to run the assertions and submit their JSON report. An unavailable MCP blocks the check; there is no external-browser fallback. See [Browser DOM Smoke](tests/BrowserDomSmoke/README.md) for the complete run and report-submission workflow.
+The script starts an isolated local test site and waits for an MCP-connected agent to run the assertions and submit their JSON report. Run folders use short, readable UTC timestamps instead of GUIDs. An unavailable MCP blocks the check; there is no external-browser fallback. See [Browser DOM Smoke](tests/BrowserDomSmoke/README.md) for the complete run and report-submission workflow.
 
 ## GitHub Pages
 
