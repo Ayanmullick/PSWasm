@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-. (Join-Path $Root 'tools/WorkspacePathSafety.ps1')
+
 $FixtureParent = Join-Path $Root '.WorkDir/TestResults/RunIdentity'
 $Coordinator = Join-Path $PSScriptRoot 'Invoke-BrowserDomSmoke.ps1'
 $Tokens,$ParseErrors = $null,$null
@@ -14,7 +14,7 @@ $Ast = [Management.Automation.Language.Parser]::ParseFile($Coordinator, [ref]$To
 if ($ParseErrors.Count) { throw "Coordinator parse errors: $($ParseErrors.Message -join '; ')" }
 
 # Load only the production helpers; never execute the coordinator's publish/server entry point.
-foreach ($Name in 'Assert-WorkspacePath','Test-SmokeRunId','New-SmokeRunDirectory','Assert-Report') {
+foreach ($Name in 'Assert-SmokePath','Assert-SmokeTree','Test-SmokeRunId','New-SmokeRunDirectory','Assert-Report') {
     $Function = $Ast.Find({ param($Node)
         $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq $Name
     }, $false)
@@ -23,12 +23,12 @@ foreach ($Name in 'Assert-WorkspacePath','Test-SmokeRunId','New-SmokeRunDirector
 }
 
 if ($WorkerResultsRoot) {
-    $ResultsRoot = Assert-WorkspacePath $WorkerResultsRoot $FixtureParent
+    $ResultsRoot = Assert-SmokePath $WorkerResultsRoot $FixtureParent
     New-SmokeRunDirectory -Timestamp $WorkerTimestamp
     exit 0
 }
 
-$EvidenceRoot = Assert-WorkspacePath (Join-Path $FixtureParent (
+$EvidenceRoot = Assert-SmokePath (Join-Path $FixtureParent (
     [DateTimeOffset]::UtcNow.ToString('yyyyMMdd-HHmmssZ') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8))) $FixtureParent
 [IO.Directory]::CreateDirectory($EvidenceRoot) | Out-Null
 $Checks = [Collections.Generic.List[object]]::new()
@@ -89,7 +89,7 @@ try {
     Assert-Report $LegacyReport $LegacyRun
     Assert-Check 'Matching legacy GUID report is accepted' $true
 
-    $ResultsRoot = Assert-WorkspacePath (Join-Path $EvidenceRoot 'collisions') $EvidenceRoot
+    $ResultsRoot = Assert-SmokePath (Join-Path $EvidenceRoot 'collisions') $EvidenceRoot
     $FixedTime = [DateTimeOffset]::Parse('2026-09-17T14:30:25Z', [Globalization.CultureInfo]::InvariantCulture)
     $First = New-SmokeRunDirectory -Timestamp $FixedTime
     Assert-Check 'Readable UTC run directory' ([IO.Path]::GetFileName($First) -ceq '20260917-143025Z')
@@ -108,12 +108,46 @@ try {
     Assert-Check 'Timestamp is normalized to UTC' ([IO.Path]::GetFileName($OffsetRun) -ceq '20260918-143025Z')
 
     $RejectedEscape = $false
-    try { Assert-WorkspacePath (Join-Path $ResultsRoot '../outside') $ResultsRoot | Out-Null }
+    try { Assert-SmokePath (Join-Path $ResultsRoot '../outside') $ResultsRoot | Out-Null }
     catch { $RejectedEscape = $true }
     Assert-Check 'Path traversal outside the results root is rejected' $RejectedEscape
     Assert-Check 'Rejected path was not created' (-not (Test-Path -LiteralPath (Join-Path $EvidenceRoot 'outside')))
 
-    $ResultsRoot = Assert-WorkspacePath (Join-Path $EvidenceRoot 'concurrent') $EvidenceRoot
+    foreach ($InvalidPath in @($ResultsRoot, $ResultsRoot + '-other/report.json', '',
+        (Join-Path $ResultsRoot '../report.json'))) {
+        $Rejected = $false
+        try { Assert-SmokePath $InvalidPath $ResultsRoot | Out-Null } catch { $Rejected = $true }
+        Assert-Check 'Report path must be a dedicated child of the run results directory' $Rejected
+    }
+    if ($IsWindows) {
+        foreach ($Suffix in @('report.json.', 'report.json ', 'report.json:stream', 'NUL')) {
+            $Rejected = $false
+            try { Assert-SmokePath (Join-Path $ResultsRoot $Suffix) $ResultsRoot | Out-Null } catch { $Rejected = $true }
+            Assert-Check "Ambiguous report path is rejected: $Suffix" $Rejected
+        }
+    }
+    $LinkTarget,$LinkRoot = (Join-Path $EvidenceRoot 'link-target'), (Join-Path $EvidenceRoot 'linked-fixture')
+    [IO.Directory]::CreateDirectory($LinkTarget) | Out-Null
+    [IO.Directory]::CreateDirectory($LinkRoot) | Out-Null
+    $LinkPath = Join-Path $LinkRoot 'redirect'
+    $Marker = Join-Path $LinkTarget 'preserve.txt'
+    [IO.File]::WriteAllText($Marker, 'preserve linked target')
+    $LinkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+    try {
+        New-Item -ItemType $LinkType -Path $LinkPath -Target $LinkTarget | Out-Null
+        $Rejected = $false
+        try { Assert-SmokePath (Join-Path $LinkPath 'result.json') $EvidenceRoot | Out-Null } catch { $Rejected = $true }
+        Assert-Check 'Report path cannot traverse a linked ancestor' $Rejected
+        $Rejected = $false
+        try { Assert-SmokeTree $LinkRoot } catch { $Rejected = $true }
+        Assert-Check 'Fixture copying rejects descendant links before traversal' $Rejected
+        Assert-Check 'Rejected fixture preserves linked target contents' (
+            [IO.File]::ReadAllText($Marker) -ceq 'preserve linked target')
+    } finally {
+        if (Get-Item -LiteralPath $LinkPath -Force -ErrorAction SilentlyContinue) { [IO.Directory]::Delete($LinkPath) }
+    }
+
+    $ResultsRoot = Assert-SmokePath (Join-Path $EvidenceRoot 'concurrent') $EvidenceRoot
     for ($Index = 0; $Index -lt 8; $Index++) {
         $StartInfo = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
         $StartInfo.UseShellExecute = $false

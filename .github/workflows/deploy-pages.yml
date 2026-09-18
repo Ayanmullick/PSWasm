@@ -50,18 +50,18 @@ jobs:
 
       - name: Build runtime
         shell: pwsh
-        run: ./tools/Invoke-WorkspaceCommand.ps1 dotnet build src/PowerShell.Wasm/PowerShell.Wasm.csproj --configuration Release
+        run: dotnet build src/PowerShell.Wasm/PowerShell.Wasm.csproj --configuration Release
 
       - name: Verify runtime behavior
         shell: pwsh
-        run: ./tools/Invoke-WorkspaceCommand.ps1 dotnet run --project tests/PowerShell.Wasm.Verify/PowerShell.Wasm.Verify.csproj --configuration Release
+        run: dotnet run --project tests/PowerShell.Wasm.Verify/PowerShell.Wasm.Verify.csproj --configuration Release
 
       - name: Check browser module syntax
         run: node --check samples/BrowserHost/wwwroot/app.js
 
       - name: Publish browser host
         shell: pwsh
-        run: ./tools/Invoke-WorkspaceCommand.ps1 dotnet publish samples/BrowserHost/PSWasm.BrowserHost.csproj --configuration Release --runtime browser-wasm --output .WorkDir/build/publish/BrowserHost /p:UseAppHost=false
+        run: dotnet publish samples/BrowserHost/PSWasm.BrowserHost.csproj --configuration Release --runtime browser-wasm --output .WorkDir/build/publish/BrowserHost /p:UseAppHost=false
 
       - name: Publish hosted browser flavors
         shell: pwsh

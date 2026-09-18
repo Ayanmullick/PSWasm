@@ -2,7 +2,7 @@ param(
     [ValidateSet('core','web','AzAuth','full')]
     [string[]]$Flavor = @('core','web','AzAuth','full'),
 
-    [string]$OutputRoot = '.\.WorkDir\build\publish\BrowserFlavors',
+    [string]$OutputRoot = './.WorkDir/build/publish/BrowserFlavors',
 
     [string]$HostedRoot = '',
 
@@ -15,16 +15,79 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-. (Join-Path $PSScriptRoot 'WorkspacePathSafety.ps1')
-$WorkspaceCommand = Join-Path $PSScriptRoot 'Invoke-WorkspaceCommand.ps1'
 $WorkRoot = Join-Path $RepoRoot '.WorkDir'
 $PathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+
+function ConvertTo-PackagePath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'A package path must not be empty.' }
+    if ($IsWindows) {
+        if ($Path -match '[*?<>|"\x00-\x1F]' -or $Path.StartsWith('\\') -or
+            ($Path -replace '^[A-Za-z]:', '') -match ':') { throw "Expected a regular filesystem path: $Path" }
+        foreach ($Part in ($Path -split '[\\/]')) {
+            if ($Part -in @('','.', '..') -or $Part -match '^[A-Za-z]:$') { continue }
+            if ($Part -match '[. ]$|^(?i:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)') {
+                throw "Ambiguous or reserved path component: $Part"
+            }
+        }
+    }
+    return [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Path, (Get-Location).Path))
+}
+
+function Assert-PackagePath([string]$Path, [string]$Parent) {
+    $FullPath,$Parent = (ConvertTo-PackagePath $Path), (ConvertTo-PackagePath $Parent)
+    if ($Parent -eq [IO.Path]::GetPathRoot($Parent) -or
+        (-not $FullPath.Equals($Parent, $PathComparison) -and
+        -not $FullPath.StartsWith($Parent + [IO.Path]::DirectorySeparatorChar, $PathComparison))) {
+        throw "Package path must stay inside its dedicated parent: $FullPath"
+    }
+    # Check ancestors before inspecting descendants; missing output directories may be created later.
+    $Current = $Parent
+    $Parts = @('') + @([IO.Path]::GetRelativePath($Parent, $FullPath).Split([IO.Path]::DirectorySeparatorChar) |
+        Where-Object { $_ -ne '.' })
+    foreach ($Part in $Parts) {
+        if ($Part) { $Current = Join-Path $Current $Part }
+        try { $Item = Get-Item -LiteralPath $Current -Force -ErrorAction Stop }
+        catch [Management.Automation.ItemNotFoundException] {
+            if ($Current -eq $Parent) { throw }
+            break
+        }
+        if ($Item.LinkTarget) { throw "Package operations cannot traverse links: $Current" }
+        if ($IsWindows -and $Current -ne $Parent) {
+            # Directory enumeration supplies the real name even when Get-Item accepted an 8.3 alias.
+            $Name = [IO.Path]::GetFileName($Current)
+            $Canonical = Get-ChildItem -LiteralPath ([IO.Path]::GetDirectoryName($Current)) -Force -ErrorAction Stop |
+                Where-Object { $_.Name.Equals($Name, $PathComparison) } | Select-Object -First 1
+            if (-not $Canonical) { throw "Use the canonical package path instead of an alias: $Current" }
+        }
+        if (($Current -eq $Parent -or $Current -ne $FullPath) -and -not $Item.PSIsContainer) {
+            throw "Package path ancestor is not a directory: $Current"
+        }
+    }
+    return $FullPath
+}
+
+function Assert-PackageTree([string]$Path, [string]$Parent) {
+    $Path = Assert-PackagePath $Path $Parent
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $Pending = [Collections.Generic.Queue[string]]::new()
+    $Pending.Enqueue($Path)
+    while ($Pending.Count) {
+        $Item = Get-Item -LiteralPath $Pending.Dequeue() -Force -ErrorAction Stop
+        if ($Item.LinkTarget) { throw "Package operations cannot traverse links: $($Item.FullName)" }
+        if ($Item.PSIsContainer) {
+            foreach ($Child in Get-ChildItem -LiteralPath $Item.FullName -Force -ErrorAction Stop) {
+                $Pending.Enqueue($Child.FullName)
+            }
+        }
+    }
+}
 
 function Resolve-InRepoPath {
     param([string]$Path, [string]$Name)
 
-    $FullPath = ConvertTo-WorkspaceFullPath $Path
+    $FullPath = ConvertTo-PackagePath $Path
 
     $AllowedRoots = @((Join-Path $WorkRoot 'build/publish'), (Join-Path $WorkRoot 'TestResults'))
     if (-not ($AllowedRoots | Where-Object {
@@ -33,13 +96,13 @@ function Resolve-InRepoPath {
         throw "$Name must be a dedicated folder under .WorkDir/build/publish or .WorkDir/TestResults: $FullPath"
     }
 
-    Assert-WorkspacePathSafe $FullPath $RepoRoot
+    Assert-PackagePath $FullPath $RepoRoot
 }
 
 function Copy-BrowserPackage {
     param([string]$SourceRoot, [string]$DestinationRoot)
 
-    $SourceRoot = ConvertTo-WorkspaceFullPath $SourceRoot
+    $SourceRoot = ConvertTo-PackagePath $SourceRoot
     $DestinationRoot = Resolve-InRepoPath $DestinationRoot 'Hosted destination'
 
     if (-not $DestinationRoot.StartsWith($RepoRoot + [IO.Path]::DirectorySeparatorChar, $PathComparison)) {
@@ -51,9 +114,9 @@ function Copy-BrowserPackage {
         throw "Hosted destination must not overlap the source package: $DestinationRoot"
     }
 
-    Assert-WorkspaceTreeSafe $SourceRoot $RepoRoot
+    Assert-PackageTree $SourceRoot $RepoRoot
     if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) { throw "Package source is missing: $SourceRoot" }
-    Assert-WorkspaceTreeSafe $DestinationRoot $RepoRoot
+    Assert-PackageTree $DestinationRoot $RepoRoot
     if (Test-Path -LiteralPath $DestinationRoot) {
         Remove-Item -LiteralPath $DestinationRoot -Recurse -Force
     }
@@ -103,9 +166,8 @@ if ($HostedRoot -ne '') {
 }
 
 # Preflight all affected trees before removing any selected output, including links below a destination root.
-# The shared helper permits documented Cloud Files tags and rejects redirects; local availability is a prerequisite.
 foreach ($Destination in @($FlavorOutputs) + @($HostedDestinations)) {
-    Assert-WorkspaceTreeSafe $Destination $RepoRoot
+    Assert-PackageTree $Destination $RepoRoot
 }
 
 $Project = [IO.Path]::Combine($RepoRoot, 'samples', 'BrowserHost', 'PSWasm.BrowserHost.csproj')
@@ -120,7 +182,7 @@ foreach ($Name in $Flavor) {
     }
 
     $Out = Resolve-InRepoPath (Join-Path $OutputRoot $Name) 'Flavor output'
-    Assert-WorkspaceTreeSafe $Out $RepoRoot
+    Assert-PackageTree $Out $RepoRoot
     if (Test-Path -LiteralPath $Out) {
         Remove-Item -LiteralPath $Out -Recurse -Force
     }
@@ -132,12 +194,12 @@ foreach ($Name in $Flavor) {
     }
 
     Write-Host "Publishing PSWasm browser flavor '$Name' (DOM=$Dom, Web=$Web, Crypto=$Crypto, AzureAuth=$AzureAuth)."
-    & $WorkspaceCommand dotnet @Args
+    & dotnet @Args
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
 
-    Assert-WorkspaceTreeSafe $Out $RepoRoot
+    Assert-PackageTree $Out $RepoRoot
     if (-not $IncludeSampleHost) {
         $WwwRoot = Join-Path $Out 'wwwroot'
         foreach ($Pattern in @('index.html','index.html.br','index.html.gz','*.ps1','*.ps1.br','*.ps1.gz')) {

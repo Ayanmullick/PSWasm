@@ -2,22 +2,25 @@ param(
     [ValidateSet('core','web','AzAuth','full')]
     [string[]]$Flavor = @('core','web','AzAuth','full'),
 
-    [string]$OutputRoot = '.\.WorkDir\TestResults\BrowserFlavorSmoke',
+    [string]$OutputRoot = './.WorkDir/TestResults/BrowserFlavorSmoke',
 
     [switch]$NoRestore
 )
 
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 $RepoRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..', '..'))
-$TestResultsRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot '.WorkDir\TestResults'))
-$WorkspaceCommand = Join-Path $RepoRoot 'tools\Invoke-WorkspaceCommand.ps1'
+$TestResultsRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot '.WorkDir/TestResults'))
+
 $OutputRoot = if ([IO.Path]::IsPathRooted($OutputRoot)) {
     [IO.Path]::GetFullPath($OutputRoot)
 } else {
     [IO.Path]::GetFullPath((Join-Path $RepoRoot $OutputRoot))
 }
 
-if (-not $OutputRoot.StartsWith($TestResultsRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "OutputRoot must stay inside the workspace TestResults directory: $OutputRoot"
+$Comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+if (-not $OutputRoot.StartsWith($TestResultsRoot + [IO.Path]::DirectorySeparatorChar, $Comparison)) {
+    throw "OutputRoot must stay inside the TestResults directory: $OutputRoot"
 }
 
 function Assert-Condition {
@@ -75,7 +78,7 @@ if ($NoRestore) {
 }
 
 Write-Host 'Verifying core flavor command exclusions.'
-& $WorkspaceCommand dotnet @FlavorVerifyArgs
+& dotnet @FlavorVerifyArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
