@@ -3,22 +3,124 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PSWasm Browser Host</title>
+  <title>PSWasm Browser Examples</title>
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { margin: 2rem; }
-    pre { border: 1px solid CanvasText; padding: 1rem; white-space: pre-wrap; }
-    .sample-panel { border: 1px solid CanvasText; margin: 1rem 0; padding: 1rem; }
-    .sample-panel h2 { margin-top: 0; }
-    .sample-panel form { align-items: center; display: flex; flex-wrap: wrap; gap: 0.5rem; }
-    .sample-panel table { border-collapse: collapse; margin-top: 1rem; }
-    .sample-panel th, .sample-panel td { padding: 0.25rem 0.75rem; text-align: left; }
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --page: #f4f6fa; --surface: #fff; --output: #f2f5fa; --text: #19263b;
+      --muted: #54627a; --border: #d5ddeb; --accent: #2358b3; --accent-soft: #eaf0fc;
+      --error: #b91c1c; --warning: #895500; --information: #18763d;
+      --debug: #57647b; --verbose: #245bc1; --progress: #733cb5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #10141c; --surface: #191f2b; --output: #111722; --text: #e8eef8;
+        --muted: #acb8cb; --border: #354052; --accent: #90baff; --accent-soft: #202f49;
+        --error: #ff9b9b; --warning: #ffd178; --information: #83d7a0;
+        --debug: #bac5d7; --verbose: #9abbff; --progress: #d5acff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--text); line-height: 1.6; }
+    main { width: min(100% - 3rem, 64rem); margin: 0 auto; padding: 3rem 0 4rem; }
+    .page-header { margin-bottom: 2rem; }
+    .eyebrow { margin: 0 0 0.3rem; color: var(--accent); font-weight: 700; letter-spacing: 0.08em; }
+    h1 { margin: 0; font-size: clamp(1.9rem, 5vw, 2.8rem); line-height: 1.15; letter-spacing: -0.035em; }
+    h2 { margin: 0; font-size: 1.25rem; line-height: 1.4; }
+    h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+    p { margin: 0.6rem 0 1rem; }
+    .sample-panel {
+      padding: clamp(1.25rem, 4vw, 2rem); background: var(--surface);
+      border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: 1rem;
+    }
+    .sample-panel > p:first-of-type, .section-intro { color: var(--muted); }
+    .sample-panel form { display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin: 1.25rem 0; }
+    label { font-weight: 600; }
+    input, button { min-height: 2.75rem; border-radius: 0.5rem; font: inherit; }
+    input {
+      min-width: 0; width: 15rem; max-width: 100%; padding: 0.5rem 0.75rem;
+      border: 1px solid var(--muted); background: var(--output); color: var(--text);
+    }
+    button {
+      padding: 0.5rem 1.1rem; border: 1px solid var(--accent); background: var(--accent);
+      color: var(--surface); cursor: pointer; font-weight: 650;
+    }
+    button:hover { filter: brightness(0.93); }
+    button:disabled { opacity: 0.65; cursor: wait; }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+    #dom-sample-status {
+      padding: 0.8rem 1rem; border-radius: 0.5rem; background: var(--accent-soft);
+      overflow-wrap: anywhere;
+    }
+    .sample-panel table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .sample-panel th, .sample-panel td {
+      padding: 0.55rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    .sample-panel th { color: var(--muted); font-weight: 600; }
+    .sample-panel tbody tr:last-child td { border-bottom: 0; }
+    .examples { margin-top: 2.5rem; }
+    .section-intro { margin-bottom: 1.25rem; max-width: 48rem; }
+    details { margin: 0.75rem 0; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); }
+    summary { padding: 1rem 1.25rem; cursor: pointer; border-radius: 0.75rem; }
+    summary:hover { background: var(--accent-soft); }
+    summary::marker { color: var(--accent); }
+    summary strong { font-size: 1.025rem; }
+    .summary-hint { display: block; margin: 0.15rem 0 0 1.05rem; color: var(--muted); font-size: 0.875rem; }
+    details[open] > summary { border-bottom: 1px solid var(--border); border-radius: 0.75rem 0.75rem 0 0; }
+    .group-content { padding: 1.25rem; }
+    .example + .example { margin-top: 1.75rem; }
+    .example-note { margin: 0 0 1.25rem; padding-left: 0.85rem; border-left: 3px solid var(--accent); color: var(--muted); }
+    .example p { color: var(--muted); font-size: 0.9rem; }
+    pre {
+      max-width: 100%; margin: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 0.5rem;
+      background: var(--output); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere;
+      font: 0.85rem/1.65 ui-monospace, "Cascadia Code", Consolas, monospace; tab-size: 4;
+    }
+    body .pswasm-stream-error { color: var(--error); }
+    body .pswasm-stream-warning { color: var(--warning); }
+    body .pswasm-stream-information { color: var(--information); }
+    body .pswasm-stream-debug { color: var(--debug); }
+    body .pswasm-stream-verbose { color: var(--verbose); }
+    body .pswasm-stream-progress { color: var(--progress); }
+    @media (max-width: 36rem) {
+      main { width: calc(100% - 2rem); padding-top: 1.75rem; }
+      .sample-panel form { display: grid; grid-template-columns: minmax(0, 1fr); }
+      input, button { width: 100%; }
+      summary, .group-content { padding: 1rem; }
+    }
   </style>
 </head>
 <body>
-  <h1>PSWasm Browser Host</h1>
+  <main>
+    <header class="page-header">
+      <p class="eyebrow">PSWasm</p>
+      <h1>Browser examples</h1>
+    </header>
 
-  <script type="pwsh">
+    <section class="sample-panel" aria-labelledby="dom-interaction-title">
+      <h2 id="dom-interaction-title">DOM interaction sample</h2>
+      <p id="dom-sample-hint">Enter a name and select Update text. PowerShell handles the form and updates the message.</p>
+      <form id="dom-sample-form" aria-describedby="dom-sample-hint">
+        <label for="dom-sample-name">Name</label>
+        <input id="dom-sample-name" name="Name" value="PSWasm" />
+        <button id="dom-sample-button" type="submit" disabled>Update text</button>
+      </form>
+      <p id="dom-sample-status" role="status">Loading the PowerShell runtime and examples…</p>
+      <div id="dom-sample-html"></div>
+    </section>
+
+    <section class="examples" aria-labelledby="examples-title">
+      <h2 id="examples-title">Explore the examples</h2>
+      <p class="section-intro">Examples run on page load and share a PowerShell session. Expand a topic to see its output.</p>
+
+      <details id="browser-information">
+        <summary><strong>Browser information</strong><span class="summary-hint">Culture, dates, time zones, and available commands</span></summary>
+        <div class="group-content">
+          <article class="example">
+            <h3>Browser built-ins</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm browser built-ins'
 Get-Culture
 Get-UICulture
@@ -27,10 +129,17 @@ Get-Time
 Get-TimeZone
 Get-Command Format-* | Select-Object -ExpandProperty Name
   </script>
+          </article>
+        </div>
+      </details>
 
-  <hr>
-
-  <script type="pwsh">
+      <details id="streams-and-expressions">
+        <summary><strong>Streams and expressions</strong><span class="summary-hint">Output channels, operators, arrays, and hashtables</span></summary>
+        <div class="group-content">
+          <p class="example-note">Warning and error messages in these examples are intentional. They demonstrate output streams and recovery.</p>
+          <article class="example">
+            <h3>Output streams</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm stream output'
 $DebugPreference = 'Continue'
 $InformationPreference = 'Continue'
@@ -42,10 +151,10 @@ Write-Verbose 'Verbose message'
 Write-Warning 'Warning message'
 Write-Error 'Error message'
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Expressions and collections</h3>
+            <script type="pwsh">
 #region expressions and collections
 Write-Output (2 + 2)
 ($var = 1 + 2) -eq 3
@@ -62,10 +171,17 @@ $table.Count
 $table.Keys | Sort-Object
 #endregion
   </script>
+          </article>
+        </div>
+      </details>
 
-  <hr>
-
-  <script type="pwsh">
+      <details id="browser-http">
+        <summary><strong>Browser HTTP</strong><span class="summary-hint">Web requests and JSON responses</span></summary>
+        <div class="group-content">
+          <p class="example-note">This example calls the GitHub API. Its output depends on network access, CORS, and the service's rate limits.</p>
+          <article class="example">
+            <h3>HTTP requests</h3>
+            <script type="pwsh">
 # Invoke-WebRequest and Invoke-RestMethod use browser HTTP and require the target service to allow CORS.
 $response = Invoke-WebRequest -Uri 'https://api.github.com/zen' -Headers @{Accept='application/json'} -SkipHttpErrorCheck
 $response | Select-Object StatusCode RawContentLength
@@ -73,18 +189,25 @@ $response.Content
 $repo = Invoke-RestMethod -Uri 'https://api.github.com/repos/PowerShell/PowerShell' -Headers @{Accept='application/vnd.github+json'} -SkipHttpErrorCheck
 $repo.full_name
   </script>
+          </article>
+        </div>
+      </details>
 
-  <hr>
-
-  <script type="pwsh">
+      <details id="variables-and-text">
+        <summary><strong>Variables and text</strong><span class="summary-hint">Variables, automatic values, and regular expressions</span></summary>
+        <div class="group-content">
+          <p class="example-note">The automatic-variable example deliberately writes an error to show how $? and $Error change.</p>
+          <article class="example">
+            <h3>Variable commands</h3>
+            <script type="pwsh">
 Set-Variable -Name BrowserName -Value 'PSWasm'
 Get-Variable BrowserName -ValueOnly
 Get-Variable BrowserName | Format-List Name Value
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Automatic variables</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm automatic variables'
 $?
 $PSEdition
@@ -107,10 +230,10 @@ function Show-Bound($Name, $Value) {
 }
 Show-Bound -Name 'browser' -Value 42
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Regular expressions</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm regular expressions'
 'Server-01' -match 'Server-\d\d'
 $Matches[0]
@@ -129,10 +252,17 @@ switch -Regex ('browser-42') {
     Select-Object -ExpandProperty Matches |
     Select-Object -ExpandProperty Value
   </script>
+          </article>
+        </div>
+      </details>
 
-  <hr>
-
-  <script type="pwsh">
+      <details id="functions-and-preferences">
+        <summary><strong>Functions and preferences</strong><span class="summary-hint">Splatting, stream preferences, and common parameters</span></summary>
+        <div class="group-content">
+          <p class="example-note">Warnings and captured errors here are intentional; some messages are suppressed by the example itself.</p>
+          <article class="example">
+            <h3>Splatting</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm splatting'
 function Show-Splat($Name, $Value) {
     "$Name=$Value"
@@ -151,10 +281,10 @@ function Forward-Args {
 }
 Forward-Args 'args' 5
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Preference variables</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm preference variables'
 $DebugPreference
 $InformationPreference
@@ -173,10 +303,10 @@ $values = 1,2,3
 $OFS = '|'
 "$values"
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Common parameters</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm common parameters'
 Write-Verbose 'Visible with -Verbose' -Verbose
 Write-Debug 'Visible with -Debug' -Debug
@@ -192,10 +322,16 @@ Write-Output 'Pipeline capture' -PipelineVariable pipelineValue
 $pipelineValue
 Write-Output 'OutBuffer accepted' -OutBuffer 10
   </script>
+          </article>
+        </div>
+      </details>
 
-  <hr>
-
-  <script type="pwsh">
+      <details id="control-flow">
+        <summary><strong>Control flow</strong><span class="summary-hint">Conditions, loops, functions, and error handling</span></summary>
+        <div class="group-content">
+          <article class="example">
+            <h3>If and else</h3>
+            <script type="pwsh">
 $value = 3
 if ($value -gt 5) {
     'large'
@@ -205,55 +341,55 @@ if ($value -gt 5) {
     'small'
 }
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Foreach loop</h3>
+            <script type="pwsh">
 foreach ($item in 1..3) {
     $item * 2
 }
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>While loop</h3>
+            <script type="pwsh">
 $i = 0
 while ($i -lt 3) {
     $i = $i + 1
     $i
 }
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>For loop</h3>
+            <script type="pwsh">
 for ($j = 0; $j -lt 3; $j++) {
     $j
 }
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Switch</h3>
+            <script type="pwsh">
 switch ('browser') {
     'server' { 'server path' }
     'brow*' { 'browser path' }
     default { 'fallback path' }
 }
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Functions</h3>
+            <script type="pwsh">
 function Add-Prefix($Text) {
     "pre-$Text"
 }
 Add-Prefix -Text 'browser'
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Break, continue, and return</h3>
+            <script type="pwsh">
 function First-Matches($Items) {
     foreach ($item in $Items) {
         if ($item -lt 2) {
@@ -268,10 +404,10 @@ function First-Matches($Items) {
 }
 First-Matches @(1,2,3,4)
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Try, catch, and finally</h3>
+            <script type="pwsh">
 try {
     throw 'Browser try/catch sample'
 } catch {
@@ -280,10 +416,16 @@ try {
     'finally ran'
 }
   </script>
+          </article>
+        </div>
+      </details>
 
-  <hr>
-
-  <script type="pwsh">
+      <details id="pipelines-and-data">
+        <summary><strong>Pipelines and data</strong><span class="summary-hint">Filtering, JSON, CSV, formatting, sorting, and grouping</span></summary>
+        <div class="group-content">
+          <article class="example">
+            <h3>Filtering and projection</h3>
+            <script type="pwsh">
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |
@@ -297,19 +439,19 @@ try {
     ConvertTo-Json -Compress
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object N* | ConvertTo-Json -Compress
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>JSON and CSV</h3>
+            <script type="pwsh">
 @{Name='browser'; Value=42} | ConvertTo-Json -Compress
 '{"Name":"json","Value":7}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
 'Name,Value
 csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
   </script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Formatting, sorting, and grouping</h3>
+            <script type="pwsh">
 @(@{Name='table-one'; Value=1}, @{Name='table-two'; Value=2}) | Format-Table Name Value
 @{Name='list-sample'; Value=9} | Format-List
 @(@{Name='three'; Value=3}, @{Name='one'; Value=1}, @{Name='two'; Value=2}) |
@@ -325,29 +467,26 @@ csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
     ConvertTo-Json -Compress
 @{Name='one'; Value=1} | Out-String
   </script>
+          </article>
+        </div>
+      </details>
 
-  <hr>
-
-  <script type="pwsh">
+      <details id="dom-and-shared-sessions">
+        <summary><strong>DOM and shared sessions</strong><span class="summary-hint">DOM commands, the form above, and an external PowerShell file</span></summary>
+        <div class="group-content">
+          <article class="example">
+            <h3>DOM session commands</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm DOM session commands'
 $Dom = New-DomSession -Name Main -Target '#app'
 $Dom | Select-Object Id Name Target State
 Get-DomSession Main | Select-Object -ExpandProperty SessionType
   </script>
-
-  <hr>
-
-  <section class="sample-panel" aria-labelledby="dom-interaction-title">
-    <h2 id="dom-interaction-title">DOM interaction sample</h2>
-    <form id="dom-sample-form">
-      <label for="dom-sample-name">Name</label>
-      <input id="dom-sample-name" name="Name" value="PSWasm" />
-      <button id="dom-sample-button" type="submit">Update text</button>
-    </form>
-    <p id="dom-sample-status"></p>
-    <div id="dom-sample-html"></div>
-
-    <script type="pwsh" data-pswasm-output="none">
+          </article>
+          <article class="example">
+            <h3>Interactive form</h3>
+            <p>This script initializes the interactive form at the top of the page; it does not produce a separate output box.</p>
+            <script type="pwsh" data-pswasm-output="none">
 $Dom = New-DomSession -Name Ui -Target document
 $StorageBinding = Register-DomStorageBinding -Session $Dom -Storage Local -Map @{'#dom-sample-name'='pswasm.domSampleName'}
 Set-DomText '#dom-sample-status' 'DOM event handler ready.'
@@ -363,35 +502,47 @@ $Registration = Register-DomEvent -Session $Dom -Selector '#dom-sample-form' -Ev
     Set-DomProperty '#dom-sample-button' Disabled $false
 }
     </script>
-  </section>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>Shared PowerShell session</h3>
+            <script type="pwsh">
 Write-Host 'PSWasm shared PowerShell session'
 $SharedValue = 'from an earlier script block'
 function Use-SharedValue {
     $SharedValue
 }
   </script>
-
-  <hr>
-
-  <script type="pwsh" src="./sample.ps1"></script>
-
-  <hr>
-
-  <script type="pwsh">
+          </article>
+          <article class="example">
+            <h3>External PowerShell file</h3>
+            <script type="pwsh" src="./sample.ps1"></script>
+          </article>
+          <article class="example">
+            <h3>Reuse and cleanup</h3>
+            <script type="pwsh">
 Use-SharedValue
 Remove-DomSession Main
 $remaining = Get-DomSession
 $remaining ?? 'DOM session removed'
   </script>
+          </article>
+        </div>
+      </details>
+    </section>
+  </main>
 
   <script>
     window.pswasmEnvironment = {};
   </script>
   <!-- Importing app.js automatically runs all <script type="pwsh"> blocks. -->
-  <script type="module" src="./app.js"></script>
+  <script type="module">
+    try {
+      await import("./app.js");
+      document.getElementById("dom-sample-button").disabled = false;
+    } catch {
+      document.getElementById("dom-sample-status").textContent =
+        "The demo could not start. Reload the page to try again.";
+    }
+  </script>
 </body>
 </html>

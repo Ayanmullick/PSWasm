@@ -4,7 +4,9 @@ PSWasm is a proof-of-concept WebAssembly runtime that runs browser-safe PowerShe
 
 ## Quick Start
 
-Try the [hosted browser sample](https://ayanmullick.github.io/PSWasm/) or add the hosted loader to a page served over HTTP:
+Try the [hosted browser sample](https://ayanmullick.github.io/PSWasm/) or [edit the examples in CodePen](https://codepen.io/editor/ayanmullick/pen/019f76e7-bd33-7268-8024-cfbd0b365237?show=preview&presentation=true).
+
+To use PSWasm in your own page, add the hosted loader to a page served over HTTP:
 
 ```html
 <script type="pwsh">
