@@ -350,7 +350,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
             return matchMode == SwitchMatchMode.Wildcard
                 ? WildcardMatch(input, patternItem, caseSensitive)
-                : CompareValues(input, patternItem, caseSensitive) == 0;
+                : CompareValues(ToInvariantString(input), ToInvariantString(patternItem), caseSensitive) == 0;
         });
 
     private async ValueTask ExecuteStatementAssignmentAsync(StatementAssignmentAst assignment, CancellationToken cancellationToken)
@@ -555,28 +555,103 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         var parameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var arguments = new List<object?>();
+        var explicitNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var splatNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var unknownSplatArguments = new List<object?>();
+        executionContext.TryGetFunction(commandAst.Name, out var function);
+        commands.TryGetValue(commandAst.Name, out var command);
 
-        foreach (var argument in commandAst.Arguments)
+        // Behavioral reference: ScriptParameterBinderController binds named arguments before positional arguments.
+        // https://github.com/PowerShell/PowerShell/blob/master/src/System.Management.Automation/engine/scriptparameterbindercontroller.cs#L70-L100
+        // Preserve expression evaluation order while interpreting adjacent values using browser-safe parameter metadata.
+        var entries = commandAst.Arguments.Cast<PowerShellWasmAst>().Concat(commandAst.Parameters)
+            .OrderBy(entry => entry is CommandArgumentAst argument ? argument.SourceOrder : ((CommandParameterAst)entry).SourceOrder);
+        var evaluatedEntries = new List<(PowerShellWasmAst Entry, object? Value)>();
+        foreach (var entry in entries)
         {
-            var value = await EvaluateExpressionAsync(argument.Value, cancellationToken);
-            if (argument.IsSplat)
+            var expression = entry is CommandArgumentAst argument ? argument.Value : ((CommandParameterAst)entry).Value;
+            var value = expression is null ? true : await EvaluateExpressionAsync(expression, cancellationToken);
+            evaluatedEntries.Add((entry, value));
+        }
+
+        // PowerShell evaluates argument expressions before binding, including calls that fail to bind.
+        // Collect explicit names first so they override the same name in every splat, regardless of source order.
+        foreach (var (entry, _) in evaluatedEntries)
+        {
+            if (entry is not CommandParameterAst parameter) continue;
+            var declared = ResolveParameter(function?.Parameters, parameter.Name);
+            var name = declared?.Name ?? parameter.Name;
+            if (function is not null && declared is null && !IsCommonParameter(name)) continue;
+            if (!explicitNames.Add(name)) throw new InvalidOperationException($"Parameter '-{name}' was specified more than once.");
+        }
+
+        foreach (var (entry, evaluatedValue) in evaluatedEntries)
+        {
+            if (entry is CommandArgumentAst argument)
             {
-                AddSplat(parameters, arguments, value);
+                var value = evaluatedValue;
+                if (argument.IsSplat && TryAsDictionary(value, out var dictionary))
+                {
+                    foreach (var item in dictionary)
+                    {
+                        var declaration = ResolveParameter(function?.Parameters, item.Key);
+                        var name = declaration?.Name ?? item.Key;
+                        if (function is not null && declaration is null && !IsCommonParameter(name))
+                        {
+                            unknownSplatArguments.Add(new UnboundCommandArgument("-" + item.Key + ":"));
+                            unknownSplatArguments.Add(new UnboundCommandArgument(item.Value));
+                            continue;
+                        }
+
+                        if (explicitNames.Contains(name)) continue;
+                        if (!splatNames.Add(name)) throw new InvalidOperationException($"Parameter '-{name}' was supplied by more than one splat.");
+                        parameters[name] = item.Value;
+                    }
+                }
+                else if (argument.IsSplat)
+                {
+                    AddSplat(parameters, arguments, value);
+                }
+                else
+                {
+                    arguments.Add(value);
+                }
+
                 continue;
             }
 
-            arguments.Add(value);
+            var parameter = (CommandParameterAst)entry;
+            var declared = ResolveParameter(function?.Parameters, parameter.Name);
+            var canonicalName = declared?.Name ?? parameter.Name;
+            var parameterValue = evaluatedValue;
+            if (function is not null && declared is null && !IsCommonParameter(canonicalName))
+            {
+                arguments.Add(new UnboundCommandArgument("-" + parameter.Name + (parameter.IsInlineValue ? ":" : string.Empty)));
+                if (parameter.Value is not null) arguments.Add(new UnboundCommandArgument(parameterValue));
+                continue;
+            }
+
+            var isSwitch = declared is not null ? IsSwitchParameter(declared)
+                : IsCommonSwitch(canonicalName) || command?.SwitchParameters.Contains(canonicalName, StringComparer.OrdinalIgnoreCase) == true;
+            if (isSwitch && !parameter.IsInlineValue && parameter.SourceOrder >= 0)
+            {
+                parameters[canonicalName] = true;
+                if (parameter.Value is not null) arguments.Add(parameterValue);
+            }
+            else
+            {
+                if (declared is not null && !isSwitch && parameter.Value is null)
+                {
+                    throw new InvalidOperationException($"Missing argument for parameter '-{canonicalName}'.");
+                }
+
+                parameters[canonicalName] = parameterValue;
+            }
         }
 
-        foreach (var parameter in commandAst.Parameters)
-        {
-            parameters[parameter.Name] = parameter.Value is null
-                ? true
-                : await EvaluateExpressionAsync(parameter.Value, cancellationToken);
-        }
-
+        arguments.AddRange(unknownSplatArguments);
         var commonParameters = PowerShellWasmCommonParameters.From(parameters);
-        if (executionContext.TryGetFunction(commandAst.Name, out var function))
+        if (function is not null)
         {
             await ExecuteWithCommonParametersAsync(
                 commonParameters,
@@ -584,7 +659,7 @@ internal sealed class PowerShellWasmAstExecutor(
             return;
         }
 
-        if (!commands.TryGetValue(commandAst.Name, out var command))
+        if (command is null)
         {
             throw new InvalidOperationException($"Command '{commandAst.Name}' is not registered in this browser runtime.");
         }
@@ -594,6 +669,34 @@ internal sealed class PowerShellWasmAstExecutor(
             commonParameters,
             () => command.InvokeAsync(context, cancellationToken));
     }
+
+    private sealed record UnboundCommandArgument(object? Value);
+
+    private static bool IsSwitchParameter(ParameterDeclarationAst parameter) =>
+        parameter.TypeName is not null && NormalizeCastTypeName(parameter.TypeName) == "switch";
+
+    private static ParameterDeclarationAst? ResolveParameter(IReadOnlyList<ParameterDeclarationAst>? declarations, string name)
+    {
+        if (declarations is null) return null;
+        var exact = declarations.FirstOrDefault(parameter => parameter.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+            || parameter.Aliases.Contains(name, StringComparer.OrdinalIgnoreCase));
+        if (exact is not null) return exact;
+        var matches = declarations.Where(parameter => parameter.Name.StartsWith(name, StringComparison.OrdinalIgnoreCase)
+            || parameter.Aliases.Any(alias => alias.StartsWith(name, StringComparison.OrdinalIgnoreCase))).ToArray();
+        return matches.Length switch
+        {
+            0 => null,
+            1 => matches[0],
+            _ => throw new InvalidOperationException($"Parameter '-{name}' is ambiguous.")
+        };
+    }
+
+    private static bool IsCommonSwitch(string name) => name.ToLowerInvariant() is "debug" or "db" or "verbose" or "vb" or "whatif" or "wi";
+
+    private static bool IsCommonParameter(string name) => IsCommonSwitch(name) || name.ToLowerInvariant() is
+        "erroraction" or "ea" or "informationaction" or "infa" or "progressaction" or "proga" or "warningaction" or "wa"
+        or "outvariable" or "ov" or "pipelinevariable" or "pv" or "errorvariable" or "ev" or "informationvariable" or "iv"
+        or "warningvariable" or "wv";
 
     private async ValueTask ExecuteWithCommonParametersAsync(
         PowerShellWasmCommonParameters commonParameters,
@@ -1066,8 +1169,14 @@ internal sealed class PowerShellWasmAstExecutor(
             ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, object?>(variables, StringComparer.OrdinalIgnoreCase);
         var boundParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        var unboundArguments = new List<object?>();
         var argumentIndex = 0;
         var inputBound = false;
+
+        foreach (var parameter in parameters)
+        {
+            locals[parameter.Name] = ConvertParameterValue(parameter, null, hasValue: false);
+        }
 
         foreach (var parameter in parameters)
         {
@@ -1081,27 +1190,21 @@ internal sealed class PowerShellWasmAstExecutor(
                 wasBound = true;
                 hasValue = true;
             }
-            else if (argumentIndex < arguments.Count)
+            else if (!IsSwitchParameter(parameter) && TryTakePositionalArgument(arguments, ref argumentIndex, unboundArguments, out value))
             {
-                value = arguments[argumentIndex++];
                 wasBound = true;
                 hasValue = true;
             }
-            else if (bindInputToFirstParameter && !inputBound)
+            else if (!IsSwitchParameter(parameter) && bindInputToFirstParameter && !inputBound)
             {
                 value = input;
                 inputBound = true;
                 wasBound = true;
                 hasValue = true;
             }
-            else if (parameter.DefaultValue is not null)
-            {
-                value = await EvaluateParameterDefaultAsync(parameter.DefaultValue, locals, cancellationToken);
-                hasValue = true;
-            }
             else
             {
-                value = null;
+                continue;
             }
 
             value = ConvertParameterValue(parameter, value, hasValue);
@@ -1113,9 +1216,35 @@ internal sealed class PowerShellWasmAstExecutor(
             }
         }
 
+        foreach (var parameter in parameters)
+        {
+            if (!boundParameters.ContainsKey(parameter.Name) && parameter.DefaultValue is not null)
+            {
+                var value = await EvaluateParameterDefaultAsync(parameter.DefaultValue, locals, cancellationToken);
+                value = ConvertParameterValue(parameter, value, hasValue: true);
+                ValidateParameterValue(parameter, value);
+                locals[parameter.Name] = value;
+            }
+        }
+
         locals["PSBoundParameters"] = boundParameters;
-        locals["args"] = parameters.Count == 0 ? arguments.ToArray() : arguments.Skip(argumentIndex).ToArray();
+        locals["args"] = unboundArguments.Concat(arguments.Skip(argumentIndex)
+            .Select(value => value is UnboundCommandArgument unbound ? unbound.Value : value)).ToArray();
         return locals;
+    }
+
+    private static bool TryTakePositionalArgument(IReadOnlyList<object?> arguments, ref int index,
+        List<object?> unboundArguments, out object? value)
+    {
+        while (index < arguments.Count)
+        {
+            value = arguments[index++];
+            if (value is not UnboundCommandArgument unbound) return true;
+            unboundArguments.Add(unbound.Value);
+        }
+
+        value = null;
+        return false;
     }
 
     private static bool TryGetNamedParameterValue(
@@ -1154,10 +1283,13 @@ internal sealed class PowerShellWasmAstExecutor(
 
         if (NormalizeCastTypeName(parameter.TypeName).Equals("switch", StringComparison.Ordinal))
         {
-            return hasValue && ToBoolean(value);
+            if (value is not null and not bool) throw new InvalidOperationException($"Parameter '-{parameter.Name}' requires a Boolean switch value.");
+            return hasValue && value is true;
         }
 
-        return hasValue ? CastValue(parameter.TypeName, value) : value;
+        var type = NormalizeCastTypeName(parameter.TypeName);
+        return hasValue || type is "int" or "long" or "byte" or "double" or "decimal" or "bool" or "string"
+            ? CastValue(parameter.TypeName, value) : value;
     }
 
     private static void ValidateParameterValue(ParameterDeclarationAst parameter, object? value)
@@ -1686,7 +1818,7 @@ internal sealed class PowerShellWasmAstExecutor(
         return ApplyBinaryOperator(left, binary.Operator, right);
     }
 
-    private static bool TryApplyCollectionComparison(
+    private bool TryApplyCollectionComparison(
         object? left,
         PowerShellWasmBinaryOperator op,
         object? right,
@@ -1739,11 +1871,11 @@ internal sealed class PowerShellWasmAstExecutor(
             or PowerShellWasmBinaryOperator.CaseSensitiveMatch
             or PowerShellWasmBinaryOperator.CaseSensitiveNotMatch;
 
-    private static bool ApplyCollectionComparison(object? item, PowerShellWasmBinaryOperator op, object? right) =>
+    private bool ApplyCollectionComparison(object? item, PowerShellWasmBinaryOperator op, object? right) =>
         op switch
         {
-            PowerShellWasmBinaryOperator.Equal => CompareValues(item, right, caseSensitive: false) == 0,
-            PowerShellWasmBinaryOperator.NotEqual => CompareValues(item, right, caseSensitive: false) != 0,
+            PowerShellWasmBinaryOperator.Equal => ValuesEqual(item, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotEqual => !ValuesEqual(item, right, caseSensitive: false),
             PowerShellWasmBinaryOperator.GreaterThan => CompareValues(item, right, caseSensitive: false) > 0,
             PowerShellWasmBinaryOperator.GreaterThanOrEqual => CompareValues(item, right, caseSensitive: false) >= 0,
             PowerShellWasmBinaryOperator.LessThan => CompareValues(item, right, caseSensitive: false) < 0,
@@ -1752,8 +1884,8 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.NotLike => !WildcardMatch(item, right, caseSensitive: false),
             PowerShellWasmBinaryOperator.Match => RegexIsMatch(item, right, caseSensitive: false),
             PowerShellWasmBinaryOperator.NotMatch => !RegexIsMatch(item, right, caseSensitive: false),
-            PowerShellWasmBinaryOperator.CaseSensitiveEqual => CompareValues(item, right, caseSensitive: true) == 0,
-            PowerShellWasmBinaryOperator.CaseSensitiveNotEqual => CompareValues(item, right, caseSensitive: true) != 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveEqual => ValuesEqual(item, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotEqual => !ValuesEqual(item, right, caseSensitive: true),
             PowerShellWasmBinaryOperator.CaseSensitiveGreaterThan => CompareValues(item, right, caseSensitive: true) > 0,
             PowerShellWasmBinaryOperator.CaseSensitiveGreaterThanOrEqual => CompareValues(item, right, caseSensitive: true) >= 0,
             PowerShellWasmBinaryOperator.CaseSensitiveLessThan => CompareValues(item, right, caseSensitive: true) < 0,
@@ -1810,7 +1942,7 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             PowerShellWasmBinaryOperator.Add => Add(left, right),
             PowerShellWasmBinaryOperator.Subtract => NormalizeNumber(ToNumber(left) - ToNumber(right)),
-            PowerShellWasmBinaryOperator.Multiply => NormalizeNumber(ToNumber(left) * ToNumber(right)),
+            PowerShellWasmBinaryOperator.Multiply => Multiply(left, right),
             PowerShellWasmBinaryOperator.Divide => NormalizeNumber(ToNumber(left) / ToNumber(right)),
             PowerShellWasmBinaryOperator.Remainder => NormalizeNumber(ToNumber(left) % ToNumber(right)),
             PowerShellWasmBinaryOperator.Range => Range(left, right),
@@ -1824,8 +1956,8 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.CaseSensitiveSplit => SplitString(ToInvariantString(left), ToInvariantString(right), ignoreCase: false),
             PowerShellWasmBinaryOperator.ShiftLeft => ToInt64(left) << Convert.ToInt32(ToInt64(right), CultureInfo.InvariantCulture),
             PowerShellWasmBinaryOperator.ShiftRight => ToInt64(left) >> Convert.ToInt32(ToInt64(right), CultureInfo.InvariantCulture),
-            PowerShellWasmBinaryOperator.Equal => CompareValues(left, right, caseSensitive: false) == 0,
-            PowerShellWasmBinaryOperator.NotEqual => CompareValues(left, right, caseSensitive: false) != 0,
+            PowerShellWasmBinaryOperator.Equal => ValuesEqual(left, right, caseSensitive: false),
+            PowerShellWasmBinaryOperator.NotEqual => !ValuesEqual(left, right, caseSensitive: false),
             PowerShellWasmBinaryOperator.GreaterThan => CompareValues(left, right, caseSensitive: false) > 0,
             PowerShellWasmBinaryOperator.GreaterThanOrEqual => CompareValues(left, right, caseSensitive: false) >= 0,
             PowerShellWasmBinaryOperator.LessThan => CompareValues(left, right, caseSensitive: false) < 0,
@@ -1842,8 +1974,8 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.TypeIs => TypeMatches(left, ToInvariantString(right)),
             PowerShellWasmBinaryOperator.TypeIsNot => !TypeMatches(left, ToInvariantString(right)),
             PowerShellWasmBinaryOperator.TypeAs => TryCastAs(ToInvariantString(right), left),
-            PowerShellWasmBinaryOperator.CaseSensitiveEqual => CompareValues(left, right, caseSensitive: true) == 0,
-            PowerShellWasmBinaryOperator.CaseSensitiveNotEqual => CompareValues(left, right, caseSensitive: true) != 0,
+            PowerShellWasmBinaryOperator.CaseSensitiveEqual => ValuesEqual(left, right, caseSensitive: true),
+            PowerShellWasmBinaryOperator.CaseSensitiveNotEqual => !ValuesEqual(left, right, caseSensitive: true),
             PowerShellWasmBinaryOperator.CaseSensitiveGreaterThan => CompareValues(left, right, caseSensitive: true) > 0,
             PowerShellWasmBinaryOperator.CaseSensitiveGreaterThanOrEqual => CompareValues(left, right, caseSensitive: true) >= 0,
             PowerShellWasmBinaryOperator.CaseSensitiveLessThan => CompareValues(left, right, caseSensitive: true) < 0,
@@ -1926,19 +2058,272 @@ internal sealed class PowerShellWasmAstExecutor(
         };
     }
 
-    private static object Add(object? left, object? right)
+    // Behavioral guidance: PSBinaryOperationBinder.BinaryAdd/BinaryMultiply dispatch on the left operand.
+    // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/runtime/Binding/Binders.cs
+    // Browser-safe adaptation: supported values only; no arbitrary operator overload or reflection dispatch.
+    private object? Add(object? left, object? right)
     {
-        if (left is string || right is string)
+        if (left is null)
         {
-            return ToInvariantString(left) + ToInvariantString(right);
+            return right;
         }
 
-        if (left is object?[] leftArray)
+        if (left is string or char)
         {
-            return leftArray.Concat(Enumerate(right)).ToArray();
+            var text = IsOperatorCollection(right)
+                ? string.Join(executionContext.OutputFieldSeparator, EnumerateOperatorOperand(right).Select(ToInvariantString))
+                : ToInvariantString(right);
+            return ToInvariantString(left) + text;
         }
 
-        return NormalizeNumber(ToNumber(left) + ToNumber(right));
+        if (IsOperatorCollection(left))
+        {
+            return EnumerateOperatorOperand(left).Concat(EnumerateOperatorOperand(right)).ToArray();
+        }
+
+        if (left is System.Collections.IDictionary leftDictionary)
+        {
+            if (right is not System.Collections.IDictionary rightDictionary)
+            {
+                throw new InvalidOperationException("A dictionary can only be added to another dictionary.");
+            }
+
+            var result = new PowerShellWasmHashtable();
+            foreach (var dictionary in new[] { leftDictionary, rightDictionary })
+            {
+                foreach (System.Collections.DictionaryEntry entry in dictionary)
+                {
+                    var key = ToInvariantString(entry.Key);
+                    if (!result.TryAdd(key, entry.Value))
+                    {
+                        throw new InvalidOperationException($"The key '{key}' already exists in the combined dictionary.");
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        return NumericArithmetic(left, right, multiply: false);
+    }
+
+    private static object? Multiply(object? left, object? right)
+    {
+        if (left is null)
+        {
+            return null;
+        }
+
+        if (left is string || IsOperatorCollection(left))
+        {
+            var count = Convert.ToInt32(ToArithmeticNumber(right), CultureInfo.InvariantCulture);
+            if (count < 0)
+            {
+                throw new InvalidOperationException("A repetition count cannot be negative.");
+            }
+
+            if (left is string text)
+            {
+                if (count == 0 || text.Length == 0)
+                {
+                    return string.Empty;
+                }
+
+                var result = new StringBuilder(checked(text.Length * count));
+                for (var i = 0; i < count; i++)
+                {
+                    result.Append(text);
+                }
+
+                return result.ToString();
+            }
+
+            return left switch
+            {
+                string[] values => RepeatArray(values, count),
+                int[] values => RepeatArray(values, count),
+                long[] values => RepeatArray(values, count),
+                double[] values => RepeatArray(values, count),
+                decimal[] values => RepeatArray(values, count),
+                byte[] values => RepeatArray(values, count),
+                bool[] values => RepeatArray(values, count),
+                DateTime[] values => RepeatArray(values, count),
+                _ => RepeatArray(EnumerateOperatorOperand(left).ToArray(), count)
+            };
+        }
+
+        if (left is bool or char)
+        {
+            throw new InvalidOperationException("This value does not support multiplication.");
+        }
+
+        return NumericArithmetic(left, right, multiply: true);
+    }
+
+    private static T[] RepeatArray<T>(T[] values, int count)
+    {
+        if (values.Length == 0 || count == 0)
+        {
+            return [];
+        }
+
+        var result = new T[checked(values.Length * count)];
+        for (var offset = 0; offset < result.Length; offset += values.Length)
+        {
+            Array.Copy(values, 0, result, offset, values.Length);
+        }
+
+        return result;
+    }
+
+    private static bool IsOperatorCollection(object? value) =>
+        value is System.Collections.IEnumerable and not string and not System.Collections.IDictionary
+            and not IReadOnlyDictionary<string, object?>;
+
+    // Unlike pipeline enumeration, concatenation retains explicit nulls and enumerates byte arrays.
+    private static IEnumerable<object?> EnumerateOperatorOperand(object? value) =>
+        IsOperatorCollection(value) ? ((System.Collections.IEnumerable)value!).Cast<object?>() : [value];
+
+    private static object ToArithmeticNumber(object? value)
+    {
+        if (value is null) return 0;
+        if (value is bool boolean) return boolean ? 1 : 0;
+        if (value is byte octet) return (int)octet;
+        if (value is char character) return (int)character;
+        if (value is int or long or double or decimal) return value;
+        if (value is string text)
+        {
+            return ParseArithmeticNumber(text);
+        }
+
+        throw new InvalidOperationException($"Value '{value}' is not numeric.");
+    }
+
+    private static object ParseArithmeticNumber(string text)
+    {
+        var token = text.Trim();
+        if (token.Length == 0) return 0;
+
+        var multiplier = 1L;
+        var units = new[] { "kb", "mb", "gb", "tb", "pb" };
+        for (var i = 0; i < units.Length; i++)
+        {
+            if (token.EndsWith(units[i], StringComparison.OrdinalIgnoreCase))
+            {
+                multiplier = 1L << ((i + 1) * 10);
+                token = token[..^2];
+                break;
+            }
+        }
+
+        if (token.Length == 0) throw new InvalidOperationException($"Value '{text}' is not numeric.");
+        var negative = token.StartsWith('-');
+        var unsigned = token[0] is '+' or '-' ? token[1..] : token;
+        var radix = unsigned.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? 16
+            : unsigned.StartsWith("0b", StringComparison.OrdinalIgnoreCase) ? 2 : 10;
+        var forceLong = token.EndsWith('l') || token.EndsWith('L');
+        var forceDecimal = radix == 10 && (token.EndsWith('d') || token.EndsWith('D'));
+        if (forceLong || forceDecimal)
+        {
+            token = token[..^1];
+            unsigned = unsigned[..^1];
+        }
+
+        object value;
+        if (radix != 10)
+        {
+            var digits = unsigned[2..];
+            if (radix == 2 && digits.Length == 0
+                || digits.Any(ch => radix == 2 ? ch is not ('0' or '1') : !char.IsAsciiHexDigit(ch)))
+            {
+                throw new InvalidOperationException($"Value '{text}' is not numeric.");
+            }
+
+            var bits = digits.Length == 0 ? 0UL : Convert.ToUInt64(digits, radix);
+            if (!forceLong && (digits.Length <= (radix == 16 ? 8 : 32)
+                || digits.Length < (radix == 16 ? 16 : 64) && bits <= int.MaxValue))
+            {
+                var integer = unchecked((int)bits);
+                value = negative && integer == int.MinValue ? (object)-(long)integer : negative ? -integer : integer;
+            }
+            else
+            {
+                var integer = unchecked((long)bits);
+                value = negative ? checked(-integer) : integer;
+            }
+        }
+        else
+        {
+            var integerStyle = NumberStyles.Integer | NumberStyles.AllowThousands;
+            var realStyle = NumberStyles.Float | NumberStyles.AllowThousands;
+            if (forceDecimal)
+            {
+                value = decimal.Parse(token, realStyle, CultureInfo.InvariantCulture);
+            }
+            else if (!forceLong && int.TryParse(token, integerStyle, CultureInfo.InvariantCulture, out var integer))
+            {
+                value = integer;
+            }
+            else if (long.TryParse(token, integerStyle, CultureInfo.InvariantCulture, out var longInteger))
+            {
+                value = longInteger;
+            }
+            else
+            {
+                var number = double.Parse(token, realStyle, CultureInfo.InvariantCulture);
+                value = forceLong ? (object)Convert.ToInt64(number) : number;
+            }
+        }
+
+        if (multiplier == 1) return value;
+        if (value is decimal decimalValue) return decimalValue * multiplier;
+        if (value is double doubleValue) return doubleValue * multiplier;
+        try
+        {
+            var scaled = checked(Convert.ToInt64(value, CultureInfo.InvariantCulture) * multiplier);
+            return value is int && scaled is >= int.MinValue and <= int.MaxValue ? (object)(int)scaled : scaled;
+        }
+        catch (OverflowException)
+        {
+            return Convert.ToDouble(value, CultureInfo.InvariantCulture) * multiplier;
+        }
+    }
+
+    private static object NumericArithmetic(object left, object? right, bool multiply)
+    {
+        var lhs = ToArithmeticNumber(left);
+        var rhs = ToArithmeticNumber(right);
+        if (lhs is decimal || rhs is decimal)
+        {
+            var a = Convert.ToDecimal(lhs, CultureInfo.InvariantCulture);
+            var b = Convert.ToDecimal(rhs, CultureInfo.InvariantCulture);
+            return multiply ? a * b : a + b;
+        }
+
+        if (lhs is not double && rhs is not double)
+        {
+            try
+            {
+                if (lhs is long || rhs is long)
+                {
+                    var a = Convert.ToInt64(lhs, CultureInfo.InvariantCulture);
+                    var b = Convert.ToInt64(rhs, CultureInfo.InvariantCulture);
+                    return multiply ? checked(a * b) : checked(a + b);
+                }
+
+                var x = (int)lhs;
+                var y = (int)rhs;
+                return multiply ? checked(x * y) : checked(x + y);
+            }
+            catch (OverflowException)
+            {
+                // PowerShell promotes overflowing integer arithmetic to double.
+            }
+        }
+
+        var first = Convert.ToDouble(lhs, CultureInfo.InvariantCulture);
+        var second = Convert.ToDouble(rhs, CultureInfo.InvariantCulture);
+        return multiply ? first * second : first + second;
     }
 
     private static object?[] Range(object? left, object? right)
@@ -1964,17 +2349,108 @@ internal sealed class PowerShellWasmAstExecutor(
     }
 
     private static string Join(object? left, object? right) =>
-        string.Join(ToInvariantString(right), Enumerate(left).Select(ToInvariantString));
+        string.Join(ToInvariantString(right), EnumerateOperatorOperand(left).Select(ToInvariantString));
 
-    private static int CompareValues(object? left, object? right, bool caseSensitive)
+    // Behavioral references: PSBinaryOperationBinder's scalar comparisons and LanguagePrimitives.Equals/Compare.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L2866-L3075
+    // Browser-safe adaptation: left-directed conversion for supported values, without arbitrary conversion/reflection hooks.
+    private bool ValuesEqual(object? left, object? right, bool caseSensitive)
     {
-        if (TryToNumber(left, out var leftNumber) && TryToNumber(right, out var rightNumber))
+        if (left is null || right is null)
         {
-            return leftNumber.CompareTo(rightNumber);
+            return left is null && right is null;
         }
 
-        return string.Compare(ToInvariantString(left), ToInvariantString(right),
-            caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            return CompareValues(left, right, caseSensitive) == 0;
+        }
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException
+            or InvalidCastException or ArgumentException)
+        {
+            // An unsuccessful equality conversion is a non-match; ordering still reports the conversion failure.
+            return false;
+        }
+    }
+
+    private double CompareValues(object? left, object? right, bool caseSensitive)
+    {
+        if (left is null)
+        {
+            return right is null ? 0 : IsComparisonNumber(right) && CompareNumbers(right, 0) < 0 ? 1 : -1;
+        }
+
+        if (right is null)
+        {
+            return IsComparisonNumber(left) && CompareNumbers(left, 0) < 0 ? -1 : 1;
+        }
+
+        if (left is string text)
+        {
+            var rightText = IsOperatorCollection(right)
+                ? string.Join(executionContext.OutputFieldSeparator, EnumerateOperatorOperand(right).Select(ToInvariantString))
+                : ToInvariantString(right);
+            return CultureInfo.InvariantCulture.CompareInfo.Compare(text, rightText,
+                caseSensitive ? CompareOptions.None : CompareOptions.IgnoreCase);
+        }
+
+        if (left is bool boolean)
+        {
+            return boolean.CompareTo(ToComparisonBoolean(right));
+        }
+
+        if (IsComparisonNumber(left))
+        {
+            return CompareNumbers(left, ToArithmeticNumber(right));
+        }
+
+        var supportedType = left switch
+        {
+            DateTime => "datetime",
+            DateTimeOffset => "datetimeoffset",
+            TimeSpan => "timespan",
+            Guid => "guid",
+            _ => null
+        };
+        if (supportedType is not null && left is IComparable comparable)
+        {
+            return comparable.CompareTo(CastValue(supportedType, right));
+        }
+
+        if (left.Equals(right)) return 0;
+        throw new InvalidOperationException("These values cannot be ordered in this browser-safe runtime.");
+    }
+
+    private static bool IsComparisonNumber(object? value) => value is byte or int or long or double or decimal;
+
+    private static double CompareNumbers(object left, object right)
+    {
+        if (left is decimal || right is decimal)
+        {
+            return Convert.ToDecimal(left, CultureInfo.InvariantCulture).CompareTo(
+                Convert.ToDecimal(right, CultureInfo.InvariantCulture));
+        }
+
+        if (left is double || right is double)
+        {
+            var first = Convert.ToDouble(left, CultureInfo.InvariantCulture);
+            var second = Convert.ToDouble(right, CultureInfo.InvariantCulture);
+            return double.IsNaN(first) || double.IsNaN(second) ? double.NaN : first.CompareTo(second);
+        }
+
+        return Convert.ToInt64(left, CultureInfo.InvariantCulture).CompareTo(Convert.ToInt64(right, CultureInfo.InvariantCulture));
+    }
+
+    private static bool ToComparisonBoolean(object? value)
+    {
+        if (IsComparisonNumber(value)) return Convert.ToDouble(value, CultureInfo.InvariantCulture) != 0;
+        if (IsOperatorCollection(value))
+        {
+            var items = EnumerateOperatorOperand(value).ToArray();
+            return items.Length > 1 || items.Length == 1 && ToComparisonBoolean(items[0]);
+        }
+
+        return ToBoolean(value);
     }
 
     private static bool WildcardMatch(object? left, object? right, bool caseSensitive)
@@ -2033,8 +2509,8 @@ internal sealed class PowerShellWasmAstExecutor(
         return Regex.Split(value, pattern, options).Cast<object?>().ToArray();
     }
 
-    private static bool Contains(object? collection, object? value, bool caseSensitive) =>
-        Enumerate(collection).Any(item => CompareValues(item, value, caseSensitive) == 0);
+    private bool Contains(object? collection, object? value, bool caseSensitive) =>
+        EnumerateOperatorOperand(collection).Any(item => ValuesEqual(item, value, caseSensitive));
 
     private static RegexOptions RegexOptionsFor(bool caseSensitive) =>
         caseSensitive ? RegexOptions.CultureInvariant : RegexOptions.CultureInvariant | RegexOptions.IgnoreCase;
@@ -2228,24 +2704,32 @@ internal sealed class PowerShellWasmAstExecutor(
                 throw new InvalidOperationException($"Index {indexes[0]} is outside the target collection.");
             }
 
-            list[itemIndex] = CoerceListItemValue(list[itemIndex], value);
+            list[itemIndex] = CoerceListItemValue(list, value);
             return;
         }
 
         throw new InvalidOperationException("Index assignment is supported only for dictionaries, arrays, and lists.");
     }
 
-    private static object? CoerceListItemValue(object? existingValue, object? value)
+    // Behavioral reference: PSSetIndexBinder.SetIndexArray converts to the collection's element type before assignment.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L4343-L4354
+    // Browser-safe adaptation: use only supported array/list types; object collections retain heterogeneous values.
+    private static object? CoerceListItemValue(System.Collections.IList list, object? value)
     {
-        if (existingValue is null || value is null)
+        var elementType = list switch
         {
-            return value;
-        }
+            string[] or List<string> => "string",
+            int[] or List<int> => "int",
+            long[] or List<long> => "long",
+            double[] or List<double> => "double",
+            decimal[] or List<decimal> => "decimal",
+            bool[] or List<bool> => "bool",
+            byte[] or List<byte> => "byte",
+            DateTime[] or List<DateTime> => "datetime",
+            _ => null
+        };
 
-        var targetType = existingValue.GetType();
-        return targetType.IsInstanceOfType(value)
-            ? value
-            : Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
+        return elementType is null ? value : CastValue(elementType, value);
     }
 
     private static bool TrySetDictionaryValue(object? target, string key, object? value)
@@ -2508,34 +2992,6 @@ internal sealed class PowerShellWasmAstExecutor(
             1 => ToBoolean(values[0]),
             _ => true
         };
-
-    private static bool TryToNumber(object? value, out double number)
-    {
-        switch (value)
-        {
-            case bool boolValue:
-                number = boolValue ? 1 : 0;
-                return true;
-            case int intValue:
-                number = intValue;
-                return true;
-            case long longValue:
-                number = longValue;
-                return true;
-            case double doubleValue:
-                number = doubleValue;
-                return true;
-            case decimal decimalValue:
-                number = (double)decimalValue;
-                return true;
-            case string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed):
-                number = parsed;
-                return true;
-            default:
-                number = 0;
-                return false;
-        }
-    }
 
     private static string ToInvariantString(object? value) =>
         Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;

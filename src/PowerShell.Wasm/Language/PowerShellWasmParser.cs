@@ -958,35 +958,43 @@ public sealed class PowerShellWasmParser
 
         while (position < tokens.Count)
         {
+            var sourceOrder = position;
             if (tokens[position].Kind == PowerShellWasmTokenKind.Parameter)
             {
                 var name = tokens[position++].Text;
-                if (position >= tokens.Count || tokens[position].Kind == PowerShellWasmTokenKind.Parameter || IsSplatStart(tokens, position))
+                var inline = position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.Colon;
+                if (inline) position++;
+                if (position >= tokens.Count || tokens[position].Kind == PowerShellWasmTokenKind.Parameter
+                    || IsSplatStart(tokens, position) || IsOperatorParameter(tokens, position))
                 {
-                    parameters.Add(new(name, null));
+                    if (inline) throw new InvalidOperationException($"Expected a value after '-{name}:'.");
+                    parameters.Add(new(name, null) { SourceOrder = sourceOrder });
                     continue;
                 }
 
                 var argumentTokens = ReadCommandArgument(tokens, ref position);
-                parameters.Add(new(name, ParseParameterArgumentExpression(name, argumentTokens)));
+                parameters.Add(new(name, ParseParameterArgumentExpression(name, argumentTokens))
+                    { SourceOrder = sourceOrder, IsInlineValue = inline });
                 continue;
             }
 
             if (TryReadOperatorParameter(tokens, ref position, out var operatorParameter))
             {
-                parameters.Add(operatorParameter);
+                parameters.Add(operatorParameter with { SourceOrder = sourceOrder });
                 continue;
             }
 
             if (IsSplatStart(tokens, position))
             {
                 var name = tokens[position + 1].Text;
-                arguments.Add(new CommandArgumentAst(new VariableExpressionAst(name, false), IsSplat: true));
+                arguments.Add(new CommandArgumentAst(new VariableExpressionAst(name, false), IsSplat: true)
+                    { SourceOrder = sourceOrder });
                 position += 2;
                 continue;
             }
 
-            arguments.Add(new CommandArgumentAst(ParseCommandArgumentExpression(ReadCommandArgument(tokens, ref position))));
+            arguments.Add(new CommandArgumentAst(ParseCommandArgumentExpression(ReadCommandArgument(tokens, ref position)))
+                { SourceOrder = sourceOrder });
         }
 
         return new CommandAst(GetCommandName(tokens[0]), parameters, arguments);
@@ -1060,6 +1068,24 @@ public sealed class PowerShellWasmParser
     }
 
     private static IReadOnlyList<PowerShellWasmToken> ReadCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    {
+        var start = position;
+        ReadSingleCommandArgument(tokens, ref position);
+        while (position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.Comma)
+        {
+            position++;
+            if (position >= tokens.Count || tokens[position].Kind == PowerShellWasmTokenKind.Parameter)
+            {
+                throw new InvalidOperationException("Expected a command argument after ','.");
+            }
+
+            ReadSingleCommandArgument(tokens, ref position);
+        }
+
+        return tokens.Skip(start).Take(position - start).ToArray();
+    }
+
+    private static IReadOnlyList<PowerShellWasmToken> ReadSingleCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
     {
         var start = position;
         if (tokens[position].Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or
@@ -1205,15 +1231,73 @@ public sealed class PowerShellWasmParser
 
     private static ExpressionAst ParseParenthesizedExpressionValue(IReadOnlyList<PowerShellWasmToken> tokens)
     {
+        // Behavioral guidance: ParenthesizedExpressionRule accepts one pipeline-chain; only $()/@() accept statement lists.
+        // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/parser/Parser.cs
+        // Browser-safe adaptation: preserve that distinction using the compact PSWasm AST, without upstream error recovery.
         if (HasTopLevelStatementSeparator(tokens))
         {
-            return new ScriptExpressionAst(ParseScript(tokens));
+            throw new InvalidOperationException("Expected ')' after the parenthesized pipeline. Use '$()' for a statement list.");
         }
 
         var normalized = RemoveTopLevelNewLines(tokens);
-        return IsStatementExpressionValue(normalized)
-            ? new StatementExpressionAst(ParseStatement(normalized))
-            : ParseExpression(normalized);
+        if (normalized.Count == 0)
+        {
+            throw new InvalidOperationException("Expected an expression after '('.");
+        }
+
+        // Grouped assignments emit their assigned value, including command or control-statement output on the right.
+        if (TryFindTopLevelCompoundAssignment(normalized, out var operatorPosition, out var assignmentOperator))
+        {
+            var target = new ExpressionParser(normalized.Take(operatorPosition).ToArray()).Parse(requireComplete: true);
+            if (IsSettableAssignmentTarget(target))
+            {
+                return new SettableCompoundAssignmentExpressionAst(target, assignmentOperator,
+                    ParseAssignmentValue(normalized.Skip(operatorPosition + 2).ToArray()));
+            }
+        }
+
+        var equals = FindTopLevel(normalized, PowerShellWasmTokenKind.Equals);
+        if (equals > 0)
+        {
+            var target = new ExpressionParser(normalized.Take(equals).ToArray()).Parse(requireComplete: true);
+            if (IsSettableAssignmentTarget(target))
+            {
+                return new SettableAssignmentExpressionAst(target, ParseAssignmentValue(normalized.Skip(equals + 1).ToArray()));
+            }
+        }
+
+        var chain = SplitTopLevelPipelineChain(normalized);
+        if (chain.Segments.Count > 1)
+        {
+            var first = ParsePipeline(chain.Segments[0]);
+            var clauses = chain.Operators.Select((op, index) =>
+                new PipelineChainClauseAst(op, ParsePipeline(chain.Segments[index + 1]))).ToArray();
+            return new StatementExpressionAst(new PipelineChainStatementAst(first, clauses));
+        }
+
+        var statement = ParsePipeline(normalized);
+        return statement is ExpressionStatementAst expression ? expression.Expression : new StatementExpressionAst(statement);
+
+        static ExpressionAst ParseAssignmentValue(IReadOnlyList<PowerShellWasmToken> valueTokens) =>
+            IsStatementAssignmentValue(valueTokens)
+                ? new StatementExpressionAst(ParseStatement(valueTokens))
+                : new ExpressionParser(valueTokens).Parse(requireComplete: true);
+
+        static StatementAst ParsePipeline(IReadOnlyList<PowerShellWasmToken> pipelineTokens)
+        {
+            var segments = SplitTopLevel(pipelineTokens, PowerShellWasmTokenKind.Pipe);
+            if (segments.Count > 1)
+            {
+                return new PipelineStatementAst(segments.Select(segment => IsCommandSegment(segment)
+                    ? (PipelineElementAst)new CommandPipelineElementAst(ParseCommand(segment))
+                    : new ExpressionPipelineElementAst(new ExpressionParser(segment).Parse(requireComplete: true))).ToArray());
+            }
+
+            // Pipeline grammar treats words such as 'if' as command names here, not as control-flow statements.
+            return IsCommandSegment(pipelineTokens)
+                ? new CommandStatementAst(ParseCommand(pipelineTokens))
+                : new ExpressionStatementAst(new ExpressionParser(pipelineTokens).Parse(requireComplete: true));
+        }
     }
 
     private static bool IsCommandSegment(IReadOnlyList<PowerShellWasmToken> tokens) =>
@@ -1765,14 +1849,25 @@ public sealed class PowerShellWasmParser
     {
         private int _position;
 
-        public ExpressionAst Parse()
+        public ExpressionAst Parse(bool requireComplete = false)
         {
             if (tokens.Count == 0)
             {
+                if (requireComplete)
+                {
+                    throw new InvalidOperationException("Expected an expression.");
+                }
+
                 return new StringExpressionAst(string.Empty, IsExpandable: false);
             }
 
-            return ParseCommaExpression();
+            var expression = ParseCommaExpression();
+            if (requireComplete && Current.Kind != PowerShellWasmTokenKind.EndOfInput)
+            {
+                throw new InvalidOperationException($"Unexpected token '{Current.Text}' in parenthesized expression.");
+            }
+
+            return expression;
         }
 
         private ExpressionAst ParseCommaExpression()

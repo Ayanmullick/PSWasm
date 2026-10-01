@@ -2,6 +2,8 @@ namespace PSWasm.Commands;
 
 internal sealed class OutStringCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["Stream"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var stream = context.Parameters.TryGetValue("Stream", out var streamValue) &&

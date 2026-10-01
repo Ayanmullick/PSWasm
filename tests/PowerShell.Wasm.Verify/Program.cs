@@ -5,7 +5,12 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("parameter binding", ParameterBindingVerification.VerifyAsync),
+    ("parenthesized expression grammar", ParenthesizedExpressionVerification.VerifyAsync),
     ("operators and expressions", VerifyOperatorsAsync),
+    ("arithmetic operand semantics", ArithmeticVerification.VerifyAsync),
+    ("array assignment types", ArrayAssignmentVerification.VerifyAsync),
+    ("comparison operand semantics", ComparisonVerification.VerifyAsync),
     ("ternary operator", VerifyTernaryOperatorAsync),
     ("null conditional member access", VerifyNullConditionalMemberAccessAsync),
     ("regular expressions", VerifyRegularExpressionsAsync),
@@ -52,8 +57,17 @@ var tests = new (string Name, Func<ValueTask> Run)[]
 
 foreach (var test in tests)
 {
-    await test.Run();
-    Console.WriteLine($"PASS {test.Name}");
+    try
+    {
+        await test.Run();
+        Console.WriteLine($"PASS {test.Name}");
+    }
+    catch (Exception error)
+    {
+        Console.Error.WriteLine($"FAIL {test.Name}: {error}");
+        Environment.ExitCode = 1;
+        return;
+    }
 }
 
 static async ValueTask VerifyOperatorsAsync()
@@ -1420,13 +1434,13 @@ if ((Write-Output 'x') -eq 'x') { 'parenthesized command ok' }
 if (('pipe' | Write-Output) -eq 'pipe') { 'parenthesized pipeline ok' }
 $Value = (Write-Output ' abc ').Trim()
 $Value
-$Grouped = (Write-Output 'a'; Write-Output 'b')
+$Grouped = $(Write-Output 'a'; Write-Output 'b')
 $Grouped.Count
 $Grouped[0]
 $Grouped[1]
-(Write-Output 'c'; Write-Output 'd').Count
-(Write-Output ' padded '; Write-Output 'ignored')[0].Trim()
-$Multiline = (
+$(Write-Output 'c'; Write-Output 'd').Count
+$(Write-Output ' padded '; Write-Output 'ignored')[0].Trim()
+$Multiline = $(
     Write-Output 'line-a'
     Write-Output 'line-b'
 )
@@ -1435,7 +1449,7 @@ $Multiline[0]
 $Multiline[1]
 (1 +
     2)
-(
+$(
     $LocalValue = 'inside'
     $LocalValue
 )

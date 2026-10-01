@@ -5,6 +5,8 @@ namespace PSWasm.Commands;
 
 internal sealed class ConvertToHtmlCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["Fragment"];
+
     private const string DefaultTitle = "HTML TABLE";
 
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)

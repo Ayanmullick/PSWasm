@@ -2,6 +2,8 @@ namespace PSWasm.Commands;
 
 internal sealed class GetVariableCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["ValueOnly"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var valueOnly = context.Parameters.TryGetValue("ValueOnly", out var valueOnlyValue) &&

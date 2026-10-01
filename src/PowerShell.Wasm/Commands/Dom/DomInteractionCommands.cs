@@ -133,6 +133,8 @@ internal sealed class UnregisterDomEventCommand : IPowerShellWasmCommand
 
 internal sealed class RegisterDomEventCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["PreventDefault"];
+
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var host = DomCommandUtilities.GetDomHost(context);

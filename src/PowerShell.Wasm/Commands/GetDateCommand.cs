@@ -4,6 +4,8 @@ namespace PSWasm.Commands;
 
 internal sealed class GetDateCommand(bool timeOnly = false) : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["Utc"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var useUtc = context.Parameters.TryGetValue("Utc", out var utc) && IsTruthy(utc);

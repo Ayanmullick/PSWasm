@@ -30,6 +30,8 @@ internal sealed class FormatListCommand : IPowerShellWasmCommand
 
 internal sealed class FormatTableCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["HideTableHeaders"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var input = FormatCommandUtilities.GetInput(context).ToArray();

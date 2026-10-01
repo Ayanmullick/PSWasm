@@ -7,6 +7,8 @@ namespace PSWasm.Commands;
 
 internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["SkipHttpErrorCheck"];
+
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         using var response = await WebRequestCommandUtilities.SendAsync(
@@ -20,6 +22,8 @@ internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShe
 
 internal sealed class InvokeRestMethodCommand(HttpClient httpClient) : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["SkipHttpErrorCheck"];
+
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         using var response = await WebRequestCommandUtilities.SendAsync(

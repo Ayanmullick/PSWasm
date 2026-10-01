@@ -6,6 +6,8 @@ namespace PSWasm.Commands;
 
 internal sealed class ConvertToJsonCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["Compress"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var input = GetInput(context);

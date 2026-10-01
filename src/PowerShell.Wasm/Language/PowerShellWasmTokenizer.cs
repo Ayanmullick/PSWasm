@@ -312,7 +312,7 @@ public static class PowerShellWasmTokenizer
             var tokenStart = position;
             position++;
             var nameStart = position;
-            while (position < script.Length && IsBareWordCharacter(script[position]))
+            while (position < script.Length && IsBareWordCharacter(script[position]) && script[position] != ':')
             {
                 position++;
             }

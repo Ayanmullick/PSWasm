@@ -2,6 +2,8 @@ namespace PSWasm.Commands;
 
 internal sealed class SortObjectCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["Descending", "Unique"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var propertyNames = PowerShellWasmCommandUtilities.GetPropertyNames(context);

@@ -2,6 +2,8 @@ namespace PSWasm.Commands;
 
 internal sealed class MeasureObjectCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["Sum", "Average", "Minimum", "Maximum"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var propertyNames = PowerShellWasmCommandUtilities.GetPropertyNames(context);
@@ -31,22 +33,22 @@ internal sealed class MeasureObjectCommand : IPowerShellWasmCommand
 
     private static void AddStatistics(Dictionary<string, object?> result, PowerShellWasmCommandContext context, IReadOnlyList<double> values)
     {
-        if (context.Parameters.ContainsKey("Sum"))
+        if (PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Sum")))
         {
             result["Sum"] = NormalizeNumber(values.Sum());
         }
 
-        if (context.Parameters.ContainsKey("Average"))
+        if (PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Average")))
         {
             result["Average"] = values.Count == 0 ? null : NormalizeNumber(values.Average());
         }
 
-        if (context.Parameters.ContainsKey("Minimum"))
+        if (PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Minimum")))
         {
             result["Minimum"] = values.Count == 0 ? null : NormalizeNumber(values.Min());
         }
 
-        if (context.Parameters.ContainsKey("Maximum"))
+        if (PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Maximum")))
         {
             result["Maximum"] = values.Count == 0 ? null : NormalizeNumber(values.Max());
         }

@@ -126,9 +126,16 @@ public sealed record CommandAst(
     IReadOnlyList<CommandParameterAst> Parameters,
     IReadOnlyList<CommandArgumentAst> Arguments) : PowerShellWasmAst;
 
-public sealed record CommandParameterAst(string Name, ExpressionAst? Value) : PowerShellWasmAst;
+public sealed record CommandParameterAst(string Name, ExpressionAst? Value) : PowerShellWasmAst
+{
+    public int SourceOrder { get; init; } = -1;
+    public bool IsInlineValue { get; init; }
+}
 
-public sealed record CommandArgumentAst(ExpressionAst Value, bool IsSplat = false) : PowerShellWasmAst;
+public sealed record CommandArgumentAst(ExpressionAst Value, bool IsSplat = false) : PowerShellWasmAst
+{
+    public int SourceOrder { get; init; } = -1;
+}
 
 public enum PipelineChainOperator
 {

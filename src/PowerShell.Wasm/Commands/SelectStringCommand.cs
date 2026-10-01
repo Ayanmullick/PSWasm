@@ -5,6 +5,8 @@ namespace PSWasm.Commands;
 
 internal sealed class SelectStringCommand : IPowerShellWasmCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["CaseSensitive", "NotMatch", "AllMatches"];
+
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var patterns = GetPatterns(context);
@@ -13,11 +15,11 @@ internal sealed class SelectStringCommand : IPowerShellWasmCommand
             return ValueTask.CompletedTask;
         }
 
-        var options = context.Parameters.ContainsKey("CaseSensitive")
+        var options = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("CaseSensitive"))
             ? RegexOptions.CultureInvariant
             : RegexOptions.CultureInvariant | RegexOptions.IgnoreCase;
-        var notMatch = context.Parameters.ContainsKey("NotMatch");
-        var allMatches = context.Parameters.ContainsKey("AllMatches");
+        var notMatch = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("NotMatch"));
+        var allMatches = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("AllMatches"));
 
         foreach (var line in GetInput(context))
         {

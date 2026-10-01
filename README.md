@@ -71,7 +71,7 @@ PSWasm does not provide the full desktop/server PowerShell host. Providers, nati
 
 ## Documentation and Contributing
 
-* [Runtime Scope](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Scope) and [Language Support](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support)
+* [Runtime Scope](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Scope) and [Language Support](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support): operators, collections, function binding, and command expressions
 * [Browser Commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands)
 * [DOM Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlets) and [DOM Cmdlet Reference](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlet-Reference)
 * [Browser Usage](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Usage)
