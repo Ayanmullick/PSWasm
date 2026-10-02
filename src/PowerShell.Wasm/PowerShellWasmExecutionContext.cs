@@ -120,15 +120,16 @@ public sealed class PowerShellWasmExecutionContext
     internal IEnumerable<string> GetFunctionNames() =>
         _functions.Keys;
 
-    internal IDisposable WithVariableScope(IReadOnlyDictionary<string, object?> variables)
+    internal IDisposable WithScriptScope(IReadOnlyDictionary<string, object?> variables)
     {
         var snapshot = new Dictionary<string, object?>(_variables, StringComparer.OrdinalIgnoreCase);
+        var functions = new Dictionary<string, PowerShellWasmScriptFunction>(_functions, StringComparer.OrdinalIgnoreCase);
         foreach (var variable in variables)
         {
             _variables[variable.Key] = variable.Value;
         }
 
-        return new VariableScope(this, snapshot);
+        return new ScriptScope(this, snapshot, functions);
     }
 
     internal IDisposable WithTemporaryVariables(IReadOnlyDictionary<string, object?> variables)
@@ -421,11 +422,18 @@ public sealed class PowerShellWasmExecutionContext
         SetLastCommandSucceeded(false);
     }
 
+    // Behavioral guidance: ErrorRecord.Exception.Message in PowerShell's ErrorPackage.cs.
+    // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/ErrorPackage.cs
+    // Expose a small data descriptor, not a reflected CLR exception; retain Message for existing browser consumers.
     private static Dictionary<string, object?> CreateErrorRecord(string message, string exception, string fullyQualifiedErrorId) =>
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["Message"] = message,
-            ["Exception"] = exception,
+            ["Exception"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Message"] = message,
+                ["TypeName"] = exception
+            },
             ["FullyQualifiedErrorId"] = fullyQualifiedErrorId
         };
 
@@ -573,10 +581,20 @@ public sealed class PowerShellWasmExecutionContext
             context.ReleaseOutputCapture(output);
     }
 
-    private sealed class VariableScope(PowerShellWasmExecutionContext context, Dictionary<string, object?> variables) : IDisposable
+    private sealed class ScriptScope(
+        PowerShellWasmExecutionContext context,
+        Dictionary<string, object?> variables,
+        Dictionary<string, PowerShellWasmScriptFunction> functions) : IDisposable
     {
-        public void Dispose() =>
+        public void Dispose()
+        {
             context.RestoreVariables(variables);
+            context._functions.Clear();
+            foreach (var function in functions)
+            {
+                context._functions[function.Key] = function.Value;
+            }
+        }
     }
 
     private sealed class TemporaryVariableScope(

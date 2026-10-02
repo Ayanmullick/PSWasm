@@ -203,16 +203,6 @@ public sealed class PowerShellWasmParser
             return new PipelineStatementAst(pipelineSegments.Select(ParsePipelineElement).ToArray());
         }
 
-        if (TryParseVariableIncrementStatement(tokens, out var incrementStatement))
-        {
-            return incrementStatement;
-        }
-
-        if (TryParseSettableIncrementStatement(tokens, out var settableIncrementStatement))
-        {
-            return settableIncrementStatement;
-        }
-
         if (IsCommandSegment(tokens))
         {
             return new CommandStatementAst(ParseCommand(tokens));
@@ -1555,62 +1545,6 @@ public sealed class PowerShellWasmParser
 
         return kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus or PowerShellWasmTokenKind.Star or
             PowerShellWasmTokenKind.Slash or PowerShellWasmTokenKind.Remainder or PowerShellWasmTokenKind.QuestionQuestion;
-    }
-
-    private static bool TryParseVariableIncrementStatement(
-        IReadOnlyList<PowerShellWasmToken> tokens,
-        out VariableIncrementStatementAst statement)
-    {
-        if (tokens.Count == 2 &&
-            tokens[0].Kind == PowerShellWasmTokenKind.Variable)
-        {
-            if (tokens[1].Kind == PowerShellWasmTokenKind.PlusPlus)
-            {
-                statement = new VariableIncrementStatementAst(tokens[0].Text, 1);
-                return true;
-            }
-
-            if (tokens[1].Kind == PowerShellWasmTokenKind.MinusMinus)
-            {
-                statement = new VariableIncrementStatementAst(tokens[0].Text, -1);
-                return true;
-            }
-        }
-
-        statement = null!;
-        return false;
-    }
-
-    private static bool TryParseSettableIncrementStatement(
-        IReadOnlyList<PowerShellWasmToken> tokens,
-        out SettableIncrementStatementAst statement)
-    {
-        statement = null!;
-        if (tokens.Count < 2)
-        {
-            return false;
-        }
-
-        var delta = tokens[^1].Kind switch
-        {
-            PowerShellWasmTokenKind.PlusPlus => 1,
-            PowerShellWasmTokenKind.MinusMinus => -1,
-            _ => 0
-        };
-
-        if (delta == 0)
-        {
-            return false;
-        }
-
-        var target = ParseExpression(tokens.Take(tokens.Count - 1).ToArray());
-        if (!IsSettableAssignmentTarget(target))
-        {
-            return false;
-        }
-
-        statement = new SettableIncrementStatementAst(target, delta);
-        return true;
     }
 
     private static bool IsKeyword(IReadOnlyList<PowerShellWasmToken> tokens, int position, string keyword) =>

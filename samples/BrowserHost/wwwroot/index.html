@@ -161,6 +161,9 @@ Write-Output (2 + 2)
 2 + '3'                 # numeric addition: 5
 '2' + 3                 # string concatenation: 23
 'ab' * 3                # string repetition: ababab
+(8 / 2) -is [int]       # exact integer division: True
+(7 / 2) -is [double]    # fractional division: True
+try { 1 / 0 } catch { 'Integer division by zero caught' }
 '01' -eq 1              # string comparison: False
 1 -eq '01'              # numeric comparison: True
 $mixed = @('text', 2)
@@ -388,7 +391,7 @@ switch ('browser') {
   </script>
           </article>
           <article class="example">
-            <h3>Functions</h3>
+            <h3>Functions and dynamic invocation</h3>
             <script type="pwsh">
 function Add-Prefix {
     param([Alias('t')]$Text, [switch]$Uppercase)
@@ -398,7 +401,9 @@ function Add-Prefix {
 Add-Prefix -Text 'browser'
 Add-Prefix -Uppercase -t 'browser'
 $options = @{Text='browser'; Uppercase=$true}
-Add-Prefix @options -Uppercase:$false
+& 'Add-Prefix' @options -Uppercase:$false
+$greet = { param($Name) "Hello, $Name!" }
+& $greet -Name 'browser'
   </script>
           </article>
           <article class="example">

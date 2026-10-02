@@ -27,7 +27,6 @@ public sealed class PowerShellWasmRuntime
 
         RegisterCommand("Clear-Variable", new ClearVariableCommand());
         RegisterCommand("clv", new ClearVariableCommand());
-        RegisterCommand("&", new CallOperatorCommand());
 #if PSWASM_AZURE_AUTH
         RegisterCommand("Connect-AzAccount", new ConnectAzAccountCommand(azureAuthHost));
 #endif

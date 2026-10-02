@@ -67,11 +67,13 @@ The `AzAuth` flavor adds user-delegated Entra authentication and authenticated A
 
 The runtime includes PowerShell-style variables, arrays, hashtables, objects, operators, functions, control flow, splatting, pipelines, stream output, and a limited set of .NET helpers. Browser commands cover JSON/CSV/HTML conversion, DOM events and storage, HTTP requests, and optional Azure authentication.
 
+Use `&` to invoke a script block or a registered command/function by name. See [call-operator binding and scope](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#control-flow-and-functions) for named arguments, switches, and splatting.
+
 PSWasm does not provide the full desktop/server PowerShell host. Providers, native processes, profiles, remoting, jobs, unrestricted filesystem access, module autoloading, and arbitrary .NET reflection are outside its browser-safe scope.
 
 ## Documentation and Contributing
 
-* [Runtime Scope](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Scope) and [Language Support](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support): operators, collections, function binding, and command expressions
+* [Runtime Scope](https://github.com/Ayanmullick/PSWasm/wiki/Runtime-Scope) and [Language Support](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support): numeric types and operators, collections, function binding, and command expressions
 * [Browser Commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands)
 * [DOM Cmdlets](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlets) and [DOM Cmdlet Reference](https://github.com/Ayanmullick/PSWasm/wiki/DOM-Cmdlet-Reference)
 * [Browser Usage](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Usage)

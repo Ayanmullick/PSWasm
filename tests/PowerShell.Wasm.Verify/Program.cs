@@ -5,10 +5,12 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("call operator binding and scope", CallOperatorVerification.VerifyAsync),
     ("parameter binding", ParameterBindingVerification.VerifyAsync),
     ("parenthesized expression grammar", ParenthesizedExpressionVerification.VerifyAsync),
     ("operators and expressions", VerifyOperatorsAsync),
     ("arithmetic operand semantics", ArithmeticVerification.VerifyAsync),
+    ("numeric operators and promotion", NumericOperatorVerification.VerifyAsync),
     ("array assignment types", ArrayAssignmentVerification.VerifyAsync),
     ("comparison operand semantics", ComparisonVerification.VerifyAsync),
     ("ternary operator", VerifyTernaryOperatorAsync),
@@ -855,9 +857,8 @@ $h.PostMissing
 $h.PreMissing
 
 $env:PSWASM_INCREMENT_TEST = 1
-$env:PSWASM_INCREMENT_TEST++
-$env:PSWASM_INCREMENT_TEST
-($env:PSWASM_INCREMENT_TEST++)
+try { $env:PSWASM_INCREMENT_TEST++ } catch { 'environment-number-required' }
+try { ($env:PSWASM_INCREMENT_TEST++) } catch { 'environment-number-required' }
 $env:PSWASM_INCREMENT_TEST
 """);
 
@@ -888,25 +889,21 @@ $env:PSWASM_INCREMENT_TEST
         "2",
         "3",
         "4",
-        "4",
         "3",
         "2",
+        "3",
+        "1",
+        "0",
+        "1",
         "2",
         "3",
         "1",
         "0",
         "1",
         "1",
-        "2",
-        "3",
-        "1",
-        "0",
-        "1",
-        "1",
-        "1",
-        "2",
-        "2",
-        "3"
+        "environment-number-required",
+        "environment-number-required",
+        "1"
     ]);
 }
 

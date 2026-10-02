@@ -75,6 +75,9 @@ internal sealed class PowerShellWasmAstExecutor(
             case ParallelStatementAssignmentAst assignment:
                 await ExecuteParallelStatementAssignmentAsync(assignment, cancellationToken);
                 break;
+            case ExpressionStatementAst { Expression: IncrementExpressionAst increment }:
+                await EvaluateIncrementAsync(increment.Target, increment.Delta, increment.IsPrefix, cancellationToken);
+                break;
             case ExpressionStatementAst expression:
                 executionContext.WriteOutput(await EvaluateExpressionAsync(expression.Expression, cancellationToken));
                 break;
@@ -558,8 +561,6 @@ internal sealed class PowerShellWasmAstExecutor(
         var explicitNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var splatNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var unknownSplatArguments = new List<object?>();
-        executionContext.TryGetFunction(commandAst.Name, out var function);
-        commands.TryGetValue(commandAst.Name, out var command);
 
         // Behavioral reference: ScriptParameterBinderController binds named arguments before positional arguments.
         // https://github.com/PowerShell/PowerShell/blob/master/src/System.Management.Automation/engine/scriptparameterbindercontroller.cs#L70-L100
@@ -574,14 +575,43 @@ internal sealed class PowerShellWasmAstExecutor(
             evaluatedEntries.Add((entry, value));
         }
 
+        var commandName = commandAst.Name;
+        PowerShellWasmScriptBlock? scriptBlock = null;
+        if (commandName == "&")
+        {
+            // Behavioral guidance: PipelineOps.AddCommand resolves an evaluated invocation target before binding.
+            // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L94-L187
+            // Browser scope: only scriptblocks and registered commands/functions; never files or native executables.
+            if (evaluatedEntries.Count == 0 || evaluatedEntries[0].Entry is not CommandArgumentAst { IsSplat: false })
+            {
+                throw new InvalidOperationException("The call operator requires a script block or registered command name.");
+            }
+
+            var target = evaluatedEntries[0].Value;
+            evaluatedEntries.RemoveAt(0);
+            scriptBlock = target as PowerShellWasmScriptBlock;
+            if (scriptBlock is null)
+            {
+                commandName = ToExpandableString(target);
+                if (string.IsNullOrWhiteSpace(commandName))
+                {
+                    throw new InvalidOperationException("The call operator target cannot be null or empty.");
+                }
+            }
+        }
+
+        executionContext.TryGetFunction(commandName, out var function);
+        commands.TryGetValue(commandName, out var command);
+        var declarations = scriptBlock?.Parameters ?? function?.Parameters;
+
         // PowerShell evaluates argument expressions before binding, including calls that fail to bind.
         // Collect explicit names first so they override the same name in every splat, regardless of source order.
         foreach (var (entry, _) in evaluatedEntries)
         {
             if (entry is not CommandParameterAst parameter) continue;
-            var declared = ResolveParameter(function?.Parameters, parameter.Name);
+            var declared = ResolveParameter(declarations, parameter.Name);
             var name = declared?.Name ?? parameter.Name;
-            if (function is not null && declared is null && !IsCommonParameter(name)) continue;
+            if (declarations is not null && declared is null && !IsCommonParameter(name)) continue;
             if (!explicitNames.Add(name)) throw new InvalidOperationException($"Parameter '-{name}' was specified more than once.");
         }
 
@@ -594,9 +624,9 @@ internal sealed class PowerShellWasmAstExecutor(
                 {
                     foreach (var item in dictionary)
                     {
-                        var declaration = ResolveParameter(function?.Parameters, item.Key);
+                        var declaration = ResolveParameter(declarations, item.Key);
                         var name = declaration?.Name ?? item.Key;
-                        if (function is not null && declaration is null && !IsCommonParameter(name))
+                        if (declarations is not null && declaration is null && !IsCommonParameter(name))
                         {
                             unknownSplatArguments.Add(new UnboundCommandArgument("-" + item.Key + ":"));
                             unknownSplatArguments.Add(new UnboundCommandArgument(item.Value));
@@ -621,10 +651,10 @@ internal sealed class PowerShellWasmAstExecutor(
             }
 
             var parameter = (CommandParameterAst)entry;
-            var declared = ResolveParameter(function?.Parameters, parameter.Name);
+            var declared = ResolveParameter(declarations, parameter.Name);
             var canonicalName = declared?.Name ?? parameter.Name;
             var parameterValue = evaluatedValue;
-            if (function is not null && declared is null && !IsCommonParameter(canonicalName))
+            if (declarations is not null && declared is null && !IsCommonParameter(canonicalName))
             {
                 arguments.Add(new UnboundCommandArgument("-" + parameter.Name + (parameter.IsInlineValue ? ":" : string.Empty)));
                 if (parameter.Value is not null) arguments.Add(new UnboundCommandArgument(parameterValue));
@@ -651,6 +681,13 @@ internal sealed class PowerShellWasmAstExecutor(
 
         arguments.AddRange(unknownSplatArguments);
         var commonParameters = PowerShellWasmCommonParameters.From(parameters);
+        if (scriptBlock is not null)
+        {
+            var invocation = new PowerShellWasmCommandContext(executionContext, parameters, arguments, pipelineInput);
+            await ExecuteWithCommonParametersAsync(commonParameters, () => scriptBlock.InvokeCommandAsync(invocation, cancellationToken));
+            return;
+        }
+
         if (function is not null)
         {
             await ExecuteWithCommonParametersAsync(
@@ -661,7 +698,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
         if (command is null)
         {
-            throw new InvalidOperationException($"Command '{commandAst.Name}' is not registered in this browser runtime.");
+            throw new InvalidOperationException($"Command '{commandName}' is not registered in this browser runtime.");
         }
 
         var context = new PowerShellWasmCommandContext(executionContext, parameters, arguments, pipelineInput);
@@ -748,7 +785,7 @@ internal sealed class PowerShellWasmAstExecutor(
             },
             cancellationToken);
 
-        using (executionContext.WithVariableScope(locals))
+        using (executionContext.WithScriptScope(locals))
         {
             try
             {
@@ -944,10 +981,9 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var current = await EvaluateExpressionAsync(target, cancellationToken);
-        var number = current is null ? 0 : ToNumber(current);
-        var updated = NormalizeNumber(number + delta);
+        var updated = IncrementNumber(current, delta);
         await SetAssignmentTargetAsync(target, updated, cancellationToken);
-        return isPrefix ? updated : NormalizeNumber(number);
+        return isPrefix ? updated : current ?? 0;
     }
 
     private async ValueTask SetAssignmentTargetAsync(
@@ -1043,6 +1079,14 @@ internal sealed class PowerShellWasmAstExecutor(
         ArraySubexpressionAst array,
         CancellationToken cancellationToken)
     {
+        // Compiler.VisitArrayExpression directly evaluates a single pure expression, including ++/--.
+        // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/parser/Compiler.cs#L5891-L5935
+        // Multi-statement arrays and $() retain the ordinary statement-output suppression below.
+        if (array.Script.Statements is [ExpressionStatementAst { Expression: IncrementExpressionAst increment }])
+        {
+            return [await EvaluateIncrementAsync(increment.Target, increment.Delta, increment.IsPrefix, cancellationToken)];
+        }
+
         var output = new List<object?>();
         using (executionContext.CaptureOutput(output))
         {
@@ -1153,7 +1197,10 @@ internal sealed class PowerShellWasmAstExecutor(
             CancellationToken cancellationToken) =>
             executionContext.CreateResult(await InvokeAsync(input, arguments, variables, cancellationToken));
 
-        return new PowerShellWasmScriptBlock(InvokeAsync, InvokeResultAsync);
+        var commandBody = new PowerShellWasmScriptFunction("&", scriptBlock.Body.Parameters, new ScriptAst(scriptBlock.Body.Statements));
+        return new PowerShellWasmScriptBlock(InvokeAsync, InvokeResultAsync, scriptBlock.Body.Parameters,
+            (context, cancellationToken) => ExecuteScriptFunctionAsync(
+                commandBody, context.Parameters, context.Arguments, context.PipelineInput, cancellationToken));
     }
 
     private async ValueTask<Dictionary<string, object?>> CreateParameterLocalsAsync(
@@ -1763,10 +1810,12 @@ internal sealed class PowerShellWasmAstExecutor(
     private async ValueTask<object> EvaluateUnaryAsync(UnaryExpressionAst unary, CancellationToken cancellationToken)
     {
         var value = await EvaluateExpressionAsync(unary.Operand, cancellationToken);
+        // Behavioral guidance: Compiler.VisitUnaryExpression lowers +/- to numeric 0 +/- operand.
+        // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/parser/Compiler.cs#L5460-L5478
         return unary.Operator switch
         {
-            PowerShellWasmUnaryOperator.Plus => NormalizeNumber(ToNumber(value)),
-            PowerShellWasmUnaryOperator.Minus => NormalizeNumber(-ToNumber(value)),
+            PowerShellWasmUnaryOperator.Plus => NumericArithmetic(0, value, PowerShellWasmBinaryOperator.Add),
+            PowerShellWasmUnaryOperator.Minus => NumericArithmetic(0, value, PowerShellWasmBinaryOperator.Subtract),
             PowerShellWasmUnaryOperator.Not => !ToBoolean(value),
             PowerShellWasmUnaryOperator.BitwiseNot => ~ToInt64(value),
             PowerShellWasmUnaryOperator.Join => string.Concat(Enumerate(value).Select(ToInvariantString)),
@@ -1941,10 +1990,10 @@ internal sealed class PowerShellWasmAstExecutor(
         op switch
         {
             PowerShellWasmBinaryOperator.Add => Add(left, right),
-            PowerShellWasmBinaryOperator.Subtract => NormalizeNumber(ToNumber(left) - ToNumber(right)),
+            PowerShellWasmBinaryOperator.Subtract => NumericArithmetic(left, right, op),
             PowerShellWasmBinaryOperator.Multiply => Multiply(left, right),
-            PowerShellWasmBinaryOperator.Divide => NormalizeNumber(ToNumber(left) / ToNumber(right)),
-            PowerShellWasmBinaryOperator.Remainder => NormalizeNumber(ToNumber(left) % ToNumber(right)),
+            PowerShellWasmBinaryOperator.Divide => NumericArithmetic(left, right, op),
+            PowerShellWasmBinaryOperator.Remainder => NumericArithmetic(left, right, op),
             PowerShellWasmBinaryOperator.Range => Range(left, right),
             PowerShellWasmBinaryOperator.Format => Format(left, right),
             PowerShellWasmBinaryOperator.LogicalXor => ToBoolean(left) ^ ToBoolean(right),
@@ -2104,7 +2153,7 @@ internal sealed class PowerShellWasmAstExecutor(
             return result;
         }
 
-        return NumericArithmetic(left, right, multiply: false);
+        return NumericArithmetic(left, right, PowerShellWasmBinaryOperator.Add);
     }
 
     private static object? Multiply(object? left, object? right)
@@ -2157,7 +2206,7 @@ internal sealed class PowerShellWasmAstExecutor(
             throw new InvalidOperationException("This value does not support multiplication.");
         }
 
-        return NumericArithmetic(left, right, multiply: true);
+        return NumericArithmetic(left, right, PowerShellWasmBinaryOperator.Multiply);
     }
 
     private static T[] RepeatArray<T>(T[] values, int count)
@@ -2289,7 +2338,10 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    private static object NumericArithmetic(object left, object? right, bool multiply)
+    // Behavioral guidance: PSBinaryOperationBinder selects decimal, double, or signed integer arithmetic.
+    // https://github.com/PowerShell/PowerShell/blob/v7.6.1/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L2149-L2238
+    // Browser-safe subset: built-in numeric values only, without user-defined overloads or reflection.
+    private static object NumericArithmetic(object? left, object? right, PowerShellWasmBinaryOperator op)
     {
         var lhs = ToArithmeticNumber(left);
         var rhs = ToArithmeticNumber(right);
@@ -2297,7 +2349,15 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             var a = Convert.ToDecimal(lhs, CultureInfo.InvariantCulture);
             var b = Convert.ToDecimal(rhs, CultureInfo.InvariantCulture);
-            return multiply ? a * b : a + b;
+            return op switch
+            {
+                PowerShellWasmBinaryOperator.Add => a + b,
+                PowerShellWasmBinaryOperator.Subtract => a - b,
+                PowerShellWasmBinaryOperator.Multiply => a * b,
+                PowerShellWasmBinaryOperator.Divide => a / b,
+                PowerShellWasmBinaryOperator.Remainder => a % b,
+                _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
+            };
         }
 
         if (lhs is not double && rhs is not double)
@@ -2308,22 +2368,56 @@ internal sealed class PowerShellWasmAstExecutor(
                 {
                     var a = Convert.ToInt64(lhs, CultureInfo.InvariantCulture);
                     var b = Convert.ToInt64(rhs, CultureInfo.InvariantCulture);
-                    return multiply ? checked(a * b) : checked(a + b);
+                    return op switch
+                    {
+                        PowerShellWasmBinaryOperator.Add => checked(a + b),
+                        PowerShellWasmBinaryOperator.Subtract => checked(a - b),
+                        PowerShellWasmBinaryOperator.Multiply => checked(a * b),
+                        PowerShellWasmBinaryOperator.Divide => a % b == 0 ? (object)(a / b) : (double)a / b,
+                        PowerShellWasmBinaryOperator.Remainder => b == -1 ? 0L : a % b,
+                        _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
+                    };
                 }
 
                 var x = (int)lhs;
                 var y = (int)rhs;
-                return multiply ? checked(x * y) : checked(x + y);
+                return op switch
+                {
+                    PowerShellWasmBinaryOperator.Add => checked(x + y),
+                    PowerShellWasmBinaryOperator.Subtract => checked(x - y),
+                    PowerShellWasmBinaryOperator.Multiply => checked(x * y),
+                    PowerShellWasmBinaryOperator.Divide => x % y == 0 ? (object)(x / y) : (double)x / y,
+                    PowerShellWasmBinaryOperator.Remainder => y == -1 ? 0 : x % y,
+                    _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
+                };
             }
             catch (OverflowException)
             {
                 // PowerShell promotes overflowing integer arithmetic to double.
+                // LongOps computes an exact decimal sum/difference or BigInteger product before conversion.
+                // https://github.com/PowerShell/PowerShell/blob/master/src/System.Management.Automation/engine/runtime/Operations/NumericOps.cs#L196-L230
+                if (lhs is long || rhs is long)
+                {
+                    var a = Convert.ToInt64(lhs, CultureInfo.InvariantCulture);
+                    var b = Convert.ToInt64(rhs, CultureInfo.InvariantCulture);
+                    if (op == PowerShellWasmBinaryOperator.Add) return (double)((decimal)a + b);
+                    if (op == PowerShellWasmBinaryOperator.Subtract) return (double)((decimal)a - b);
+                    if (op == PowerShellWasmBinaryOperator.Multiply) return (double)((System.Numerics.BigInteger)a * b);
+                }
             }
         }
 
         var first = Convert.ToDouble(lhs, CultureInfo.InvariantCulture);
         var second = Convert.ToDouble(rhs, CultureInfo.InvariantCulture);
-        return multiply ? first * second : first + second;
+        return op switch
+        {
+            PowerShellWasmBinaryOperator.Add => first + second,
+            PowerShellWasmBinaryOperator.Subtract => first - second,
+            PowerShellWasmBinaryOperator.Multiply => first * second,
+            PowerShellWasmBinaryOperator.Divide => first / second,
+            PowerShellWasmBinaryOperator.Remainder => first % second,
+            _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
+        };
     }
 
     private static object?[] Range(object? left, object? right)
@@ -2996,11 +3090,6 @@ internal sealed class PowerShellWasmAstExecutor(
     private static string ToInvariantString(object? value) =>
         Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
 
-    private static object NormalizeNumber(double value) =>
-        Math.Abs(value - Math.Round(value)) < 0.0000000001 && value >= int.MinValue && value <= int.MaxValue
-            ? Convert.ToInt32(value, CultureInfo.InvariantCulture)
-            : value;
-
     private void AssignParallel(IReadOnlyList<string> variableNames, object? value)
     {
         var values = Enumerate(value).ToArray();
@@ -3027,8 +3116,19 @@ internal sealed class PowerShellWasmAstExecutor(
     private void IncrementVariable(string variableName, int delta)
     {
         var value = EvaluateVariableAssignmentTarget(variableName);
-        var number = value is null ? 0 : ToNumber(value);
-        executionContext.SetVariable(variableName, NormalizeNumber(number + delta));
+        executionContext.SetVariable(variableName, IncrementNumber(value, delta));
+    }
+
+    private static object IncrementNumber(object? value, int delta)
+    {
+        // Behavioral guidance: PSUnaryOperationBinder permits numeric values/null, not numeric strings or bools.
+        // https://github.com/PowerShell/PowerShell/blob/v7.6.1/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L3338-L3367
+        if (value is not (null or byte or int or long or double or decimal))
+        {
+            throw new InvalidOperationException("The increment and decrement operators require a numeric value.");
+        }
+
+        return NumericArithmetic(value, delta, PowerShellWasmBinaryOperator.Add);
     }
 
     private abstract class ControlFlowException : Exception
