@@ -42,9 +42,9 @@ internal sealed class PowerShellWasmAstExecutor(
                 executionContext.SetVariable(assignment.VariableName, await EvaluateExpressionAsync(assignment.Value, cancellationToken));
                 break;
             case SettableAssignmentStatementAst assignment:
-                await SetAssignmentTargetAsync(
+                await EvaluateSettableAssignmentAsync(
                     assignment.Target,
-                    await EvaluateExpressionAsync(assignment.Value, cancellationToken),
+                    () => EvaluateExpressionAsync(assignment.Value, cancellationToken),
                     cancellationToken);
                 break;
             case CompoundAssignmentStatementAst assignment:
@@ -79,7 +79,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 await EvaluateIncrementAsync(increment.Target, increment.Delta, increment.IsPrefix, cancellationToken);
                 break;
             case ExpressionStatementAst expression:
-                executionContext.WriteOutput(await EvaluateExpressionAsync(expression.Expression, cancellationToken));
+                await executionContext.WriteExpressionOutputAsync(await EvaluateExpressionAsync(expression.Expression, cancellationToken), cancellationToken);
                 break;
             case CommandStatementAst command:
                 await ExecuteCommandAsync(command.Command, pipelineInput, cancellationToken);
@@ -124,7 +124,7 @@ internal sealed class PowerShellWasmAstExecutor(
             case ReturnStatementAst returnStatement:
                 if (returnStatement.Expression is not null)
                 {
-                    executionContext.WriteOutput(await EvaluateExpressionAsync(returnStatement.Expression, cancellationToken));
+                    await executionContext.WriteExpressionOutputAsync(await EvaluateExpressionAsync(returnStatement.Expression, cancellationToken), cancellationToken);
                 }
 
                 throw new ReturnFlowException();
@@ -359,25 +359,28 @@ internal sealed class PowerShellWasmAstExecutor(
     private async ValueTask ExecuteStatementAssignmentAsync(StatementAssignmentAst assignment, CancellationToken cancellationToken)
     {
         var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        using (executionContext.CaptureOutput(output, captureStreams: false))
         {
             await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
         }
 
-        executionContext.SetVariable(assignment.VariableName, ToCapturedExpressionValue(output));
+        executionContext.SetVariable(assignment.VariableName, ToCapturedExpressionValue(executionContext.GetCapturedOutput(output)));
     }
 
     private async ValueTask ExecuteSettableStatementAssignmentAsync(
         SettableStatementAssignmentAst assignment,
         CancellationToken cancellationToken)
     {
-        var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        await EvaluateSettableAssignmentAsync(assignment.Target, async () =>
         {
-            await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
-        }
+            var output = new List<object?>();
+            using (executionContext.CaptureOutput(output, captureStreams: false))
+            {
+                await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
+            }
 
-        await SetAssignmentTargetAsync(assignment.Target, ToCapturedExpressionValue(output), cancellationToken);
+            return ToCapturedExpressionValue(executionContext.GetCapturedOutput(output));
+        }, cancellationToken);
     }
 
     private async ValueTask ExecuteParallelStatementAssignmentAsync(
@@ -385,18 +388,18 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        using (executionContext.CaptureOutput(output, captureStreams: false))
         {
             await ExecuteStatementAsync(assignment.Statement, [], cancellationToken);
         }
 
-        AssignParallel(assignment.VariableNames, output.ToArray());
+        AssignParallel(assignment.VariableNames, executionContext.GetCapturedOutput(output).ToArray());
     }
 
     private async ValueTask ExecuteStatementDiscardingOutputAsync(StatementAst statement, CancellationToken cancellationToken)
     {
         var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        using (executionContext.CaptureOutput(output, captureStreams: false))
         {
             await ExecuteStatementAsync(statement, [], cancellationToken);
         }
@@ -521,33 +524,41 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private async ValueTask ExecutePipelineAsync(PipelineStatementAst pipeline, CancellationToken cancellationToken)
     {
-        IReadOnlyList<object?> input = [];
-        foreach (var element in pipeline.Elements)
+        var caller = executionContext.CaptureActivation();
+        var stages = new List<PipelineStage>();
+        var preparedStages = new List<PreparedCommand>();
+        try
         {
-            var output = new List<object?>();
-            using (executionContext.CaptureOutput(output))
+            // Bind each stage once in the caller before any producer starts emitting records.
+            foreach (var element in pipeline.Elements)
             {
-                switch (element)
+                PreparedCommand prepared;
+                if (element is CommandPipelineElementAst command)
                 {
-                    case ExpressionPipelineElementAst expression:
-                        foreach (var item in Enumerate(await EvaluateExpressionAsync(expression.Expression, cancellationToken)))
-                        {
-                            executionContext.WriteOutput(item);
-                        }
-
-                        break;
-                    case CommandPipelineElementAst command:
-                        await ExecuteCommandAsync(command.Command, input, cancellationToken);
-                        break;
+                    prepared = await PrepareCommandAsync(command.Command, cancellationToken);
                 }
+                else if (element is ExpressionPipelineElementAst expression)
+                {
+                    // Native expression input is evaluated before downstream binding/Begin; delivery starts afterward.
+                    var input = await EvaluateExpressionAsync(expression.Expression, cancellationToken);
+                    prepared = new(PowerShellWasmCommonParameters.From(new Dictionary<string, object?>()),
+                        _ => new DelegateProcessor(_ => ValueTask.CompletedTask, complete: token =>
+                            executionContext.WriteExpressionOutputAsync(input, token)));
+                }
+                else throw new InvalidOperationException("Unsupported pipeline element.");
+                preparedStages.Add(prepared);
             }
-
-            input = output;
+            // Common captures are initialized only after all argument expressions have observed the caller's variables.
+            foreach (var prepared in preparedStages)
+                stages.Add(new PipelineStage(executionContext, caller, prepared, stages.Count > 0));
+            for (var index = 0; index < stages.Count - 1; index++) stages[index].Next = stages[index + 1];
+            // Begin is lazy: an upstream Begin record starts its consumer before control returns to the producer.
+            foreach (var stage in stages) await stage.BeginAsync(cancellationToken);
+            foreach (var stage in stages) await stage.CompleteAsync(cancellationToken);
         }
-
-        foreach (var item in input)
+        finally
         {
-            executionContext.WriteOutput(item);
+            foreach (var stage in stages) stage.Dispose();
         }
     }
 
@@ -555,6 +566,16 @@ internal sealed class PowerShellWasmAstExecutor(
         CommandAst commandAst,
         IReadOnlyList<object?> pipelineInput,
         CancellationToken cancellationToken)
+    {
+        var caller = executionContext.CaptureActivation();
+        var prepared = await PrepareCommandAsync(commandAst, cancellationToken);
+        using var stage = new PipelineStage(executionContext, caller, prepared, pipelineInput.Count > 0);
+        await stage.BeginAsync(cancellationToken);
+        foreach (var record in pipelineInput) await stage.ProcessAsync(record, cancellationToken);
+        await stage.CompleteAsync(cancellationToken);
+    }
+
+    private async ValueTask<PreparedCommand> PrepareCommandAsync(CommandAst commandAst, CancellationToken cancellationToken)
     {
         var parameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var arguments = new List<object?>();
@@ -572,7 +593,7 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             var expression = entry is CommandArgumentAst argument ? argument.Value : ((CommandParameterAst)entry).Value;
             var value = expression is null ? true : await EvaluateExpressionAsync(expression, cancellationToken);
-            evaluatedEntries.Add((entry, value));
+            evaluatedEntries.Add((entry, PowerShellWasmOutput.AsCommandArgument(value)));
         }
 
         var commandName = commandAst.Name;
@@ -629,13 +650,13 @@ internal sealed class PowerShellWasmAstExecutor(
                         if (declarations is not null && declaration is null && !IsCommonParameter(name))
                         {
                             unknownSplatArguments.Add(new UnboundCommandArgument("-" + item.Key + ":"));
-                            unknownSplatArguments.Add(new UnboundCommandArgument(item.Value));
+                            unknownSplatArguments.Add(new UnboundCommandArgument(PowerShellWasmOutput.AsCommandArgument(item.Value)));
                             continue;
                         }
 
                         if (explicitNames.Contains(name)) continue;
                         if (!splatNames.Add(name)) throw new InvalidOperationException($"Parameter '-{name}' was supplied by more than one splat.");
-                        parameters[name] = item.Value;
+                        parameters[name] = PowerShellWasmOutput.AsCommandArgument(item.Value);
                     }
                 }
                 else if (argument.IsSplat)
@@ -683,17 +704,14 @@ internal sealed class PowerShellWasmAstExecutor(
         var commonParameters = PowerShellWasmCommonParameters.From(parameters);
         if (scriptBlock is not null)
         {
-            var invocation = new PowerShellWasmCommandContext(executionContext, parameters, arguments, pipelineInput);
-            await ExecuteWithCommonParametersAsync(commonParameters, () => scriptBlock.InvokeCommandAsync(invocation, cancellationToken));
-            return;
+            return new(commonParameters, hasInput => CreateScriptProcessor(hasInput,
+                (input, token) => scriptBlock.InvokeCommandAsync(new PowerShellWasmCommandContext(executionContext, parameters, arguments, input), token)));
         }
 
         if (function is not null)
         {
-            await ExecuteWithCommonParametersAsync(
-                commonParameters,
-                () => ExecuteScriptFunctionAsync(function, parameters, arguments, pipelineInput, cancellationToken));
-            return;
+            return new(commonParameters, hasInput => CreateScriptProcessor(hasInput,
+                (input, token) => ExecuteScriptFunctionAsync(function, parameters, arguments, input, token)));
         }
 
         if (command is null)
@@ -701,10 +719,10 @@ internal sealed class PowerShellWasmAstExecutor(
             throw new InvalidOperationException($"Command '{commandName}' is not registered in this browser runtime.");
         }
 
-        var context = new PowerShellWasmCommandContext(executionContext, parameters, arguments, pipelineInput);
-        await ExecuteWithCommonParametersAsync(
-            commonParameters,
-            () => command.InvokeAsync(context, cancellationToken));
+        var context = new PowerShellWasmCommandContext(executionContext, parameters, arguments, []);
+        return new(commonParameters, hasInput => command is IPowerShellWasmPipelineCommand incremental
+            ? incremental.CreateProcessor(context, hasInput)
+            : CreateScriptProcessor(hasInput, (input, token) => InvokeLegacyCommandAsync(command, context.WithPipelineInput(input), token)));
     }
 
     private sealed record UnboundCommandArgument(object? Value);
@@ -735,20 +753,16 @@ internal sealed class PowerShellWasmAstExecutor(
         or "outvariable" or "ov" or "pipelinevariable" or "pv" or "errorvariable" or "ev" or "informationvariable" or "iv"
         or "warningvariable" or "wv";
 
-    private async ValueTask ExecuteWithCommonParametersAsync(
-        PowerShellWasmCommonParameters commonParameters,
-        Func<ValueTask> invoke)
+    private async ValueTask InvokeLegacyCommandAsync(
+        IPowerShellWasmCommand command, PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var capturedOutput = new List<object?>();
-        var initialErrorCount = executionContext.ErrorCount;
         ExceptionDispatchInfo? pending = null;
-
         using (executionContext.CaptureOutput(capturedOutput))
-        using (commonParameters.Apply(executionContext))
         {
             try
             {
-                await invoke();
+                await command.InvokeAsync(context, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -759,11 +773,94 @@ internal sealed class PowerShellWasmAstExecutor(
                 pending = ExceptionDispatchInfo.Capture(error);
             }
         }
-
-        var capturedOutputWithPipelineVariables =
-            commonParameters.ApplyCaptures(executionContext, capturedOutput, initialErrorCount);
-        executionContext.WriteCapturedOutput(capturedOutputWithPipelineVariables);
+        try { await executionContext.WriteCapturedOutputAsync(capturedOutput, cancellationToken); }
+        catch when (pending is not null) { pending.Throw(); }
         pending?.Throw();
+    }
+
+    private static IPowerShellWasmPipelineProcessor CreateScriptProcessor(
+        bool hasInput, Func<IReadOnlyList<object?>, CancellationToken, ValueTask> invoke)
+    {
+        var input = new List<object?>();
+        return new DelegateProcessor(
+            _ => ValueTask.CompletedTask,
+            (record, token) => { token.ThrowIfCancellationRequested(); input.Add(record); return ValueTask.CompletedTask; },
+            token => invoke(hasInput ? input : [], token));
+    }
+
+    private sealed record PreparedCommand(PowerShellWasmCommonParameters Common,
+        Func<bool, IPowerShellWasmPipelineProcessor> CreateProcessor);
+
+    private sealed class DelegateProcessor(
+        Func<CancellationToken, ValueTask> begin,
+        Func<object?, CancellationToken, ValueTask>? process = null,
+        Func<CancellationToken, ValueTask>? complete = null) : IPowerShellWasmPipelineProcessor
+    {
+        public ValueTask BeginAsync(CancellationToken token) => begin(token);
+        public ValueTask ProcessAsync(object? record, CancellationToken token) => process?.Invoke(record, token) ?? ValueTask.CompletedTask;
+        public ValueTask CompleteAsync(CancellationToken token) => complete?.Invoke(token) ?? ValueTask.CompletedTask;
+    }
+
+    // Behavioral guidance: native Pipe.Add pushes a record into the next command before its producer resumes.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/Pipe.cs#L393-L425
+    // The browser implementation awaits that handoff without worker threads or synchronous task waits.
+    private sealed class PipelineStage : IDisposable
+    {
+        private readonly PowerShellWasmExecutionContext _context;
+        private readonly PowerShellWasmExecutionContext.Activation _caller;
+        private readonly PowerShellWasmCommonParameters _common;
+        private readonly PowerShellWasmCommonParameters.Invocation _captures;
+        private readonly IPowerShellWasmPipelineProcessor _processor;
+        private bool _begun;
+        internal PipelineStage? Next { get; set; }
+
+        internal PipelineStage(PowerShellWasmExecutionContext context, PowerShellWasmExecutionContext.Activation caller,
+            PreparedCommand prepared, bool hasInput)
+        {
+            _context = context;
+            _caller = caller;
+            _common = prepared.Common;
+            _processor = prepared.CreateProcessor(hasInput);
+            _captures = _common.CreateInvocation(context);
+        }
+
+        internal async ValueTask BeginAsync(CancellationToken token)
+        {
+            if (_begun) return;
+            _begun = true;
+            await InvokeAsync(_processor.BeginAsync, token);
+        }
+
+        internal async ValueTask ProcessAsync(object? record, CancellationToken token)
+        {
+            await BeginAsync(token);
+            await InvokeAsync(ct => _processor.ProcessAsync(record, ct), token);
+        }
+
+        internal ValueTask CompleteAsync(CancellationToken token) => InvokeAsync(_processor.CompleteAsync, token);
+
+        private async ValueTask InvokeAsync(Func<CancellationToken, ValueTask> invoke, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            using var activation = _context.Activate(_caller);
+            using var scriptCaller = _context.WithScriptCaller(_caller);
+            using var preferences = _common.Apply(_context);
+            using var errors = _context.ObserveErrors(_captures.ObserveError);
+            using var output = _context.RouteOutput(EmitAsync);
+            try { await invoke(token); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error) { _context.RecordException(error); throw; }
+        }
+
+        private ValueTask EmitAsync(object? record, CancellationToken token)
+        {
+            record = _captures.ObserveOutput(record);
+            return PowerShellWasmExecutionContext.IsStreamRecord(record) || Next is null
+                ? _context.WriteToPortAsync(_caller.Output, record, token)
+                : Next.ProcessAsync(record, token);
+        }
+
+        public void Dispose() => _captures.Dispose();
     }
 
     private async ValueTask ExecuteScriptFunctionAsync(
@@ -803,7 +900,7 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             foreach (var item in hashtable)
             {
-                parameters[item.Key] = item.Value;
+                parameters[item.Key] = PowerShellWasmOutput.AsCommandArgument(item.Value);
             }
 
             return;
@@ -813,7 +910,7 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             foreach (var item in enumerable)
             {
-                arguments.Add(item);
+                arguments.Add(PowerShellWasmOutput.AsCommandArgument(item));
             }
 
             return;
@@ -839,7 +936,8 @@ internal sealed class PowerShellWasmAstExecutor(
             case AssignmentExpressionAst assignment:
                 return await EvaluateAssignmentAsync(assignment, cancellationToken);
             case SettableAssignmentExpressionAst assignment:
-                return await EvaluateSettableAssignmentAsync(assignment, cancellationToken);
+                return await EvaluateSettableAssignmentAsync(
+                    assignment.Target, () => EvaluateExpressionAsync(assignment.Value, cancellationToken), cancellationToken);
             case CompoundAssignmentExpressionAst assignment:
                 return await EvaluateCompoundAssignmentAsync(
                     assignment.VariableName,
@@ -905,7 +1003,7 @@ internal sealed class PowerShellWasmAstExecutor(
             "true" => true,
             "false" => false,
             "null" => null,
-            _ => executionContext.GetVariable(name)
+            _ => executionContext.GetRawVariable(name)
         };
 
     private async ValueTask<object?> EvaluateAssignmentAsync(AssignmentExpressionAst assignment, CancellationToken cancellationToken)
@@ -915,12 +1013,21 @@ internal sealed class PowerShellWasmAstExecutor(
         return value;
     }
 
+    // Behavioral guidance: Compiler's assignable values cache receivers/keys; index assignment evaluates the RHS first.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L6823-L6885
+    // Browser-safe adaptation: capture existing variable/dictionary/list accessors, without dynamic binders or reflection.
     private async ValueTask<object?> EvaluateSettableAssignmentAsync(
-        SettableAssignmentExpressionAst assignment,
+        ExpressionAst target,
+        Func<ValueTask<object?>> evaluateValue,
         CancellationToken cancellationToken)
     {
-        var value = await EvaluateExpressionAsync(assignment.Value, cancellationToken);
-        await SetAssignmentTargetAsync(assignment.Target, value, cancellationToken);
+        // Plain member assignment captures its receiver/name before the value; index assignment evaluates the value first.
+        AssignmentTarget? location = target is MemberAccessExpressionAst or ComputedMemberAccessExpressionAst
+            ? await ResolveAssignmentTargetAsync(target, cancellationToken)
+            : null;
+        var value = await evaluateValue();
+        location ??= await ResolveAssignmentTargetAsync(target, cancellationToken);
+        location.Value.Write(value);
         return value;
     }
 
@@ -931,7 +1038,7 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var left = EvaluateVariableAssignmentTarget(variableName);
-        if (op == PowerShellWasmBinaryOperator.NullCoalesce && left is not null)
+        if (op == PowerShellWasmBinaryOperator.NullCoalesce && PowerShellWasmOutput.AsNull(left) is not null)
         {
             return left;
         }
@@ -950,9 +1057,12 @@ internal sealed class PowerShellWasmAstExecutor(
         ExpressionAst expression,
         CancellationToken cancellationToken)
     {
-        var left = await EvaluateExpressionAsync(target, cancellationToken);
-        if (op == PowerShellWasmBinaryOperator.NullCoalesce && left is not null)
+        var location = await ResolveAssignmentTargetAsync(target, cancellationToken);
+        var left = location.Read();
+        if (op == PowerShellWasmBinaryOperator.NullCoalesce && PowerShellWasmOutput.AsNull(left) is not null)
         {
+            // PowerShell skips the right operand, but still assigns through the captured target (which may be read-only).
+            location.Write(left);
             return left;
         }
 
@@ -960,7 +1070,7 @@ internal sealed class PowerShellWasmAstExecutor(
         var value = op == PowerShellWasmBinaryOperator.NullCoalesce
             ? right
             : ApplyBinaryOperator(left, op, right);
-        await SetAssignmentTargetAsync(target, value, cancellationToken);
+        location.Write(value);
         return value;
     }
 
@@ -980,15 +1090,19 @@ internal sealed class PowerShellWasmAstExecutor(
         bool isPrefix,
         CancellationToken cancellationToken)
     {
-        var current = await EvaluateExpressionAsync(target, cancellationToken);
+        var location = await ResolveAssignmentTargetAsync(target, cancellationToken);
+        var current = location.Read();
         var updated = IncrementNumber(current, delta);
-        await SetAssignmentTargetAsync(target, updated, cancellationToken);
-        return isPrefix ? updated : current ?? 0;
+        location.Write(updated);
+        return isPrefix ? updated : PowerShellWasmOutput.AsNull(current) ?? 0;
     }
 
-    private async ValueTask SetAssignmentTargetAsync(
+    // Behavioral guidance: ReduceAssignment reuses an assignable value for the read/write, including ??= write-back.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L979-L1008
+    private readonly record struct AssignmentTarget(Func<object?> Read, Action<object?> Write);
+
+    private async ValueTask<AssignmentTarget> ResolveAssignmentTargetAsync(
         ExpressionAst target,
-        object? value,
         CancellationToken cancellationToken)
     {
         switch (target)
@@ -996,32 +1110,31 @@ internal sealed class PowerShellWasmAstExecutor(
             case VariableExpressionAst variable:
                 if (variable.IsEnvironment)
                 {
-                    executionContext.SetEnvironmentVariable(variable.Name, value is null ? null : ToInvariantString(value));
+                    return new AssignmentTarget(
+                        () => executionContext.GetEnvironmentVariable(variable.Name) ?? string.Empty,
+                        value => executionContext.SetEnvironmentVariable(variable.Name, value is null ? null : ToInvariantString(value)));
                 }
-                else
-                {
-                    executionContext.SetVariable(variable.Name, value);
-                }
-
-                return;
+                return new AssignmentTarget(
+                    () => EvaluateVariable(variable.Name), value => executionContext.SetVariable(variable.Name, value));
             case MemberAccessExpressionAst member:
-                SetMemberValue(
-                    await EvaluateExpressionAsync(member.Target, cancellationToken),
-                    member.MemberName,
-                    value);
-                return;
+            {
+                var receiver = await EvaluateExpressionAsync(member.Target, cancellationToken);
+                return new AssignmentTarget(
+                    () => EvaluateMemberAccess(receiver, member.MemberName), value => SetMemberValue(receiver, member.MemberName, value));
+            }
             case ComputedMemberAccessExpressionAst member:
-                SetMemberValue(
-                    await EvaluateExpressionAsync(member.Target, cancellationToken),
-                    ToInvariantString(await EvaluateExpressionAsync(member.MemberName, cancellationToken)),
-                    value);
-                return;
+            {
+                var receiver = await EvaluateExpressionAsync(member.Target, cancellationToken);
+                var name = ToInvariantString(await EvaluateExpressionAsync(member.MemberName, cancellationToken));
+                return new AssignmentTarget(
+                    () => EvaluateMemberAccess(receiver, name), value => SetMemberValue(receiver, name, value));
+            }
             case IndexExpressionAst index:
-                SetIndexValue(
-                    await EvaluateExpressionAsync(index.Target, cancellationToken),
-                    await EvaluateExpressionAsync(index.Index, cancellationToken),
-                    value);
-                return;
+            {
+                var receiver = await EvaluateExpressionAsync(index.Target, cancellationToken);
+                var key = await EvaluateExpressionAsync(index.Index, cancellationToken);
+                return new AssignmentTarget(() => EvaluateIndex(receiver, key), value => SetIndexValue(receiver, key, value));
+            }
             default:
                 throw new InvalidOperationException("Only variables, members, and indexers can be assigned in this browser-safe runtime.");
         }
@@ -1041,7 +1154,7 @@ internal sealed class PowerShellWasmAstExecutor(
         return result;
     }
 
-    private async ValueTask<PowerShellWasmHashtable> EvaluateTypedHashtableAsync(
+    private async ValueTask<object> EvaluateTypedHashtableAsync(
         TypedHashtableExpressionAst typedHashtable,
         CancellationToken cancellationToken)
     {
@@ -1051,7 +1164,11 @@ internal sealed class PowerShellWasmAstExecutor(
                 $"Typed hashtable literal [{typedHashtable.TypeName}]@{{}} is not available in this browser-safe runtime.");
         }
 
-        return await EvaluateHashtableAsync(typedHashtable.Hashtable, cancellationToken);
+        var values = await EvaluateHashtableAsync(typedHashtable.Hashtable, cancellationToken);
+        var typeName = typedHashtable.TypeName.Trim();
+        return typeName.Equals("pscustomobject", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("System.Management.Automation.PSCustomObject", StringComparison.OrdinalIgnoreCase)
+            ? new PowerShellWasmCustomObject(values) : values;
     }
 
     private static bool IsSupportedTypedHashtable(string typeName)
@@ -1082,42 +1199,22 @@ internal sealed class PowerShellWasmAstExecutor(
         // Compiler.VisitArrayExpression directly evaluates a single pure expression, including ++/--.
         // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/parser/Compiler.cs#L5891-L5935
         // Multi-statement arrays and $() retain the ordinary statement-output suppression below.
-        if (array.Script.Statements is [ExpressionStatementAst { Expression: IncrementExpressionAst increment }])
+        if (array.Script.Statements is [ExpressionStatementAst expression])
         {
-            return [await EvaluateIncrementAsync(increment.Target, increment.Delta, increment.IsPrefix, cancellationToken)];
+            var value = await EvaluateExpressionAsync(expression.Expression, cancellationToken);
+            if (PowerShellWasmOutput.IsNoOutput(value)) return [];
+            if (value is object?[] values) return values;
+            return value is System.Collections.IEnumerable items and not string and not System.Collections.IDictionary
+                and not IReadOnlyDictionary<string, object?> ? items.Cast<object?>().ToArray() : [value];
         }
 
         var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        using (executionContext.CaptureOutput(output, captureStreams: false))
         {
             await ExecuteScriptAsync(array.Script, cancellationToken);
         }
 
-        return ExpandArraySubexpressionOutput(executionContext.GetCapturedOutput(output)).ToArray();
-    }
-
-    private static IEnumerable<object?> ExpandArraySubexpressionOutput(IEnumerable<object?> output)
-    {
-        foreach (var item in output)
-        {
-            if (item is null or string or System.Collections.IDictionary or IReadOnlyDictionary<string, object?>)
-            {
-                yield return item;
-                continue;
-            }
-
-            if (item is System.Collections.IEnumerable enumerable)
-            {
-                foreach (var value in enumerable)
-                {
-                    yield return value;
-                }
-
-                continue;
-            }
-
-            yield return item;
-        }
+        return executionContext.GetCapturedOutput(output).ToArray();
     }
 
     private async ValueTask<object?> EvaluateStatementExpressionAsync(
@@ -1125,12 +1222,12 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        using (executionContext.CaptureOutput(output, captureStreams: false))
         {
             await ExecuteStatementAsync(statement, [], cancellationToken);
         }
 
-        return ToCapturedExpressionValue(output);
+        return ToCapturedExpressionValue(executionContext.GetCapturedOutput(output));
     }
 
     private async ValueTask<object?> EvaluateScriptExpressionAsync(
@@ -1138,31 +1235,32 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        using (executionContext.CaptureOutput(output, captureStreams: false))
         {
             await ExecuteScriptAsync(script, cancellationToken);
         }
 
-        return ToCapturedExpressionValue(output);
+        return ToCapturedExpressionValue(executionContext.GetCapturedOutput(output));
     }
 
     private static object? ToCapturedExpressionValue(IReadOnlyList<object?> output) =>
         output.Count switch
         {
-            0 => null,
+            0 => PowerShellWasmOutput.NoOutput,
             1 => output[0],
             _ => output.ToArray()
         };
 
     private PowerShellWasmScriptBlock CreateScriptBlock(ScriptBlockExpressionAst scriptBlock)
     {
-        async ValueTask<IReadOnlyList<object?>> InvokeAsync(
+        async ValueTask ExecuteBodyAsync(
             object? input,
             IReadOnlyList<object?>? arguments,
             IReadOnlyDictionary<string, object?>? variables,
             CancellationToken cancellationToken)
         {
-            var output = new List<object?>();
+            // Script callbacks see the caller's preferences, not their enclosing cmdlet's common-parameter overrides.
+            using var callerScope = executionContext.EnterScriptCaller();
             var locals = await CreateParameterLocalsAsync(
                 scriptBlock.Body.Parameters,
                 null,
@@ -1173,7 +1271,6 @@ internal sealed class PowerShellWasmAstExecutor(
                 cancellationToken);
             using var variableScope = locals.Count == 0 ? null : executionContext.WithTemporaryVariables(locals);
             using var pipelineScope = executionContext.WithPipelineItem(input);
-            using var outputScope = executionContext.CaptureOutput(output);
 
             try
             {
@@ -1186,21 +1283,46 @@ internal sealed class PowerShellWasmAstExecutor(
             catch (ReturnFlowException)
             {
             }
-
-            return output;
         }
+
+        async ValueTask<IReadOnlyList<object?>> InvokeCoreAsync(
+            object? input, IReadOnlyList<object?>? arguments, IReadOnlyDictionary<string, object?>? variables,
+            bool captureStreams, CancellationToken cancellationToken)
+        {
+            var output = new List<object?>();
+            using var outputScope = executionContext.CaptureOutput(output, captureStreams);
+            await ExecuteBodyAsync(input, arguments, variables, cancellationToken);
+            return captureStreams ? output : executionContext.GetCapturedOutput(output);
+        }
+
+        ValueTask<IReadOnlyList<object?>> InvokeAsync(
+            object? input,
+            IReadOnlyList<object?>? arguments,
+            IReadOnlyDictionary<string, object?>? variables,
+            CancellationToken cancellationToken) =>
+            InvokeCoreAsync(input, arguments, variables, captureStreams: false, cancellationToken);
 
         async ValueTask<PowerShellWasmResult> InvokeResultAsync(
             object? input,
             IReadOnlyList<object?>? arguments,
             IReadOnlyDictionary<string, object?>? variables,
             CancellationToken cancellationToken) =>
-            executionContext.CreateResult(await InvokeAsync(input, arguments, variables, cancellationToken));
+            executionContext.CreateResult(await InvokeCoreAsync(input, arguments, variables, captureStreams: true, cancellationToken));
+
+        async ValueTask InvokeOutputAsync(
+            object? input, IReadOnlyDictionary<string, object?>? variables, CancellationToken cancellationToken)
+        {
+            var output = executionContext.CurrentOutputPort;
+            using var outputScope = executionContext.RouteOutput((item, token) => executionContext.WriteToPortAsync(output,
+                variables is null || PowerShellWasmExecutionContext.IsStreamRecord(item)
+                    ? item : PowerShellWasmPipelineValue.Wrap(item, variables), token));
+            await ExecuteBodyAsync(input, null, variables, cancellationToken);
+        }
 
         var commandBody = new PowerShellWasmScriptFunction("&", scriptBlock.Body.Parameters, new ScriptAst(scriptBlock.Body.Statements));
         return new PowerShellWasmScriptBlock(InvokeAsync, InvokeResultAsync, scriptBlock.Body.Parameters,
             (context, cancellationToken) => ExecuteScriptFunctionAsync(
-                commandBody, context.Parameters, context.Arguments, context.PipelineInput, cancellationToken));
+                commandBody, context.Parameters, context.Arguments, context.PipelineInput, cancellationToken), InvokeOutputAsync);
     }
 
     private async ValueTask<Dictionary<string, object?>> CreateParameterLocalsAsync(
@@ -1379,15 +1501,18 @@ internal sealed class PowerShellWasmAstExecutor(
         if (typeName.Trim().Equals("void", StringComparison.OrdinalIgnoreCase) ||
             typeName.Trim().Equals("System.Void", StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            return PowerShellWasmOutput.NoOutput;
         }
 
+        var normalizedType = NormalizeCastTypeName(typeName);
+        if (normalizedType == "object") return value;
+        if (normalizedType == "string" && PowerShellWasmOutput.IsNoOutput(value)) return null;
+        value = PowerShellWasmOutput.AsNull(value);
         if (PowerShellWasmDotNetBridge.TryCast(typeName, value, out var dotNetValue))
         {
             return dotNetValue;
         }
 
-        var normalizedType = NormalizeCastTypeName(typeName);
         if (normalizedType.EndsWith("[]", StringComparison.Ordinal))
         {
             return CastArrayValue(normalizedType[..^2], value);
@@ -1398,6 +1523,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static object? CastArrayValue(string elementType, object? value)
     {
+        if (PowerShellWasmOutput.AsNull(value) is null) return null;
         var values = Enumerate(value).Select(item => CastScalarValue(elementType, item)).ToArray();
         return elementType switch
         {
@@ -1486,14 +1612,16 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var target = await EvaluateExpressionAsync(member.Target, cancellationToken);
-        return target is null ? null : EvaluateMemberAccess(target, member.MemberName);
+        return PowerShellWasmOutput.AsNull(target) is null ? null : EvaluateMemberAccess(target, member.MemberName);
     }
 
     private static object? EvaluateMemberAccess(object? target, string memberName)
     {
+        target = PowerShellWasmOutput.AsNull(target);
         if (target is null)
         {
-            return null;
+            return memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
+                memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ? 0 : null;
         }
 
         if (TryGetDirectMemberAccess(target, memberName, out var directValue))
@@ -1598,7 +1726,7 @@ internal sealed class PowerShellWasmAstExecutor(
         if (invocation.Target is NullConditionalMemberAccessExpressionAst nullConditionalMember)
         {
             var nullConditionalTarget = await EvaluateExpressionAsync(nullConditionalMember.Target, cancellationToken);
-            if (nullConditionalTarget is null)
+            if (PowerShellWasmOutput.AsNull(nullConditionalTarget) is null)
             {
                 return null;
             }
@@ -1618,7 +1746,7 @@ internal sealed class PowerShellWasmAstExecutor(
             }
 
             return InvokeMethodTarget(
-                EvaluateMemberAccess(nullConditionalTarget, nullConditionalMember.MemberName),
+                GetMethodTarget(nullConditionalTarget, nullConditionalMember.MemberName),
                 nullConditionalArguments);
         }
 
@@ -1638,10 +1766,31 @@ internal sealed class PowerShellWasmAstExecutor(
             }
         }
 
-        var target = await EvaluateExpressionAsync(invocation.Target, cancellationToken);
+        object? target;
+        if (invocation.Target is MemberAccessExpressionAst methodMember)
+        {
+            target = GetMethodTarget(await EvaluateExpressionAsync(methodMember.Target, cancellationToken), methodMember.MemberName);
+        }
+        else if (invocation.Target is ComputedMemberAccessExpressionAst computedMember)
+        {
+            var receiver = await EvaluateExpressionAsync(computedMember.Target, cancellationToken);
+            var name = ToInvariantString(await EvaluateExpressionAsync(computedMember.MemberName, cancellationToken));
+            target = GetMethodTarget(receiver, name);
+        }
+        else
+        {
+            target = await EvaluateExpressionAsync(invocation.Target, cancellationToken);
+        }
         var arguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
 
         return InvokeMethodTarget(target, arguments);
+    }
+
+    private static object? GetMethodTarget(object? receiver, string memberName)
+    {
+        receiver = PowerShellWasmOutput.AsNull(receiver);
+        return receiver is not null && PowerShellWasmDotNetBridge.TryGetInstanceMember(receiver, memberName, out var method)
+            ? method : EvaluateMemberAccess(receiver, memberName);
     }
 
     private static object? InvokeMethodTarget(object? target, IReadOnlyList<object?> arguments)
@@ -1746,6 +1895,11 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         var target = await EvaluateExpressionAsync(index.Target, cancellationToken);
         var indexValue = await EvaluateExpressionAsync(index.Index, cancellationToken);
+        return EvaluateIndex(target, indexValue);
+    }
+
+    private static object? EvaluateIndex(object? target, object? indexValue)
+    {
         if (TryGetDictionaryIndex(target, indexValue, out var dictionaryValue))
         {
             return dictionaryValue;
@@ -1835,7 +1989,7 @@ internal sealed class PowerShellWasmAstExecutor(
         var left = await EvaluateExpressionAsync(binary.Left, cancellationToken);
         if (binary.Operator == PowerShellWasmBinaryOperator.NullCoalesce)
         {
-            return left ?? await EvaluateExpressionAsync(binary.Right, cancellationToken);
+            return PowerShellWasmOutput.AsNull(left) ?? await EvaluateExpressionAsync(binary.Right, cancellationToken);
         }
 
         if (binary.Operator == PowerShellWasmBinaryOperator.LogicalAnd)
@@ -2064,7 +2218,7 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         try
         {
-            return CastValue(typeName, value);
+            return CastValue(typeName, NormalizeCastTypeName(typeName) == "object" ? value : PowerShellWasmOutput.AsNull(value));
         }
         catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException)
         {
@@ -2074,6 +2228,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static bool TypeMatches(object? value, string typeName)
     {
+        value = PowerShellWasmOutput.AsNull(value);
         if (value is null)
         {
             return false;
@@ -2112,6 +2267,8 @@ internal sealed class PowerShellWasmAstExecutor(
     // Browser-safe adaptation: supported values only; no arbitrary operator overload or reflection dispatch.
     private object? Add(object? left, object? right)
     {
+        left = PowerShellWasmOutput.AsNull(left);
+        right = PowerShellWasmOutput.AsNull(right);
         if (left is null)
         {
             return right;
@@ -2158,6 +2315,8 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static object? Multiply(object? left, object? right)
     {
+        left = PowerShellWasmOutput.AsNull(left);
+        right = PowerShellWasmOutput.AsNull(right);
         if (left is null)
         {
             return null;
@@ -2235,6 +2394,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static object ToArithmeticNumber(object? value)
     {
+        value = PowerShellWasmOutput.AsNull(value);
         if (value is null) return 0;
         if (value is bool boolean) return boolean ? 1 : 0;
         if (value is byte octet) return (int)octet;
@@ -2450,6 +2610,8 @@ internal sealed class PowerShellWasmAstExecutor(
     // Browser-safe adaptation: left-directed conversion for supported values, without arbitrary conversion/reflection hooks.
     private bool ValuesEqual(object? left, object? right, bool caseSensitive)
     {
+        left = PowerShellWasmOutput.AsNull(left);
+        right = PowerShellWasmOutput.AsNull(right);
         if (left is null || right is null)
         {
             return left is null && right is null;
@@ -2469,6 +2631,8 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private double CompareValues(object? left, object? right, bool caseSensitive)
     {
+        left = PowerShellWasmOutput.AsNull(left);
+        right = PowerShellWasmOutput.AsNull(right);
         if (left is null)
         {
             return right is null ? 0 : IsComparisonNumber(right) && CompareNumbers(right, 0) < 0 ? 1 : -1;
@@ -2611,18 +2775,12 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static IEnumerable<object?> Enumerate(object? value)
     {
-        if (value is null)
+        if (PowerShellWasmOutput.AsNull(value) is null)
         {
             yield break;
         }
 
         if (value is string)
-        {
-            yield return value;
-            yield break;
-        }
-
-        if (value is byte[])
         {
             yield return value;
             yield break;
@@ -2649,7 +2807,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static object?[] ToIndexableValues(object? value)
     {
-        if (value is null)
+        if (PowerShellWasmOutput.AsNull(value) is null)
         {
             return [];
         }
@@ -2891,7 +3049,7 @@ internal sealed class PowerShellWasmAstExecutor(
     private async ValueTask<string> EvaluateExpandableSubexpressionAsync(string script, CancellationToken cancellationToken)
     {
         var output = new List<object?>();
-        using (executionContext.CaptureOutput(output))
+        using (executionContext.CaptureOutput(output, captureStreams: false))
         {
             await ExecuteAsync(new PowerShellWasmParser().Parse(script), cancellationToken);
         }
@@ -3051,8 +3209,10 @@ internal sealed class PowerShellWasmAstExecutor(
             : ToInvariantString(value);
 
     private static double ToNumber(object? value) =>
-        value switch
+        PowerShellWasmOutput.AsNull(value) switch
         {
+            null => 0,
+            byte byteValue => byteValue,
             bool boolValue => boolValue ? 1 : 0,
             int intValue => intValue,
             long longValue => longValue,
@@ -3066,24 +3226,25 @@ internal sealed class PowerShellWasmAstExecutor(
         Convert.ToInt64(ToNumber(value), CultureInfo.InvariantCulture);
 
     private static bool ToBoolean(object? value) =>
-        value switch
+        PowerShellWasmOutput.AsNull(value) switch
         {
             null => false,
             bool boolValue => boolValue,
+            byte byteValue => byteValue != 0,
             int intValue => intValue != 0,
             long longValue => longValue != 0,
-            double doubleValue => Math.Abs(doubleValue) > 0.0000000001,
+            double doubleValue => doubleValue != 0,
             decimal decimalValue => decimalValue != 0,
             string stringValue => stringValue.Length > 0,
-            object?[] arrayValue => ToCollectionBoolean(arrayValue),
+            System.Collections.IList list => ToCollectionBoolean(list),
             _ => true
         };
 
-    private static bool ToCollectionBoolean(IReadOnlyList<object?> values) =>
+    private static bool ToCollectionBoolean(System.Collections.IList values) =>
         values.Count switch
         {
             0 => false,
-            1 => ToBoolean(values[0]),
+            1 => values[0] is System.Collections.IList nested ? nested.Count != 0 : ToBoolean(values[0]),
             _ => true
         };
 
@@ -3121,6 +3282,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static object IncrementNumber(object? value, int delta)
     {
+        value = PowerShellWasmOutput.AsNull(value);
         // Behavioral guidance: PSUnaryOperationBinder permits numeric values/null, not numeric strings or bools.
         // https://github.com/PowerShell/PowerShell/blob/v7.6.1/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L3338-L3367
         if (value is not (null or byte or int or long or double or decimal))

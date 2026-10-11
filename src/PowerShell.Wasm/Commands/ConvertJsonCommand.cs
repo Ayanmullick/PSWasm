@@ -4,57 +4,79 @@ using System.Text.Json;
 
 namespace PSWasm.Commands;
 
-internal sealed class ConvertToJsonCommand : IPowerShellWasmCommand
+internal sealed class ConvertToJsonCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput);
+
     public IReadOnlyCollection<string> SwitchParameters => ["Compress"];
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var input = GetInput(context);
+        if (PowerShellWasmOutput.IsNoOutput(input)) return;
         var compress = context.Parameters.TryGetValue("Compress", out var compressValue) &&
             PowerShellWasmCommandUtilities.ToBoolean(compressValue);
         var depth = Math.Max(1, context.GetInt32("Depth", 8));
 
-        context.ExecutionContext.WriteOutput(PowerShellWasmJson.ConvertToJson(input, compress, depth));
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(PowerShellWasmJson.ConvertToJson(input, compress, depth), cancellationToken);
+        return;
     }
 
     private static object? GetInput(PowerShellWasmCommandContext context)
     {
         if (context.Parameters.TryGetValue("InputObject", out var inputObject))
         {
-            return inputObject;
+            return PowerShellWasmOutput.AsNull(inputObject);
         }
 
         var input = context.PipelineInput.Count > 0
-            ? PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput).ToArray()
+            ? PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput).ToArray()
             : context.Arguments.ToArray();
 
         return input.Length switch
         {
-            0 => null,
+            0 => PowerShellWasmOutput.NoOutput,
             1 => input[0],
             _ => input
         };
     }
 }
 
-internal sealed class ConvertFromJsonCommand : IPowerShellWasmCommand
+internal sealed class ConvertFromJsonCommand : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        context.Parameters.ContainsKey("InputObject")
+            ? new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput)
+            : new PowerShellWasmPerRecordProcessor(this, context, hasPipelineInput);
+
+    public IReadOnlyCollection<string> SwitchParameters => ["NoEnumerate"];
+
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
+        var noEnumerate = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("NoEnumerate"));
         foreach (var input in GetInputs(context))
         {
-            var json = Convert.ToString(input, CultureInfo.InvariantCulture);
+            var json = PowerShellWasmCommandUtilities.ToInvariantString(input);
             if (string.IsNullOrWhiteSpace(json))
             {
                 continue;
             }
 
-            context.ExecutionContext.WriteOutput(PowerShellWasmJson.ConvertFromJson(json));
+            var value = PowerShellWasmJson.ConvertFromJson(json);
+            if (noEnumerate)
+            {
+                await context.ExecutionContext.WriteOutputAsync(value, cancellationToken);
+            }
+            else
+            {
+                // Behavioral guidance: ConvertFromJsonHelper enumerates unless NoEnumerate is specified.
+                // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/WebCmdlet/ConvertFromJsonCommand.cs#L119-L131
+                foreach (var item in PowerShellWasmOutput.Enumerate(value)) await context.ExecutionContext.WriteOutputAsync(item, cancellationToken);
+            }
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private static IEnumerable<object?> GetInputs(PowerShellWasmCommandContext context)
@@ -67,7 +89,7 @@ internal sealed class ConvertFromJsonCommand : IPowerShellWasmCommand
 
         if (context.PipelineInput.Count > 0)
         {
-            foreach (var input in context.PipelineInput)
+            foreach (var input in PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput))
             {
                 yield return input;
             }
@@ -101,6 +123,7 @@ internal static class PowerShellWasmJson
 
     private static void WriteJsonValue(Utf8JsonWriter writer, object? value, int depth, int currentDepth)
     {
+        value = PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value));
         if (value is null)
         {
             writer.WriteNullValue();

@@ -2,8 +2,11 @@ using System.Text.RegularExpressions;
 
 namespace PSWasm.Commands;
 
-internal sealed class WhereObjectCommand : IPowerShellWasmCommand
+internal sealed class WhereObjectCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new PowerShellWasmPerRecordProcessor(this, context, hasPipelineInput);
+
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var scriptBlock = PowerShellWasmCommandUtilities.GetScriptBlock(context, "FilterScript", "Process");
@@ -12,9 +15,17 @@ internal sealed class WhereObjectCommand : IPowerShellWasmCommand
             foreach (var item in PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput))
             {
                 var filterOutput = await scriptBlock.InvokeAsync(item.Value, null, item.Variables, cancellationToken);
-                if (filterOutput.Any(PowerShellWasmCommandUtilities.ToBoolean))
+                // Behavioral guidance: test the captured success result as a whole, after collapsing zero/one outputs.
+                // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/InternalCommands.cs#L2233-L2254
+                var matches = filterOutput.Count switch
                 {
-                    context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables));
+                    0 => false,
+                    1 => PowerShellWasmCommandUtilities.ToBoolean(filterOutput[0]),
+                    _ => true
+                };
+                if (matches)
+                {
+                    await context.ExecutionContext.WriteOutputAsync(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables), cancellationToken);
                 }
             }
 
@@ -33,7 +44,7 @@ internal sealed class WhereObjectCommand : IPowerShellWasmCommand
             var propertyValue = PowerShellWasmCommandUtilities.GetMemberValue(item.Value, propertyName);
             if (Matches(propertyValue, comparison))
             {
-                context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables));
+                await context.ExecutionContext.WriteOutputAsync(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables), cancellationToken);
             }
         }
     }

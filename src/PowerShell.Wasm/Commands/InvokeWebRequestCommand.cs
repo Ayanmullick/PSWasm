@@ -5,7 +5,7 @@ using System.Text;
 
 namespace PSWasm.Commands;
 
-internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShellWasmCommand
+internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShellWasmPipelineCommand
 {
     public IReadOnlyCollection<string> SwitchParameters => ["SkipHttpErrorCheck"];
 
@@ -16,11 +16,11 @@ internal sealed class InvokeWebRequestCommand(HttpClient httpClient) : IPowerShe
             context,
             "Invoke-WebRequest",
             cancellationToken);
-        context.ExecutionContext.WriteOutput(WebRequestCommandUtilities.CreateResponseObject(response.Message, response.Content));
+        await context.ExecutionContext.WriteOutputAsync(WebRequestCommandUtilities.CreateResponseObject(response.Message, response.Content), cancellationToken);
     }
 }
 
-internal sealed class InvokeRestMethodCommand(HttpClient httpClient) : IPowerShellWasmCommand
+internal sealed class InvokeRestMethodCommand(HttpClient httpClient) : IPowerShellWasmPipelineCommand
 {
     public IReadOnlyCollection<string> SwitchParameters => ["SkipHttpErrorCheck"];
 
@@ -37,7 +37,7 @@ internal sealed class InvokeRestMethodCommand(HttpClient httpClient) : IPowerShe
             return;
         }
 
-        context.ExecutionContext.WriteOutput(WebRequestCommandUtilities.ConvertRestContent(response.Message, response.Content));
+        await context.ExecutionContext.WriteOutputAsync(WebRequestCommandUtilities.ConvertRestContent(response.Message, response.Content), cancellationToken);
     }
 }
 

@@ -7,16 +7,19 @@ public sealed class PowerShellWasmScriptBlock
     private readonly Func<object?, IReadOnlyList<object?>?, IReadOnlyDictionary<string, object?>?, CancellationToken, ValueTask<IReadOnlyList<object?>>> _invoke;
     private readonly Func<object?, IReadOnlyList<object?>?, IReadOnlyDictionary<string, object?>?, CancellationToken, ValueTask<PowerShellWasmResult>> _invokeResult;
     private readonly Func<PowerShellWasmCommandContext, CancellationToken, ValueTask> _invokeCommand;
+    private readonly Func<object?, IReadOnlyDictionary<string, object?>?, CancellationToken, ValueTask> _invokeOutput;
 
     internal PowerShellWasmScriptBlock(
         Func<object?, IReadOnlyList<object?>?, IReadOnlyDictionary<string, object?>?, CancellationToken, ValueTask<IReadOnlyList<object?>>> invoke,
         Func<object?, IReadOnlyList<object?>?, IReadOnlyDictionary<string, object?>?, CancellationToken, ValueTask<PowerShellWasmResult>> invokeResult,
         IReadOnlyList<ParameterDeclarationAst> parameters,
-        Func<PowerShellWasmCommandContext, CancellationToken, ValueTask> invokeCommand)
+        Func<PowerShellWasmCommandContext, CancellationToken, ValueTask> invokeCommand,
+        Func<object?, IReadOnlyDictionary<string, object?>?, CancellationToken, ValueTask> invokeOutput)
     {
         _invoke = invoke;
         _invokeResult = invokeResult;
         _invokeCommand = invokeCommand;
+        _invokeOutput = invokeOutput;
         Parameters = parameters;
     }
 
@@ -24,6 +27,10 @@ public sealed class PowerShellWasmScriptBlock
 
     internal ValueTask InvokeCommandAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken) =>
         _invokeCommand(context, cancellationToken);
+
+    internal ValueTask InvokeOutputAsync(
+        object? input, IReadOnlyDictionary<string, object?>? variables, CancellationToken cancellationToken) =>
+        _invokeOutput(input, variables, cancellationToken);
 
     public ValueTask<IReadOnlyList<object?>> InvokeAsync(object? input = null, CancellationToken cancellationToken = default) =>
         _invoke(input, null, null, cancellationToken);

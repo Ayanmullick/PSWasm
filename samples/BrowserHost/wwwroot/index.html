@@ -169,6 +169,12 @@ try { 1 / 0 } catch { 'Integer division by zero caught' }
 $mixed = @('text', 2)
 $mixed[0] = 42
 ($mixed + $null).Count   # the null element is retained: 3
+@($null).Count          # one explicit null item: 1
+@(& {}).Count           # no emitted items: 0
+$cursor = 0
+$numbers = @(10,20)
+$previous = $numbers[$cursor++]++
+"$previous|$cursor|$($numbers -join ',')" # target evaluated once: 10|1|11,20
 ($var = 1 + 2) -eq 3
 Write-Output 'chain-left' && Write-Output 'chain-right'
 Write-Error 'chain-error' || Write-Output 'chain-recovered'
@@ -330,8 +336,8 @@ Write-Warning 'Captured warning' -WarningVariable capturedWarning
 $capturedWarning
 Write-Error 'Captured error' -ErrorAction SilentlyContinue -ErrorVariable capturedError
 $capturedError[0].Message
-Write-Output 'Pipeline capture' -PipelineVariable pipelineValue
-$pipelineValue
+1,2 | Write-Output -PipelineVariable pipelineValue | ForEach-Object { "Current pipeline value: $pipelineValue" }
+$null -eq $pipelineValue # cleared when the pipeline finishes: True
 Write-Output 'OutBuffer accepted' -OutBuffer 10
   </script>
           </article>

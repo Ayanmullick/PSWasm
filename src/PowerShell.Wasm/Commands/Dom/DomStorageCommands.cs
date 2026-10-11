@@ -1,6 +1,6 @@
 namespace PSWasm.Commands;
 
-internal sealed class GetDomStorageItemCommand : IPowerShellWasmCommand
+internal sealed class GetDomStorageItemCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -18,13 +18,13 @@ internal sealed class GetDomStorageItemCommand : IPowerShellWasmCommand
             var value = await host.GetStorageItemAsync(storage, key, cancellationToken);
             if (value is not null)
             {
-                context.ExecutionContext.WriteOutput(value);
+                await context.ExecutionContext.WriteOutputAsync(value, cancellationToken);
             }
         }
     }
 }
 
-internal sealed class SetDomStorageItemCommand : IPowerShellWasmCommand
+internal sealed class SetDomStorageItemCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -36,7 +36,7 @@ internal sealed class SetDomStorageItemCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class RemoveDomStorageItemCommand : IPowerShellWasmCommand
+internal sealed class RemoveDomStorageItemCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -56,7 +56,7 @@ internal sealed class RemoveDomStorageItemCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class ClearDomStorageCommand : IPowerShellWasmCommand
+internal sealed class ClearDomStorageCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -65,7 +65,7 @@ internal sealed class ClearDomStorageCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class RegisterDomStorageBindingCommand : IPowerShellWasmCommand
+internal sealed class RegisterDomStorageBindingCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -80,7 +80,7 @@ internal sealed class RegisterDomStorageBindingCommand : IPowerShellWasmCommand
             GetOptionalText(context, "Property", "Value"));
 
         await host.RegisterStorageBindingAsync(registration, cancellationToken);
-        context.ExecutionContext.WriteOutput(CreateRecord(registration));
+        await context.ExecutionContext.WriteOutputAsync(CreateRecord(registration), cancellationToken);
     }
 
     private static IReadOnlyDictionary<string, string> GetMap(PowerShellWasmCommandContext context)
@@ -156,7 +156,7 @@ internal sealed class RegisterDomStorageBindingCommand : IPowerShellWasmCommand
         };
 }
 
-internal sealed class UnregisterDomStorageBindingCommand : IPowerShellWasmCommand
+internal sealed class UnregisterDomStorageBindingCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {

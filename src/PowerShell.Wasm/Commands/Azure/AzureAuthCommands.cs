@@ -11,7 +11,7 @@ namespace PSWasm.Commands;
 //   https://github.com/Azure/azure-powershell/blob/main/src/Accounts/Accounts/Account/DisconnectAzureRmAccount.cs
 // The desktop implementation owns encrypted profile/token persistence through Az.Accounts.
 // PSWasm delegates the equivalent browser-safe account recovery to the browser auth host.
-internal sealed class ConnectAzAccountCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmCommand
+internal sealed class ConnectAzAccountCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -29,11 +29,11 @@ internal sealed class ConnectAzAccountCommand(IPowerShellWasmAzureAuthHost? auth
             "organizations";
         var scopes = AzureAuthCommandUtilities.GetScopes(context);
         var result = await host.ConnectAsync(new PowerShellWasmAzureAuthConnectRequest(tenant, clientId, scopes), cancellationToken);
-        context.ExecutionContext.WriteOutput(AzureAuthCommandUtilities.CloneRecord(result));
+        await context.ExecutionContext.WriteOutputAsync(AzureAuthCommandUtilities.CloneRecord(result), cancellationToken);
     }
 }
 
-internal sealed class GetAzAccessTokenCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmCommand
+internal sealed class GetAzAccessTokenCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -49,20 +49,20 @@ internal sealed class GetAzAccessTokenCommand(IPowerShellWasmAzureAuthHost? auth
         }
 
         var result = await host.GetAccessTokenAsync(new PowerShellWasmAzureAuthTokenRequest(resourceUrl, scopes), cancellationToken);
-        context.ExecutionContext.WriteOutput(AzureAuthCommandUtilities.CloneRecord(result));
+        await context.ExecutionContext.WriteOutputAsync(AzureAuthCommandUtilities.CloneRecord(result), cancellationToken);
     }
 }
 
-internal sealed class GetAzContextCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmCommand
+internal sealed class GetAzContextCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var host = AzureAuthCommandUtilities.GetAuthHost(authHost);
-        context.ExecutionContext.WriteOutput(AzureAuthCommandUtilities.CloneRecord(await host.GetContextAsync(cancellationToken)));
+        await context.ExecutionContext.WriteOutputAsync(AzureAuthCommandUtilities.CloneRecord(await host.GetContextAsync(cancellationToken)), cancellationToken);
     }
 }
 
-internal sealed class DisconnectAzAccountCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmCommand
+internal sealed class DisconnectAzAccountCommand(IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {

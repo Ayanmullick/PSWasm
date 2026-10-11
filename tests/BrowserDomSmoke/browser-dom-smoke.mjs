@@ -183,7 +183,7 @@ async function runSmoke(options) {
 
     await check("api-text", async () => {
       const text = await bounded(api.executePowerShell("'API text smoke'; Write-Host 'Host text'; 2 + 3"));
-      assert(text === "API text smoke\nHost text\n5", `Unexpected text API output: ${text}`);
+      assert(text === "API text smoke\n[Information] Host text\n5", `Unexpected text API output: ${text}`);
     });
     await check("api-stream-records", async () => {
       const result = await bounded(api.executePowerShellResult(`
@@ -199,8 +199,8 @@ Write-Verbose 'Smoke verbose'
 Write-Warning 'Smoke warning'
 Write-Error 'Smoke error'
 `));
-      // Write-Host currently follows the runtime's text-compatible Output behavior.
-      const streams = ["Output", "Output", "Debug", "Information", "Progress", "Verbose", "Warning", "Error"];
+      // Write-Host is visible information-stream output, separate from success-output capture.
+      const streams = ["Output", "Information", "Debug", "Information", "Progress", "Verbose", "Warning", "Error"];
       assert(typeof result.text === "string" && Array.isArray(result.records), "Structured result has the wrong shape.");
       assert(result.records.length === streams.length, `Expected eight records, received ${result.records.length}.`);
       assert(result.records.map(record => record.stream).join("|") === streams.join("|"), "Stream ordering changed.");
@@ -217,7 +217,20 @@ Write-Error 'Smoke error'
       for (const stream of streams.slice(2)) {
         assert(output.querySelector(`.pswasm-stream-${stream.toLowerCase()}`), `Missing rendered ${stream} stream.`);
       }
-      return { streams };
+      const informationText = Array.from(output.querySelectorAll(".pswasm-stream-information"), node => node.textContent);
+      assert(JSON.stringify(informationText) === JSON.stringify(["[Information] Smoke host", "[Information] Smoke information"]),
+        "Write-Host and Write-Information did not both render as information-stream records.");
+      const captured = await bounded(api.executePowerShellResult(
+        "$hostCapture = $(Write-Host 'Uncaptured host'; 42); $hostCapture; @($hostCapture).Count"));
+      const captureRecords = [
+        { stream: "Information", text: "Uncaptured host" },
+        { stream: "Output", text: "42" },
+        { stream: "Output", text: "1" }
+      ];
+      const actualCaptureRecords = captured.records.map(({ stream, text }) => ({ stream, text }));
+      assert(JSON.stringify(actualCaptureRecords) === JSON.stringify(captureRecords),
+        `Write-Host must remain Information output and be excluded from success capture: ${JSON.stringify(captured.records)}`);
+      return { streams, hostExcludedFromCapture: true };
     });
     await check("api-environment", async () => {
       const text = await bounded(api.executePowerShell("$env:PSWASM_SMOKE", { environment: { PSWASM_SMOKE: "LocalOnly" } }));
@@ -267,8 +280,11 @@ Write-Error 'Smoke error'
       addScript("", "/sample.ps1");
       addScript("$ScriptOrder += ':last'; Get-SmokeOrder");
       await bounded(api.runPowerShellScripts({ selector: ".pswasm-smoke-loader-script", output }));
-      const text = output.textContent, order = ["inline first", "PSWasm external PowerShell script", "Loaded from sample.ps1", "first:last"];
+      const text = output.textContent;
+      const order = ["inline first", "[Information] PSWasm external PowerShell script", "Loaded from sample.ps1", "first:last"];
       assert(text === order.join("\n"), `External script order/shared session output changed: ${text}`);
+      assert(output.querySelector(".pswasm-stream-information")?.textContent === order[1],
+        "External script Write-Host output did not render as an information-stream record.");
       assert(!output.querySelector(".pswasm-stream-error"), `Script loader returned an error: ${text}`);
       return { order };
     });

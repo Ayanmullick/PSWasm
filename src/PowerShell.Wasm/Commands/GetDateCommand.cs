@@ -2,11 +2,11 @@ using System.Globalization;
 
 namespace PSWasm.Commands;
 
-internal sealed class GetDateCommand(bool timeOnly = false) : IPowerShellWasmCommand
+internal sealed class GetDateCommand(bool timeOnly = false) : IPowerShellWasmPipelineCommand
 {
     public IReadOnlyCollection<string> SwitchParameters => ["Utc"];
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var useUtc = context.Parameters.TryGetValue("Utc", out var utc) && IsTruthy(utc);
         var now = useUtc ? DateTimeOffset.UtcNow : DateTimeOffset.Now;
@@ -16,8 +16,8 @@ internal sealed class GetDateCommand(bool timeOnly = false) : IPowerShellWasmCom
             ? now.ToString(format ?? "T", CultureInfo.InvariantCulture)
             : format is null ? now : now.ToString(format, CultureInfo.InvariantCulture);
 
-        context.ExecutionContext.WriteOutput(output);
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(output, cancellationToken);
+        return;
     }
 
     private static bool IsTruthy(object? value) =>

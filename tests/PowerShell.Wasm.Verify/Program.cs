@@ -5,6 +5,9 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("incremental pipeline lifecycle and timing", IncrementalPipelineVerification.VerifyAsync),
+    ("output enumeration and stream capture", OutputCaptureVerification.VerifyAsync),
+    ("public variable boundaries", PublicVariableBoundaryVerification.VerifyAsync),
     ("call operator binding and scope", CallOperatorVerification.VerifyAsync),
     ("parameter binding", ParameterBindingVerification.VerifyAsync),
     ("parenthesized expression grammar", ParenthesizedExpressionVerification.VerifyAsync),
@@ -12,6 +15,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("arithmetic operand semantics", ArithmeticVerification.VerifyAsync),
     ("numeric operators and promotion", NumericOperatorVerification.VerifyAsync),
     ("array assignment types", ArrayAssignmentVerification.VerifyAsync),
+    ("assignment target evaluation", AssignmentEvaluationVerification.VerifyAsync),
     ("comparison operand semantics", ComparisonVerification.VerifyAsync),
     ("ternary operator", VerifyTernaryOperatorAsync),
     ("null conditional member access", VerifyNullConditionalMemberAccessAsync),
@@ -68,7 +72,6 @@ foreach (var test in tests)
     {
         Console.Error.WriteLine($"FAIL {test.Name}: {error}");
         Environment.ExitCode = 1;
-        return;
     }
 }
 
@@ -2482,6 +2485,7 @@ try {
 }
 """);
 
+    // Native PipelineVariable resets to null after a pipeline; buffered Sort observes the last upstream value.
     ExpectLines(result, [
         "[Verbose] shown verbose",
         "[Debug] shown debug",
@@ -2503,7 +2507,7 @@ try {
         "False",
         "1",
         "pipeline value",
-        "pipeline value",
+        "",
         "pv=1 item=1",
         "pv=2 item=2",
         "pv=3 item=3",
@@ -2511,9 +2515,9 @@ try {
         "kept=3 item=3",
         "row=Ada name=Ada",
         "row=Grace name=Grace",
-        "sorted=1 item=1",
+        "sorted=2 item=1",
         "sorted=2 item=2",
-        "sorted=3 item=3",
+        "sorted=2 item=3",
         "buffer accepted",
         "whatif accepted",
         "confirm accepted",

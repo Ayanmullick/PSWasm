@@ -2,48 +2,65 @@ using PSWasm.Language;
 
 namespace PSWasm.Commands;
 
-internal sealed class ForEachObjectCommand : IPowerShellWasmCommand
+internal sealed class ForEachObjectCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new Processor(context, hasPipelineInput);
+
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
-        var (begin, processBlocks, end) = GetScriptBlockBinding(context);
-        var memberName = GetMemberName(context);
-        if (begin is null && processBlocks.Count == 0 && end is null && string.IsNullOrWhiteSpace(memberName))
-        {
-            foreach (var item in context.PipelineInput)
-            {
-                context.ExecutionContext.WriteOutput(item);
-            }
+        var processor = new Processor(context, context.PipelineInput.Count > 0);
+        await processor.BeginAsync(cancellationToken);
+        foreach (var record in context.PipelineInput) await processor.ProcessAsync(record, cancellationToken);
+        await processor.CompleteAsync(cancellationToken);
+    }
 
-            return;
+    // Behavioral guidance: one Begin/Process/End invocation, with each emitted record delivered before processing resumes.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/InternalCommands.cs
+    private sealed class Processor : IPowerShellWasmPipelineProcessor
+    {
+        private readonly PowerShellWasmCommandContext _context;
+        private readonly bool _hasPipelineInput;
+        private readonly PowerShellWasmScriptBlock? _begin, _end;
+        private readonly IReadOnlyList<PowerShellWasmScriptBlock> _process;
+        private readonly string? _memberName;
+        private readonly IReadOnlyList<object?> _memberArguments;
+
+        public Processor(PowerShellWasmCommandContext context, bool hasPipelineInput)
+        {
+            _context = context;
+            _hasPipelineInput = hasPipelineInput;
+            (_begin, _process, _end) = GetScriptBlockBinding(context);
+            _memberName = GetMemberName(context);
+            _memberArguments = GetMemberArguments(context);
         }
 
-        if (begin is not null)
+        public async ValueTask BeginAsync(CancellationToken cancellationToken)
         {
-            await WriteScriptBlockOutputAsync(context, begin, null, NoPipelineVariables, cancellationToken);
+            if (_begin is not null) await _begin.InvokeOutputAsync(null, NoPipelineVariables, cancellationToken);
         }
 
-        foreach (var item in PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput))
+        public async ValueTask ProcessAsync(object? record, CancellationToken cancellationToken)
         {
-            if (processBlocks.Count > 0)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_begin is null && _process.Count == 0 && _end is null && string.IsNullOrWhiteSpace(_memberName))
             {
-                foreach (var process in processBlocks)
-                {
-                    await WriteScriptBlockOutputAsync(context, process, item.Value, item.Variables, cancellationToken);
-                }
-
-                continue;
+                await _context.ExecutionContext.WriteOutputAsync(record, cancellationToken);
+                return;
             }
 
-            if (!string.IsNullOrWhiteSpace(memberName))
-            {
-                WriteMemberOutput(context, item, memberName, GetMemberArguments(context));
-            }
+            var item = new PowerShellWasmPipelineInputItem(
+                PowerShellWasmPipelineValue.Unwrap(record), PowerShellWasmPipelineValue.GetVariables(record));
+            foreach (var process in _process)
+                await process.InvokeOutputAsync(item.Value, item.Variables, cancellationToken);
+            if (_process.Count == 0 && !string.IsNullOrWhiteSpace(_memberName))
+                await WriteMemberOutputAsync(_context, item, _memberName, _memberArguments, cancellationToken);
         }
 
-        if (end is not null)
+        public async ValueTask CompleteAsync(CancellationToken cancellationToken)
         {
-            await WriteScriptBlockOutputAsync(context, end, null, NoPipelineVariables, cancellationToken);
+            if (!_hasPipelineInput) await ProcessAsync(null, cancellationToken);
+            if (_end is not null) await _end.InvokeOutputAsync(null, NoPipelineVariables, cancellationToken);
         }
     }
 
@@ -69,19 +86,6 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmCommand
             2 => (positional[0], [positional[1]], null),
             _ => (positional[0], positional.Skip(1).Take(positional.Length - 2).ToArray(), positional[^1])
         };
-    }
-
-    private static async ValueTask WriteScriptBlockOutputAsync(
-        PowerShellWasmCommandContext context,
-        PowerShellWasmScriptBlock scriptBlock,
-        object? input,
-        IReadOnlyDictionary<string, object?> variables,
-        CancellationToken cancellationToken)
-    {
-        foreach (var output in await scriptBlock.InvokeAsync(input, null, variables, cancellationToken))
-        {
-            context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(output, variables));
-        }
     }
 
     private static PowerShellWasmScriptBlock? GetParameterScriptBlock(PowerShellWasmCommandContext context, string parameterName) =>
@@ -118,15 +122,15 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmCommand
         return arguments;
     }
 
-    private static void WriteMemberOutput(
+    private static async ValueTask WriteMemberOutputAsync(
         PowerShellWasmCommandContext context,
         PowerShellWasmPipelineInputItem item,
         string memberName,
-        IReadOnlyList<object?> arguments)
+        IReadOnlyList<object?> arguments, CancellationToken cancellationToken)
     {
         if (arguments.Count == 0 && PowerShellWasmCommandUtilities.TryGetMemberValue(item.Value, memberName, out var memberValue))
         {
-            context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(memberValue, item.Variables));
+            await WriteMemberValueAsync(context, memberValue, item.Variables, cancellationToken);
             return;
         }
 
@@ -134,7 +138,18 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmCommand
             PowerShellWasmDotNetBridge.TryGetInstanceMember(item.Value, memberName, out var method) &&
             PowerShellWasmDotNetBridge.TryInvoke(method, arguments, out var result))
         {
-            context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(result, item.Variables));
+            await WriteMemberValueAsync(context, result, item.Variables, cancellationToken);
+        }
+    }
+
+    // Behavioral guidance: ForEach-Object unrolls member results once; script-block results are already emitted records.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/InternalCommands.cs#L1150-L1165
+    private static async ValueTask WriteMemberValueAsync(
+        PowerShellWasmCommandContext context, object? value, IReadOnlyDictionary<string, object?> variables, CancellationToken cancellationToken)
+    {
+        foreach (var output in PowerShellWasmOutput.Enumerate(value))
+        {
+            await context.ExecutionContext.WriteOutputAsync(PowerShellWasmPipelineValue.Wrap(output, variables), cancellationToken);
         }
     }
 

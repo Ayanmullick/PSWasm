@@ -1,27 +1,30 @@
-using System.Globalization;
-
 namespace PSWasm.Commands;
 
-internal sealed class WriteStreamCommand(string streamName, params string[] parameterNames) : IPowerShellWasmCommand
+internal sealed class WriteStreamCommand(string streamName, params string[] parameterNames) : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        context.Arguments.Count == 0 && !parameterNames.Any(context.Parameters.ContainsKey)
+            ? new PowerShellWasmPerRecordProcessor(this, context, hasPipelineInput)
+            : new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput);
+
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var message = GetMessage(context);
 
         if (streamName.Equals("Host", StringComparison.OrdinalIgnoreCase))
         {
-            context.ExecutionContext.WriteOutput(message);
+            await context.ExecutionContext.WriteHostAsync(message, cancellationToken);
         }
         else if (streamName.Equals("Progress", StringComparison.OrdinalIgnoreCase))
         {
-            context.ExecutionContext.WriteStream(streamName, FormatProgress(context, message));
+            await context.ExecutionContext.WriteStreamAsync(streamName, FormatProgress(context, message), cancellationToken);
         }
         else
         {
-            context.ExecutionContext.WriteStream(streamName, message);
+            await context.ExecutionContext.WriteStreamAsync(streamName, message, cancellationToken);
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private string GetMessage(PowerShellWasmCommandContext context)
@@ -30,12 +33,12 @@ internal sealed class WriteStreamCommand(string streamName, params string[] para
         {
             if (context.Parameters.TryGetValue(name, out var value))
             {
-                return Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+                return PowerShellWasmCommandUtilities.ToInvariantString(value);
             }
         }
 
         var input = context.Arguments.Count > 0 ? context.Arguments : context.PipelineInput;
-        return string.Join(" ", input.Select(static item => Convert.ToString(item, CultureInfo.InvariantCulture)));
+        return string.Join(" ", input.Select(PowerShellWasmCommandUtilities.ToInvariantString));
     }
 
     private static string FormatProgress(PowerShellWasmCommandContext context, string fallback)

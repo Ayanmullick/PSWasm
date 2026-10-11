@@ -1,35 +1,41 @@
 namespace PSWasm.Commands;
 
-internal sealed class OutStringCommand : IPowerShellWasmCommand
+internal sealed class OutStringCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Stream"))
+            ? new PowerShellWasmPerRecordProcessor(this, context, hasPipelineInput)
+            : new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput);
+
     public IReadOnlyCollection<string> SwitchParameters => ["Stream"];
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var stream = context.Parameters.TryGetValue("Stream", out var streamValue) &&
             PowerShellWasmCommandUtilities.ToBoolean(streamValue);
-        var input = GetInput(context).Select(PowerShellWasmCommandUtilities.FormatValue).ToArray();
+        var input = GetInput(context).Where(static item => item is not null)
+            .Select(PowerShellWasmCommandUtilities.FormatValue).ToArray();
 
         if (stream)
         {
             foreach (var item in input)
             {
-                context.ExecutionContext.WriteOutput(item);
+                await context.ExecutionContext.WriteOutputAsync(item, cancellationToken);
             }
         }
         else
         {
-            context.ExecutionContext.WriteOutput(string.Join(Environment.NewLine, input));
+            await context.ExecutionContext.WriteOutputAsync(string.Join(Environment.NewLine, input), cancellationToken);
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private static IEnumerable<object?> GetInput(PowerShellWasmCommandContext context)
     {
         if (context.PipelineInput.Count > 0)
         {
-            return PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput);
+            return PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput);
         }
 
         return context.Arguments;

@@ -6,7 +6,7 @@ internal sealed record PowerShellWasmPipelineValue(
 {
     public static object? Wrap(object? value, IReadOnlyDictionary<string, object?> variables)
     {
-        if (value is null || variables.Count == 0)
+        if (PowerShellWasmOutput.IsNoOutput(value) || variables.Count == 0)
         {
             return value;
         }

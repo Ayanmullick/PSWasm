@@ -1,8 +1,8 @@
 namespace PSWasm.Commands;
 
-internal sealed class GetCommandCommand(Func<IEnumerable<string>> getCommandNames) : IPowerShellWasmCommand
+internal sealed class GetCommandCommand(Func<IEnumerable<string>> getCommandNames) : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var patterns = GetPatterns(context).ToArray();
         var names = getCommandNames()
@@ -12,10 +12,10 @@ internal sealed class GetCommandCommand(Func<IEnumerable<string>> getCommandName
         foreach (var name in names)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.WriteOutput(CreateCommandRecord(name));
+            await context.ExecutionContext.WriteOutputAsync(CreateCommandRecord(name), cancellationToken);
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private static IEnumerable<string> GetPatterns(PowerShellWasmCommandContext context)

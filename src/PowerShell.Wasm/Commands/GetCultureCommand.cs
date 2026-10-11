@@ -2,9 +2,9 @@ using System.Globalization;
 
 namespace PSWasm.Commands;
 
-internal sealed class GetCultureCommand(bool uiCulture = false) : IPowerShellWasmCommand
+internal sealed class GetCultureCommand(bool uiCulture = false) : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var culture = uiCulture ? CultureInfo.CurrentUICulture : CultureInfo.CurrentCulture;
         var output = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
@@ -17,7 +17,7 @@ internal sealed class GetCultureCommand(bool uiCulture = false) : IPowerShellWas
             ["LCID"] = culture.LCID
         };
 
-        context.ExecutionContext.WriteOutput(output);
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(output, cancellationToken);
+        return;
     }
 }

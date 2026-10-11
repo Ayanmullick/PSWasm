@@ -159,8 +159,9 @@ public sealed class PowerShellWasmParser
             return settableCompoundAssignment;
         }
 
-        var equals = FindTopLevel(tokens, PowerShellWasmTokenKind.Equals);
-        if (tokens.Count > 0 && tokens[0].Kind == PowerShellWasmTokenKind.Variable && equals > 0)
+        var equals = FindAssignmentEquals(tokens);
+        // Assignment targets can start with an expression, e.g. (Get-ItemValue).Name; their statements emit no value.
+        if (equals > 0 && !IsCommandSegment(tokens))
         {
             var valueTokens = tokens.Skip(equals + 1).ToArray();
             if (TryReadAssignmentTargets(tokens, equals, out var variableNames))
@@ -1246,7 +1247,7 @@ public sealed class PowerShellWasmParser
             }
         }
 
-        var equals = FindTopLevel(normalized, PowerShellWasmTokenKind.Equals);
+        var equals = FindAssignmentEquals(normalized);
         if (equals > 0)
         {
             var target = new ExpressionParser(normalized.Take(equals).ToArray()).Parse(requireComplete: true);
@@ -1396,8 +1397,7 @@ public sealed class PowerShellWasmParser
             PowerShellWasmTokenKind.Pipe or
             PowerShellWasmTokenKind.PipelineChainAnd or
             PowerShellWasmTokenKind.PipelineChainOr or
-            PowerShellWasmTokenKind.Colon or
-            PowerShellWasmTokenKind.Comma);
+            PowerShellWasmTokenKind.Colon);
 
     private static bool IsCommandExpressionSegment(IReadOnlyList<PowerShellWasmToken> tokens)
     {
@@ -1514,6 +1514,11 @@ public sealed class PowerShellWasmParser
         var depth = 0;
         for (var i = 0; i + 1 < tokens.Count; i++)
         {
+            if (depth == 0 && IsPipelineSeparator(tokens[i].Kind))
+            {
+                break;
+            }
+
             if (depth == 0 &&
                 tokens[i + 1].Kind == PowerShellWasmTokenKind.Equals &&
                 TryMapCompoundAssignmentOperator(tokens[i].Kind, out op))
@@ -1718,12 +1723,20 @@ public sealed class PowerShellWasmParser
         return result;
     }
 
-    private static int FindTopLevel(IReadOnlyList<PowerShellWasmToken> tokens, PowerShellWasmTokenKind kind)
+    private static bool IsPipelineSeparator(PowerShellWasmTokenKind kind) =>
+        kind is PowerShellWasmTokenKind.Pipe or PowerShellWasmTokenKind.PipelineChainAnd or PowerShellWasmTokenKind.PipelineChainOr;
+
+    private static int FindAssignmentEquals(IReadOnlyList<PowerShellWasmToken> tokens)
     {
         var depth = 0;
         for (var i = 0; i < tokens.Count; i++)
         {
-            if (depth == 0 && tokens[i].Kind == kind)
+            if (depth == 0 && IsPipelineSeparator(tokens[i].Kind))
+            {
+                break;
+            }
+
+            if (depth == 0 && tokens[i].Kind == PowerShellWasmTokenKind.Equals)
             {
                 return i;
             }

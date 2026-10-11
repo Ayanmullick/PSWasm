@@ -1,69 +1,70 @@
 namespace PSWasm.Commands;
 
-internal sealed class SortObjectCommand : IPowerShellWasmCommand
+internal sealed class SortObjectCommand : IPowerShellWasmPipelineCommand
 {
     public IReadOnlyCollection<string> SwitchParameters => ["Descending", "Unique"];
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new Processor(context);
+
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
-        var propertyNames = PowerShellWasmCommandUtilities.GetPropertyNames(context);
-        var descending = context.Parameters.TryGetValue("Descending", out var descendingValue) &&
-            PowerShellWasmCommandUtilities.ToBoolean(descendingValue);
-        var unique = context.Parameters.TryGetValue("Unique", out var uniqueValue) &&
-            PowerShellWasmCommandUtilities.ToBoolean(uniqueValue);
+        var processor = new Processor(context);
+        foreach (var record in context.PipelineInput) await processor.ProcessAsync(record, cancellationToken);
+        await processor.CompleteAsync(cancellationToken);
+    }
 
-        var comparer = new SortObjectComparer(propertyNames, descending);
-        var sorted = PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput)
-            .Order(new PipelineInputItemComparer(comparer));
-        PowerShellWasmPipelineInputItem previous = default;
-        var hasPrevious = false;
+    // Behavioral guidance: SortObjectCommand.EndProcessing resolves keys after collecting the input.
+    // Browser-safe adaptation uses runtime values and allowlisted property/script expressions, without native ETS.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/Sort-Object.cs#L239-L246
+    private sealed class Processor : IPowerShellWasmPipelineProcessor
+    {
+        private readonly PowerShellWasmCommandContext _context;
+        private readonly IReadOnlyList<object?> _expressions;
+        private readonly bool _descending, _unique;
+        private readonly List<PowerShellWasmPipelineInputItem> _input = [];
 
-        foreach (var item in sorted)
+        public Processor(PowerShellWasmCommandContext context)
         {
-            if (unique && hasPrevious && comparer.Compare(previous.Value, item.Value) == 0)
+            _context = context;
+            _expressions = PipelinePropertyUtilities.GetExpressions(context);
+            _descending = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Descending"));
+            _unique = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Unique"));
+        }
+
+        public ValueTask BeginAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public ValueTask ProcessAsync(object? record, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var value = PowerShellWasmPipelineValue.Unwrap(record);
+            if (value is null || PowerShellWasmOutput.IsNoOutput(value)) return ValueTask.CompletedTask;
+            var item = new PowerShellWasmPipelineInputItem(value, PowerShellWasmPipelineValue.GetVariables(record));
+            _input.Add(item);
+            return ValueTask.CompletedTask;
+        }
+
+        public async ValueTask CompleteAsync(CancellationToken cancellationToken)
+        {
+            // Sorting resolves keys after collecting input; grouping resolves keys on arrival.
+            var items = new List<SortItem>(_input.Count);
+            foreach (var item in _input)
+                items.Add(new(item, await PipelinePropertyUtilities.EvaluateAsync(item, _expressions, cancellationToken)));
+            var comparer = Comparer<SortItem>.Create((left, right) =>
             {
-                continue;
-            }
-
-            context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables));
-            previous = item;
-            hasPrevious = true;
-        }
-
-        return ValueTask.CompletedTask;
-    }
-
-    private sealed class SortObjectComparer(IReadOnlyList<string> propertyNames, bool descending) : IComparer<object?>
-    {
-        public int Compare(object? x, object? y)
-        {
-            var result = propertyNames.Count == 0 ? CompareSingle(x, y) : CompareProperties(x, y);
-            return descending ? -result : result;
-        }
-
-        private static int CompareSingle(object? x, object? y) =>
-            PowerShellWasmCommandUtilities.CompareValues(x, y);
-
-        private int CompareProperties(object? x, object? y)
-        {
-            foreach (var propertyName in propertyNames)
+                var comparison = PipelinePropertyUtilities.Compare(left.Keys, right.Keys);
+                return _descending ? -comparison : comparison;
+            });
+            SortItem? previous = null;
+            foreach (var item in items.Order(comparer))
             {
-                var result = PowerShellWasmCommandUtilities.CompareValues(
-                    PowerShellWasmCommandUtilities.GetMemberValue(x, propertyName),
-                    PowerShellWasmCommandUtilities.GetMemberValue(y, propertyName));
-                if (result != 0)
-                {
-                    return result;
-                }
+                if (_unique && previous is not null && comparer.Compare(previous, item) == 0) continue;
+                await _context.ExecutionContext.WriteOutputAsync(
+                    PowerShellWasmPipelineValue.Wrap(item.Input.Value, item.Input.Variables), cancellationToken);
+                previous = item;
             }
-
-            return 0;
         }
     }
 
-    private sealed class PipelineInputItemComparer(SortObjectComparer comparer) : IComparer<PowerShellWasmPipelineInputItem>
-    {
-        public int Compare(PowerShellWasmPipelineInputItem x, PowerShellWasmPipelineInputItem y) =>
-            comparer.Compare(x.Value, y.Value);
-    }
+    private sealed record SortItem(PowerShellWasmPipelineInputItem Input, object?[] Keys);
 }

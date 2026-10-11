@@ -31,6 +31,9 @@ internal static class PowerShellWasmDotNetBridge
     private const string DateTimeOffsetType = "System.DateTimeOffset";
     private const string TimeSpanType = "System.TimeSpan";
     private const string TimeZoneInfoType = "System.TimeZoneInfo";
+    private const string ArrayType = "System.Array";
+    private const string HashtableType = "System.Collections.Hashtable";
+    private const string DictionaryType = "System.Collections.IDictionary";
     private const string ArrayListType = "System.Collections.ArrayList";
     private const string GenericListTypePrefix = "System.Collections.Generic.List";
 #if PSWASM_CRYPTO
@@ -59,6 +62,12 @@ internal static class PowerShellWasmDotNetBridge
         aliases["System.TimeSpan"] = TimeSpanType;
         aliases["TimeZoneInfo"] = TimeZoneInfoType;
         aliases["System.TimeZoneInfo"] = TimeZoneInfoType;
+        // PowerShell's core type accelerators; the browser bridge recognizes only its supported runtime values.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/TypeResolver.cs#L732-L746
+        aliases["array"] = ArrayType;
+        aliases["System.Array"] = ArrayType;
+        aliases["hashtable"] = HashtableType;
+        aliases["System.Collections.Hashtable"] = HashtableType;
         aliases["ArrayList"] = ArrayListType;
         aliases["System.Collections.ArrayList"] = ArrayListType;
 #if PSWASM_CRYPTO
@@ -183,6 +192,8 @@ internal static class PowerShellWasmDotNetBridge
             DateTimeOffsetType => input is DateTimeOffset,
             TimeSpanType => input is TimeSpan,
             TimeZoneInfoType => input is TimeZoneInfo,
+            ArrayType => input is Array,
+            HashtableType => input is PowerShellWasmHashtable or Hashtable,
             ArrayListType => input is ArrayList,
             _ when IsGenericListType(fullName) => GenericListTypeMatches(fullName, input),
             _ => false
@@ -358,6 +369,13 @@ internal static class PowerShellWasmDotNetBridge
             return TryGetTimeZoneInfoInstanceMember(timeZone, memberName, out value);
         }
 
+        if (target is IReadOnlyDictionary<string, object?> or IDictionary<string, object?> or IDictionary &&
+            memberName.Equals("ContainsKey", StringComparison.OrdinalIgnoreCase))
+        {
+            value = new PowerShellWasmDotNetMethod(DictionaryType, memberName, target, IsStatic: false);
+            return true;
+        }
+
         if (target is IList list && TryGetListInstanceMember(list, memberName, out value))
         {
             return true;
@@ -463,6 +481,22 @@ internal static class PowerShellWasmDotNetBridge
         if (method.DeclaringType.Equals(TimeZoneInfoType, StringComparison.OrdinalIgnoreCase))
         {
             return InvokeTimeZoneInfo(method, arguments);
+        }
+
+        if (method.DeclaringType.Equals(DictionaryType, StringComparison.OrdinalIgnoreCase) &&
+            method.Name.Equals("ContainsKey", StringComparison.OrdinalIgnoreCase))
+        {
+            RequireArgumentCount(method, arguments, 1);
+            var key = arguments[0];
+            ArgumentNullException.ThrowIfNull(key);
+            return method.Target switch
+            {
+                PowerShellWasmHashtable hashtable => key is string keyText && hashtable.ContainsKey(keyText),
+                IReadOnlyDictionary<string, object?> dictionary => dictionary.ContainsKey(ToInvariantString(key)),
+                IDictionary<string, object?> dictionary => dictionary.ContainsKey(ToInvariantString(key)),
+                IDictionary dictionary => dictionary.Contains(key),
+                _ => throw new InvalidOperationException("ContainsKey requires a supported dictionary.")
+            };
         }
 
         if ((method.DeclaringType.Equals(ArrayListType, StringComparison.OrdinalIgnoreCase) ||
@@ -1024,6 +1058,9 @@ internal static class PowerShellWasmDotNetBridge
         };
     }
 
+    // Behavioral guidance: PowerShell maps a void method result to AutomationNull, separately from a returned null.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L6939-L6946
+    // Browser-safe adaptation: preserve the declared returns of allowlisted collection methods without reflection.
     private static object? InvokeList(PowerShellWasmDotNetMethod method, IReadOnlyList<object?> arguments, IList list)
     {
         switch (method.Name.ToLowerInvariant())
@@ -1034,22 +1071,24 @@ internal static class PowerShellWasmDotNetBridge
             case "clear":
                 RequireArgumentCount(method, arguments, 0);
                 list.Clear();
-                return null;
+                return PowerShellWasmOutput.NoOutput;
             case "contains":
                 RequireArgumentCount(method, arguments, 1);
                 return list.Contains(ConvertListItemForExistingList(list, arguments[0]));
             case "insert":
                 RequireArgumentCount(method, arguments, 2);
                 list.Insert(ToInt32(arguments[0]), ConvertListItemForExistingList(list, arguments[1]));
-                return null;
+                return PowerShellWasmOutput.NoOutput;
             case "remove":
                 RequireArgumentCount(method, arguments, 1);
-                list.Remove(ConvertListItemForExistingList(list, arguments[0]));
-                return null;
+                var item = ConvertListItemForExistingList(list, arguments[0]);
+                var previousCount = list.Count;
+                list.Remove(item);
+                return list is ArrayList ? PowerShellWasmOutput.NoOutput : list.Count < previousCount;
             case "removeat":
                 RequireArgumentCount(method, arguments, 1);
                 list.RemoveAt(ToInt32(arguments[0]));
-                return null;
+                return PowerShellWasmOutput.NoOutput;
             case "toarray":
                 RequireArgumentCount(method, arguments, 0);
                 return list.Cast<object?>().ToArray();
@@ -1066,7 +1105,7 @@ internal static class PowerShellWasmDotNetBridge
         }
 
         list.Add(ConvertListItemForExistingList(list, value));
-        return null;
+        return PowerShellWasmOutput.NoOutput;
     }
 
     private static object? ConvertListItemForExistingList(IList list, object? value) =>

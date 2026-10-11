@@ -1,6 +1,6 @@
 namespace PSWasm.Commands;
 
-internal sealed class GetDomTextCommand : IPowerShellWasmCommand
+internal sealed class GetDomTextCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -14,12 +14,12 @@ internal sealed class GetDomTextCommand : IPowerShellWasmCommand
         foreach (var selector in selectors)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.WriteOutput(await host.GetTextAsync(selector, cancellationToken));
+            await context.ExecutionContext.WriteOutputAsync(await host.GetTextAsync(selector, cancellationToken), cancellationToken);
         }
     }
 }
 
-internal sealed class SetDomTextCommand : IPowerShellWasmCommand
+internal sealed class SetDomTextCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -30,7 +30,7 @@ internal sealed class SetDomTextCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class SetDomValueCommand : IPowerShellWasmCommand
+internal sealed class SetDomValueCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -41,7 +41,7 @@ internal sealed class SetDomValueCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class SetDomHtmlCommand : IPowerShellWasmCommand
+internal sealed class SetDomHtmlCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -63,14 +63,14 @@ internal sealed class SetDomHtmlCommand : IPowerShellWasmCommand
             return PowerShellWasmCommandUtilities.FormatValue(context.Arguments[1]);
         }
 
-        var input = PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput)
+        var input = PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput)
             .Select(PowerShellWasmCommandUtilities.FormatValue)
             .ToArray();
         return string.Join(Environment.NewLine, input);
     }
 }
 
-internal sealed class GetDomValueCommand : IPowerShellWasmCommand
+internal sealed class GetDomValueCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -84,12 +84,12 @@ internal sealed class GetDomValueCommand : IPowerShellWasmCommand
         foreach (var selector in selectors)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.WriteOutput(await host.GetValueAsync(selector, cancellationToken));
+            await context.ExecutionContext.WriteOutputAsync(await host.GetValueAsync(selector, cancellationToken), cancellationToken);
         }
     }
 }
 
-internal sealed class SetDomPropertyCommand : IPowerShellWasmCommand
+internal sealed class SetDomPropertyCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -101,18 +101,18 @@ internal sealed class SetDomPropertyCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class GetDomPropertyCommand : IPowerShellWasmCommand
+internal sealed class GetDomPropertyCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var host = DomCommandUtilities.GetDomHost(context);
         var selector = DomCommandUtilities.GetRequiredText(context, "Selector", 0);
         var propertyName = DomInteractionCommandUtilities.GetPropertyName(context);
-        context.ExecutionContext.WriteOutput(await host.GetPropertyAsync(selector, propertyName, cancellationToken));
+        await context.ExecutionContext.WriteOutputAsync(await host.GetPropertyAsync(selector, propertyName, cancellationToken), cancellationToken);
     }
 }
 
-internal sealed class UnregisterDomEventCommand : IPowerShellWasmCommand
+internal sealed class UnregisterDomEventCommand : IPowerShellWasmPipelineCommand
 {
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -131,7 +131,7 @@ internal sealed class UnregisterDomEventCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class RegisterDomEventCommand : IPowerShellWasmCommand
+internal sealed class RegisterDomEventCommand : IPowerShellWasmPipelineCommand
 {
     public IReadOnlyCollection<string> SwitchParameters => ["PreventDefault"];
 
@@ -156,7 +156,7 @@ internal sealed class RegisterDomEventCommand : IPowerShellWasmCommand
             scriptBlock);
 
         await host.RegisterEventAsync(registration, cancellationToken);
-        context.ExecutionContext.WriteOutput(CreateRecord(registration));
+        await context.ExecutionContext.WriteOutputAsync(CreateRecord(registration), cancellationToken);
     }
 
     private static Dictionary<string, object?> CreateRecord(PowerShellWasmDomEventRegistration registration) =>
@@ -206,7 +206,7 @@ internal static class DomInteractionCommandUtilities
             return PowerShellWasmCommandUtilities.FormatValue(context.Arguments[argumentIndex]);
         }
 
-        var input = PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput)
+        var input = PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput)
             .Select(PowerShellWasmCommandUtilities.FormatValue)
             .ToArray();
         return string.Join(Environment.NewLine, input);

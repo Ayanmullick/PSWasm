@@ -1,8 +1,8 @@
 namespace PSWasm.Commands;
 
-internal sealed class GetTimeZoneCommand : IPowerShellWasmCommand
+internal sealed class GetTimeZoneCommand : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var local = TimeZoneInfo.Local;
         var output = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
@@ -14,7 +14,7 @@ internal sealed class GetTimeZoneCommand : IPowerShellWasmCommand
             ["BaseUtcOffset"] = local.BaseUtcOffset.ToString()
         };
 
-        context.ExecutionContext.WriteOutput(output);
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(output, cancellationToken);
+        return;
     }
 }

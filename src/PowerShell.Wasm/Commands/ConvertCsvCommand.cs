@@ -3,9 +3,12 @@ using System.Text;
 
 namespace PSWasm.Commands;
 
-internal sealed class ConvertFromCsvCommand : IPowerShellWasmCommand
+internal sealed class ConvertFromCsvCommand : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput);
+
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var delimiter = GetDelimiter(context);
         var rows = ParseRows(GetInputText(context), delimiter)
@@ -14,7 +17,7 @@ internal sealed class ConvertFromCsvCommand : IPowerShellWasmCommand
 
         if (rows.Length == 0)
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
         var header = GetHeader(context);
@@ -28,10 +31,10 @@ internal sealed class ConvertFromCsvCommand : IPowerShellWasmCommand
         for (var i = dataStart; i < rows.Length; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.WriteOutput(CreateRow(header, rows[i]));
+            await context.ExecutionContext.WriteOutputAsync(CreateRow(header, rows[i]), cancellationToken);
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private static char GetDelimiter(PowerShellWasmCommandContext context)
@@ -49,7 +52,7 @@ internal sealed class ConvertFromCsvCommand : IPowerShellWasmCommand
 
         if (context.PipelineInput.Count > 0)
         {
-            return JoinInput(context.PipelineInput);
+            return JoinInput(PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput));
         }
 
         return JoinInput(PowerShellWasmCommandUtilities.EnumerateInput(context.Arguments));

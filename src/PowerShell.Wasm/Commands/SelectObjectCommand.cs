@@ -1,55 +1,88 @@
 namespace PSWasm.Commands;
 
-internal sealed class SelectObjectCommand : IPowerShellWasmCommand
+internal sealed class SelectObjectCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new Processor(context);
+
     public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
-        var input = PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput).ToArray();
-        var selected = ApplyWindow(input, context);
-        var expandProperty = context.GetString("ExpandProperty");
-        var properties = GetProperties(context);
-
-        foreach (var item in selected)
-        {
-            if (!string.IsNullOrWhiteSpace(expandProperty))
-            {
-                var value = PowerShellWasmCommandUtilities.GetMemberValue(item.Value, expandProperty);
-                context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(value, item.Variables));
-                continue;
-            }
-
-            if (properties.Count > 0)
-            {
-                context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(
-                    await SelectPropertiesAsync(item, properties, cancellationToken),
-                    item.Variables));
-                continue;
-            }
-
-            context.ExecutionContext.WriteOutput(PowerShellWasmPipelineValue.Wrap(item.Value, item.Variables));
-        }
+        var processor = new Processor(context);
+        await processor.BeginAsync(cancellationToken);
+        foreach (var record in context.PipelineInput) await processor.ProcessAsync(record, cancellationToken);
+        await processor.CompleteAsync(cancellationToken);
     }
 
-    private static IEnumerable<PowerShellWasmPipelineInputItem> ApplyWindow(
-        IReadOnlyList<PowerShellWasmPipelineInputItem> input,
-        PowerShellWasmCommandContext context)
+    private sealed class Processor : IPowerShellWasmPipelineProcessor
     {
-        var skip = Math.Max(0, context.GetInt32("Skip", 0));
-        var first = context.Parameters.ContainsKey("First") ? Math.Max(0, context.GetInt32("First", input.Count)) : (int?)null;
-        var last = context.Parameters.ContainsKey("Last") ? Math.Max(0, context.GetInt32("Last", input.Count)) : (int?)null;
+        private readonly PowerShellWasmCommandContext _context;
+        private readonly string? _expandProperty;
+        private readonly IReadOnlyList<SelectProperty> _properties;
+        private readonly int _skip;
+        private readonly int? _first, _last;
+        private readonly Queue<PowerShellWasmPipelineInputItem> _tail = new();
+        private int _seen, _emitted;
 
-        var selected = input.Skip(skip);
-        if (last is not null)
+        public Processor(PowerShellWasmCommandContext context)
         {
-            selected = selected.TakeLast(last.Value);
+            _context = context;
+            _expandProperty = context.GetString("ExpandProperty");
+            _properties = GetProperties(context);
+            _skip = Math.Max(0, context.GetInt32("Skip", 0));
+            _first = context.Parameters.ContainsKey("First") ? Math.Max(0, context.GetInt32("First", int.MaxValue)) : null;
+            _last = context.Parameters.ContainsKey("Last") ? Math.Max(0, context.GetInt32("Last", int.MaxValue)) : null;
         }
 
-        if (first is not null)
+        public ValueTask BeginAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+        public async ValueTask ProcessAsync(object? record, CancellationToken cancellationToken)
         {
-            selected = selected.Take(first.Value);
+            cancellationToken.ThrowIfCancellationRequested();
+            var value = PowerShellWasmPipelineValue.Unwrap(record);
+            if (value is null || PowerShellWasmOutput.IsNoOutput(value) || _seen++ < _skip) return;
+            var item = new PowerShellWasmPipelineInputItem(value, PowerShellWasmPipelineValue.GetVariables(record));
+            if (_last is not null)
+            {
+                _tail.Enqueue(item);
+                if (_tail.Count > _last.Value) _tail.Dequeue();
+                return;
+            }
+
+            if (_first is not null && _emitted >= _first.Value) return;
+            _emitted++;
+            await WriteItemAsync(item, cancellationToken);
         }
 
-        return selected;
+        public async ValueTask CompleteAsync(CancellationToken cancellationToken)
+        {
+            foreach (var item in _tail)
+            {
+                if (_first is not null && _emitted >= _first.Value) break;
+                _emitted++;
+                await WriteItemAsync(item, cancellationToken);
+            }
+        }
+
+        private async ValueTask WriteItemAsync(PowerShellWasmPipelineInputItem item, CancellationToken cancellationToken)
+        {
+            if (!string.IsNullOrWhiteSpace(_expandProperty))
+            {
+                // Behavioral guidance: ExpandProperty enumerates once and omits null elements.
+                // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/Select-Object.cs#L537-L566
+                var value = PowerShellWasmCommandUtilities.GetMemberValue(item.Value, _expandProperty);
+                if (value is null) return;
+                foreach (var output in PowerShellWasmOutput.Enumerate(value))
+                    if (output is not null)
+                        await _context.ExecutionContext.WriteOutputAsync(
+                            PowerShellWasmPipelineValue.Wrap(output, item.Variables), cancellationToken);
+                return;
+            }
+
+            var selected = _properties.Count > 0
+                ? await SelectPropertiesAsync(item, _properties, cancellationToken) : item.Value;
+            await _context.ExecutionContext.WriteOutputAsync(
+                PowerShellWasmPipelineValue.Wrap(selected, item.Variables), cancellationToken);
+        }
     }
 
     private static IReadOnlyList<SelectProperty> GetProperties(PowerShellWasmCommandContext context)

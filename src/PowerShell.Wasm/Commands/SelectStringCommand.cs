@@ -3,16 +3,21 @@ using System.Text.RegularExpressions;
 
 namespace PSWasm.Commands;
 
-internal sealed class SelectStringCommand : IPowerShellWasmCommand
+internal sealed class SelectStringCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        context.Parameters.ContainsKey("InputObject")
+            ? new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput)
+            : new PowerShellWasmPerRecordProcessor(this, context, hasPipelineInput);
+
     public IReadOnlyCollection<string> SwitchParameters => ["CaseSensitive", "NotMatch", "AllMatches"];
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var patterns = GetPatterns(context);
         if (patterns.Count == 0)
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
         var options = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("CaseSensitive"))
@@ -31,7 +36,7 @@ internal sealed class SelectStringCommand : IPowerShellWasmCommand
                 {
                     if (matches.Length == 0)
                     {
-                        context.ExecutionContext.WriteOutput(CreateResult(lineText, pattern, []));
+                        await context.ExecutionContext.WriteOutputAsync(CreateResult(lineText, pattern, []), cancellationToken);
                     }
 
                     continue;
@@ -43,11 +48,11 @@ internal sealed class SelectStringCommand : IPowerShellWasmCommand
                 }
 
                 var selectedMatches = allMatches ? matches : matches.Take(1).ToArray();
-                context.ExecutionContext.WriteOutput(CreateResult(lineText, pattern, selectedMatches));
+                await context.ExecutionContext.WriteOutputAsync(CreateResult(lineText, pattern, selectedMatches), cancellationToken);
             }
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private static IReadOnlyList<string> GetPatterns(PowerShellWasmCommandContext context)
@@ -67,7 +72,7 @@ internal sealed class SelectStringCommand : IPowerShellWasmCommand
             return Enumerate(inputObject);
         }
 
-        return PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput);
+        return PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput);
     }
 
     private static Dictionary<string, object?> CreateResult(string line, string pattern, IReadOnlyList<Match> matches) =>

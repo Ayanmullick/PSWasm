@@ -3,22 +3,25 @@ using System.Net;
 
 namespace PSWasm.Commands;
 
-internal sealed class ConvertToHtmlCommand : IPowerShellWasmCommand
+internal sealed class ConvertToHtmlCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput);
+
     public IReadOnlyCollection<string> SwitchParameters => ["Fragment"];
 
     private const string DefaultTitle = "HTML TABLE";
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
-        var input = GetInput(context).ToArray();
+        var input = GetInput(context).Where(static item => item is not null).ToArray();
         var lines = CreateHtml(input, context, cancellationToken);
         foreach (var line in lines)
         {
-            context.ExecutionContext.WriteOutput(line);
+            await context.ExecutionContext.WriteOutputAsync(line, cancellationToken);
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private static IEnumerable<object?> GetInput(PowerShellWasmCommandContext context)
@@ -30,7 +33,7 @@ internal sealed class ConvertToHtmlCommand : IPowerShellWasmCommand
 
         if (context.PipelineInput.Count > 0)
         {
-            return PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput);
+            return PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput);
         }
 
         return context.Arguments.Count > 0 ? PowerShellWasmCommandUtilities.EnumerateInput(context.Arguments) : [];

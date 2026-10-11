@@ -7,13 +7,15 @@ public sealed class PowerShellWasmExecutionContext
 {
     private const string ErrorRecordDataKey = "PSWasm.ErrorRecord";
 
-    private readonly Dictionary<string, object?> _variables = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, PowerShellWasmScriptFunction> _functions = new(StringComparer.OrdinalIgnoreCase);
+    private VariableFrame _frame = new(null, isOverlay: false);
+    private Dictionary<string, object?> _variables => _frame.Values;
     private readonly Dictionary<string, string> _environment;
     private readonly Dictionary<int, Dictionary<string, object?>> _domSessions = [];
     private readonly List<object?> _errors = [];
     private readonly List<object?> _output = [];
-    private readonly Stack<List<object?>> _outputCaptures = [];
+    private OutputPort? _outputPort;
+    private ErrorObserver? _errorObserver;
+    private VariableFrame? _scriptCallerFrame;
     private int _nextDomSessionId = 1;
     private int _nextDomEventRegistrationId = 1;
     private int _failureSignalCount;
@@ -26,7 +28,7 @@ public sealed class PowerShellWasmExecutionContext
     }
 
     public IPowerShellWasmDomHost? DomHost { get; }
-    public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Select(FormatRecord).ToArray();
+    public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Where(IsVisibleOutput).Select(FormatRecord).ToArray();
     public IReadOnlyList<string> Output => Records.Select(FormatRecordLine).ToArray();
     public int ErrorCount => _errors.Count;
     internal int FailureSignalCount => _failureSignalCount;
@@ -49,10 +51,33 @@ public sealed class PowerShellWasmExecutionContext
     }
 
     public object? GetVariable(string name) =>
-        _variables.TryGetValue(name, out var value) ? value : null;
+        PowerShellWasmOutput.AsNull(GetRawVariable(name));
 
     public IReadOnlyDictionary<string, object?> GetVariables() =>
-        new Dictionary<string, object?>(_variables, StringComparer.OrdinalIgnoreCase);
+        GetRawVariables().ToDictionary(static item => item.Key, static item => PowerShellWasmOutput.AsNull(item.Value),
+            StringComparer.OrdinalIgnoreCase);
+
+    // Keep no-output values internally; callers of the public host API receive null without changing stored state.
+    internal object? GetRawVariable(string name)
+    {
+        if (name.Equals("Error", StringComparison.OrdinalIgnoreCase)) return _errors.ToArray();
+        for (var frame = _frame; frame is not null; frame = frame.Parent)
+        {
+            if (frame.Values.TryGetValue(name, out var value)) return value;
+        }
+        return null;
+    }
+
+    internal IReadOnlyDictionary<string, object?> GetRawVariables()
+    {
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        var frames = new Stack<VariableFrame>();
+        for (var frame = _frame; frame is not null; frame = frame.Parent) frames.Push(frame);
+        foreach (var frame in frames)
+            foreach (var item in frame.Values) values[item.Key] = item.Value;
+        values["Error"] = _errors.ToArray();
+        return values;
+    }
 
     internal Dictionary<string, object?> NewDomSession(string? name, string? target)
     {
@@ -76,7 +101,7 @@ public sealed class PowerShellWasmExecutionContext
         _nextDomEventRegistrationId++;
 
     internal PowerShellWasmResult CreateResult(IEnumerable<object?> output) =>
-        new(output.Select(FormatRecord).ToArray());
+        new(output.Where(IsVisibleOutput).Select(FormatRecord).ToArray());
 
     public void SetVariable(string name, object? value)
     {
@@ -86,7 +111,7 @@ public sealed class PowerShellWasmExecutionContext
             return;
         }
 
-        _variables[name] = value;
+        SetFrameVariable(_frame, name, value);
     }
 
     public void ClearVariable(string name)
@@ -97,7 +122,7 @@ public sealed class PowerShellWasmExecutionContext
             return;
         }
 
-        _variables[name] = null;
+        SetFrameVariable(_frame, name, null);
     }
 
     public void RemoveVariable(string name)
@@ -108,81 +133,117 @@ public sealed class PowerShellWasmExecutionContext
             return;
         }
 
-        _variables.Remove(name);
+        GetAssignmentFrame(_frame, name).Values.Remove(name);
     }
 
     internal void SetFunction(PowerShellWasmScriptFunction function) =>
-        _functions[function.Name] = function;
+        GetScopeFrame(_frame).Functions[function.Name] = function;
 
-    internal bool TryGetFunction(string name, out PowerShellWasmScriptFunction function) =>
-        _functions.TryGetValue(name, out function!);
+    internal bool TryGetFunction(string name, out PowerShellWasmScriptFunction function)
+    {
+        for (var frame = _frame; frame is not null; frame = frame.Parent)
+            if (frame.Functions.TryGetValue(name, out function!)) return true;
+        function = null!;
+        return false;
+    }
 
-    internal IEnumerable<string> GetFunctionNames() =>
-        _functions.Keys;
+    internal IEnumerable<string> GetFunctionNames()
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var frame = _frame; frame is not null; frame = frame.Parent) names.UnionWith(frame.Functions.Keys);
+        return names;
+    }
 
     internal IDisposable WithScriptScope(IReadOnlyDictionary<string, object?> variables)
     {
-        var snapshot = new Dictionary<string, object?>(_variables, StringComparer.OrdinalIgnoreCase);
-        var functions = new Dictionary<string, PowerShellWasmScriptFunction>(_functions, StringComparer.OrdinalIgnoreCase);
-        foreach (var variable in variables)
-        {
-            _variables[variable.Key] = variable.Value;
-        }
-
-        return new ScriptScope(this, snapshot, functions);
+        return PushVariableFrame(variables, isOverlay: false);
     }
 
     internal IDisposable WithTemporaryVariables(IReadOnlyDictionary<string, object?> variables)
     {
-        var snapshot = variables.ToDictionary(
-            static variable => variable.Key,
-            variable => (_variables.TryGetValue(variable.Key, out var value), value),
-            StringComparer.OrdinalIgnoreCase);
-
-        foreach (var variable in variables)
-        {
-            _variables[variable.Key] = variable.Value;
-        }
-
-        return new TemporaryVariableScope(this, snapshot);
+        return PushVariableFrame(variables, isOverlay: true);
     }
 
     internal IDisposable WithPipelineItem(object? value)
     {
-        var hadUnderscore = _variables.TryGetValue("_", out var underscore);
-        var hadPSItem = _variables.TryGetValue("PSItem", out var psItem);
-        _variables["_"] = value;
-        _variables["PSItem"] = value;
-        return new PipelineItemScope(this, hadUnderscore, underscore, hadPSItem, psItem);
+        return WithTemporaryVariables(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["_"] = value, ["PSItem"] = value
+        });
     }
 
     public void WriteOutput(object? value)
     {
-        if (value is null)
-        {
-            return;
-        }
+        if (PowerShellWasmOutput.IsNoOutput(PowerShellWasmPipelineValue.Unwrap(value))) return;
+        WriteToPortSynchronously(_outputPort, value);
+    }
 
-        ActiveOutput.Add(value);
+    public ValueTask WriteOutputAsync(object? value, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return PowerShellWasmOutput.IsNoOutput(PowerShellWasmPipelineValue.Unwrap(value))
+            ? ValueTask.CompletedTask : WriteToPortAsync(_outputPort, value, cancellationToken);
+    }
+
+    internal async ValueTask WriteExpressionOutputAsync(object? value, CancellationToken cancellationToken)
+    {
+        foreach (var item in PowerShellWasmOutput.Enumerate(value)) await WriteOutputAsync(item, cancellationToken);
+    }
+
+    // Write-Host uses Information records tagged PSHOST: display bypasses SilentlyContinue, but Ignore and Stop still apply.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshCommandRuntime.cs#L740-L870
+    // Browser-safe adaptation: emit an Information text record without native console colors or interactive host prompts.
+    public void WriteHost(object? value)
+    {
+        var record = CreateHostRecord(value, out var preference);
+        WriteOutput(record);
+        ThrowForStoppingPreference(preference, "InformationPreference", record.Value);
+    }
+
+    public async ValueTask WriteHostAsync(object? value, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var record = CreateHostRecord(value, out var preference);
+        await WriteOutputAsync(record, cancellationToken);
+        ThrowForStoppingPreference(preference, "InformationPreference", record.Value);
+    }
+
+    private PowerShellWasmStreamRecord CreateHostRecord(object? value, out string preference)
+    {
+        preference = GetPreferenceValue("InformationPreference", "SilentlyContinue");
+        var message = Convert.ToString(PowerShellWasmOutput.AsNull(value), CultureInfo.InvariantCulture) ?? string.Empty;
+        var visible = !preference.Equals("Ignore", StringComparison.OrdinalIgnoreCase);
+        return new PowerShellWasmStreamRecord("Information", message, visible);
     }
 
     public void WriteStream(string streamName, object? value)
     {
-        if (value is null)
-        {
-            return;
-        }
+        var record = CreateStreamRecord(streamName, value, out var preference);
+        if (record is not null) WriteOutput(record);
+        ThrowForStoppingPreference(preference, GetStreamPreferenceName(streamName), value);
+    }
 
+    public async ValueTask WriteStreamAsync(string streamName, object? value, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var record = CreateStreamRecord(streamName, value, out var preference);
+        if (record is not null) await WriteOutputAsync(record, cancellationToken);
+        ThrowForStoppingPreference(preference, GetStreamPreferenceName(streamName), value);
+    }
+
+    private PowerShellWasmStreamRecord? CreateStreamRecord(string streamName, object? value, out string preference)
+    {
+        preference = "Continue";
+        if (value is null) return null;
         var preferenceName = GetStreamPreferenceName(streamName);
-        var preference = preferenceName is null ? "Continue" : GetPreferenceValue(preferenceName, "Continue");
+        preference = preferenceName is null ? "Continue" : GetPreferenceValue(preferenceName, "Continue");
         if (preference.Equals("Ignore", StringComparison.OrdinalIgnoreCase))
         {
             if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
             {
                 SetLastCommandSucceeded(false);
             }
-
-            return;
+            return HasCommonStreamVariable(streamName) ? new PowerShellWasmStreamRecord(streamName, value, IsVisible: false) : null;
         }
 
         if (preference.Equals("SilentlyContinue", StringComparison.OrdinalIgnoreCase))
@@ -192,7 +253,7 @@ public sealed class PowerShellWasmExecutionContext
                 RecordError(value);
             }
 
-            return;
+            return HasCommonStreamVariable(streamName) ? new PowerShellWasmStreamRecord(streamName, value, IsVisible: false) : null;
         }
 
         if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
@@ -200,8 +261,11 @@ public sealed class PowerShellWasmExecutionContext
             RecordError(value);
         }
 
-        ActiveOutput.Add(new PowerShellWasmStreamRecord(streamName, value));
+        return new PowerShellWasmStreamRecord(streamName, value);
+    }
 
+    private static void ThrowForStoppingPreference(string preference, string? preferenceName, object? value)
+    {
         if (IsStoppingPreference(preference))
         {
             var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
@@ -217,7 +281,7 @@ public sealed class PowerShellWasmExecutionContext
             _failureSignalCount++;
         }
 
-        _variables["?"] = succeeded;
+        SetVariable("?", succeeded);
     }
 
     internal string OutputFieldSeparator =>
@@ -236,92 +300,81 @@ public sealed class PowerShellWasmExecutionContext
         return record;
     }
 
-    internal IDisposable CaptureOutput(List<object?> output)
+    internal IDisposable CaptureOutput(List<object?> output, bool captureStreams = true)
     {
-        _outputCaptures.Push(output);
-        return new OutputCapture(this, output);
+        var previous = _outputPort;
+        _outputPort = new OutputPort(previous, output, captureStreams, null);
+        return new OutputScope(this, previous);
     }
 
-    internal void WriteCapturedOutput(IEnumerable<object?> output)
+    internal async ValueTask WriteCapturedOutputAsync(IEnumerable<object?> output, CancellationToken cancellationToken)
     {
         foreach (var item in output)
         {
-            if (item is not null)
-            {
-                ActiveOutput.Add(item);
-            }
+            await WriteOutputAsync(item, cancellationToken);
         }
+    }
+
+    internal IDisposable RouteOutput(Func<object?, CancellationToken, ValueTask> route)
+    {
+        var previous = _outputPort;
+        _outputPort = new OutputPort(previous, null, true, route);
+        return new OutputScope(this, previous);
+    }
+
+    internal OutputPort? CurrentOutputPort => _outputPort;
+
+    internal ValueTask WriteToPortAsync(OutputPort? port, object? value, CancellationToken cancellationToken)
+    {
+        for (; port is not null; port = port.Parent)
+        {
+            if (port.Output is not null)
+            {
+                if (!port.CaptureStreams && IsStreamRecord(value)) continue;
+                port.Output.Add(value);
+                return ValueTask.CompletedTask;
+            }
+            if (port.Route is not null) return port.Route(value, cancellationToken);
+        }
+        _output.Add(value);
+        return ValueTask.CompletedTask;
+    }
+
+    private void WriteToPortSynchronously(OutputPort? port, object? value)
+    {
+        for (; port is not null; port = port.Parent)
+        {
+            if (port.Output is not null)
+            {
+                if (!port.CaptureStreams && IsStreamRecord(value)) continue;
+                port.Output.Add(value);
+                return;
+            }
+            if (port.Route is not null)
+                throw new InvalidOperationException("Incremental pipeline producers must await WriteOutputAsync; synchronous commands use the buffered adapter.");
+        }
+        _output.Add(value);
+    }
+
+    internal static bool IsStreamRecord(object? value) => PowerShellWasmPipelineValue.Unwrap(value) is PowerShellWasmStreamRecord;
+
+    internal static bool TryGetStreamRecord(object? value, out string streamName, out object? streamValue)
+    {
+        if (PowerShellWasmPipelineValue.Unwrap(value) is PowerShellWasmStreamRecord stream)
+        {
+            streamName = stream.StreamName;
+            streamValue = stream.Value;
+            return true;
+        }
+        streamName = string.Empty;
+        streamValue = null;
+        return false;
     }
 
     internal IReadOnlyList<object?> GetCapturedOutput(IEnumerable<object?> output) =>
-        output.Where(static item => item is not null and not PowerShellWasmStreamRecord)
-            .Select(PowerShellWasmPipelineValue.Unwrap)
+        output.Select(PowerShellWasmPipelineValue.Unwrap)
+            .Where(static item => item is not PowerShellWasmStreamRecord && !PowerShellWasmOutput.IsNoOutput(item))
             .ToArray();
-
-    internal IReadOnlyList<object?> AddPipelineVariable(
-        IEnumerable<object?> output,
-        string variableName)
-    {
-        variableName = NormalizeCommonParameterVariableName(variableName);
-        if (string.IsNullOrWhiteSpace(variableName))
-        {
-            return output.ToArray();
-        }
-
-        return output.Select(item =>
-        {
-            if (item is null or PowerShellWasmStreamRecord)
-            {
-                return item;
-            }
-
-            var value = PowerShellWasmPipelineValue.Unwrap(item);
-            var variables = new Dictionary<string, object?>(
-                PowerShellWasmPipelineValue.GetVariables(item),
-                StringComparer.OrdinalIgnoreCase)
-            {
-                [variableName] = value
-            };
-
-            return PowerShellWasmPipelineValue.Wrap(value, variables);
-        }).ToArray();
-    }
-
-    internal IReadOnlyList<object?> GetCapturedStreamValues(IEnumerable<object?> output, string streamName) =>
-        output.OfType<PowerShellWasmStreamRecord>()
-            .Where(record => record.StreamName.Equals(streamName, StringComparison.OrdinalIgnoreCase))
-            .Select(static record => record.Value)
-            .Where(static value => value is not null)
-            .ToArray();
-
-    internal IReadOnlyList<object?> GetErrorsAddedAfter(int errorCount)
-    {
-        var added = _errors.Count - errorCount;
-        return added <= 0 ? [] : _errors.Take(added).Reverse<object?>().ToArray();
-    }
-
-    internal void SetCommonParameterVariable(string variableName, IReadOnlyList<object?> values)
-    {
-        if (string.IsNullOrWhiteSpace(variableName))
-        {
-            return;
-        }
-
-        var append = variableName.StartsWith("+", StringComparison.Ordinal);
-        if (append)
-        {
-            variableName = variableName[1..];
-        }
-
-        var existing = append ? EnumerateVariableValue(GetVariable(variableName)) : [];
-        _variables[variableName] = existing.Concat(values).ToArray();
-    }
-
-    private static string NormalizeCommonParameterVariableName(string variableName) =>
-        variableName.StartsWith("+", StringComparison.Ordinal) ? variableName[1..] : variableName;
-
-    private List<object?> ActiveOutput =>
-        _outputCaptures.TryPeek(out var output) ? output : _output;
 
     private void InitializeAutomaticVariables()
     {
@@ -396,6 +449,13 @@ public sealed class PowerShellWasmExecutionContext
         preference.Equals("Inquire", StringComparison.OrdinalIgnoreCase) ||
         preference.Equals("Suspend", StringComparison.OrdinalIgnoreCase);
 
+    // WarningVariable/InformationVariable collect records even when the corresponding display is suppressed.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshCommandRuntime.cs#L716-L725
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshCommandRuntime.cs#L860-L870
+    private static bool HasCommonStreamVariable(string streamName) =>
+        streamName.Equals("Warning", StringComparison.OrdinalIgnoreCase) ||
+        streamName.Equals("Information", StringComparison.OrdinalIgnoreCase);
+
     private static string? GetStreamPreferenceName(string streamName) =>
         streamName.ToLowerInvariant() switch
         {
@@ -417,9 +477,9 @@ public sealed class PowerShellWasmExecutionContext
     private void PushErrorRecord(Dictionary<string, object?> record, string? stackTrace)
     {
         _errors.Insert(0, record);
-        _variables["Error"] = _errors.ToArray();
-        _variables["StackTrace"] = stackTrace;
+        SetVariable("StackTrace", stackTrace);
         SetLastCommandSucceeded(false);
+        for (var observer = _errorObserver; observer is not null; observer = observer.Parent) observer.Observe(record);
     }
 
     // Behavioral guidance: ErrorRecord.Exception.Message in PowerShell's ErrorPackage.cs.
@@ -450,84 +510,80 @@ public sealed class PowerShellWasmExecutionContext
     private static Dictionary<string, object?> CloneDomSession(Dictionary<string, object?> session) =>
         new(session, StringComparer.OrdinalIgnoreCase);
 
-    private void ReleaseOutputCapture(List<object?> output)
+    // A suspended producer retains its frames and output port while a downstream command resumes its caller.
+    // Behavioral guidance: PowerShell's Pipe and command processor lifecycle; this adaptation is awaited and single-threaded.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/Pipe.cs
+    internal Activation CaptureActivation() => new(_frame, _outputPort, _errorObserver, _scriptCallerFrame);
+
+    internal IDisposable Activate(Activation activation)
     {
-        if (!_outputCaptures.TryPop(out var current) || !ReferenceEquals(current, output))
+        var previous = CaptureActivation();
+        _frame = activation.Frame;
+        _outputPort = activation.Output;
+        _errorObserver = activation.Errors;
+        _scriptCallerFrame = activation.ScriptCallerFrame;
+        return new ActionScope(() =>
         {
-            throw new InvalidOperationException("Output capture stack is unbalanced.");
-        }
+            _frame = previous.Frame;
+            _outputPort = previous.Output;
+            _errorObserver = previous.Errors;
+            _scriptCallerFrame = previous.ScriptCallerFrame;
+        });
     }
 
-    private void RestorePipelineItem(bool hadUnderscore, object? underscore, bool hadPSItem, object? psItem)
+    internal IDisposable WithScriptCaller(Activation caller)
     {
-        RestoreVariable("_", hadUnderscore, underscore);
-        RestoreVariable("PSItem", hadPSItem, psItem);
+        var previous = _scriptCallerFrame;
+        _scriptCallerFrame = caller.Frame;
+        return new ActionScope(() => _scriptCallerFrame = previous);
     }
 
-    private void RestoreTemporaryVariables(
-        IReadOnlyDictionary<string, (bool HadValue, object? Value)> variables)
+    internal IDisposable EnterScriptCaller()
     {
-        foreach (var variable in variables)
-        {
-            RestoreVariable(variable.Key, variable.Value.HadValue, variable.Value.Value);
-        }
+        var previous = _frame;
+        _frame = _scriptCallerFrame ?? _frame;
+        return new ActionScope(() => _frame = previous);
     }
 
-    private void RestoreVariable(string name, bool hadValue, object? value)
+    internal IDisposable ObserveErrors(Action<object?> observe)
     {
-        if (hadValue)
-        {
-            _variables[name] = value;
-        }
-        else
-        {
-            _variables.Remove(name);
-        }
+        var previous = _errorObserver;
+        _errorObserver = new ErrorObserver(previous, observe);
+        return new ActionScope(() => _errorObserver = previous);
     }
 
-    private static IEnumerable<object?> EnumerateVariableValue(object? value)
+    internal void SetVariable(Activation activation, string name, object? value) =>
+        SetFrameVariable(activation.Frame, name, value);
+
+    private IDisposable PushVariableFrame(IReadOnlyDictionary<string, object?> variables, bool isOverlay)
     {
-        if (value is null)
-        {
-            yield break;
-        }
-
-        if (value is string)
-        {
-            yield return value;
-            yield break;
-        }
-
-        if (value is byte[])
-        {
-            yield return value;
-            yield break;
-        }
-
-        if (value is System.Collections.IEnumerable enumerable)
-        {
-            foreach (var item in enumerable)
-            {
-                yield return item;
-            }
-
-            yield break;
-        }
-
-        yield return value;
+        var previous = _frame;
+        _frame = new VariableFrame(previous, isOverlay);
+        foreach (var item in variables) _frame.Values[item.Key] = item.Value;
+        return new ActionScope(() => _frame = previous);
     }
 
-    private void RestoreVariables(Dictionary<string, object?> variables)
+    private static VariableFrame GetScopeFrame(VariableFrame frame)
     {
-        _variables.Clear();
-        foreach (var variable in variables)
-        {
-            _variables[variable.Key] = variable.Value;
-        }
+        while (frame.IsOverlay && frame.Parent is not null) frame = frame.Parent;
+        return frame;
     }
+
+    private static VariableFrame GetAssignmentFrame(VariableFrame frame, string name)
+    {
+        while (frame.IsOverlay && !frame.Values.ContainsKey(name) && frame.Parent is not null) frame = frame.Parent;
+        return frame;
+    }
+
+    private static void SetFrameVariable(VariableFrame frame, string name, object? value) =>
+        GetAssignmentFrame(frame, name).Values[name] = value;
+
+    private static bool IsVisibleOutput(object? value) =>
+        PowerShellWasmPipelineValue.Unwrap(value) is not PowerShellWasmStreamRecord { IsVisible: false } &&
+        !PowerShellWasmOutput.IsNoOutput(PowerShellWasmPipelineValue.Unwrap(value));
 
     private static PowerShellWasmOutputRecord FormatRecord(object? value) =>
-        value switch
+        PowerShellWasmPipelineValue.Unwrap(value) switch
         {
             PowerShellWasmStreamRecord stream => new(stream.StreamName, FormatOutput(stream.Value)),
             _ => new("Output", FormatOutput(value))
@@ -545,12 +601,13 @@ public sealed class PowerShellWasmExecutionContext
             PowerShellWasmPipelineValue pipelineValue => FormatOutput(pipelineValue.Value),
             PowerShellWasmStreamRecord stream => FormatOutput(stream.Value),
             PowerShellWasmHashtable hashtable => FormatHashtable(hashtable),
+            PowerShellWasmCustomObject customObject => FormatHashtable(customObject),
             Dictionary<string, object?> hashtable => "@{" + string.Join("; ", hashtable.Select(static item => $"{item.Key}={FormatOutput(item.Value)}")) + "}",
             object?[] array => string.Join(Environment.NewLine, array.Select(FormatOutput)),
             _ => value.ToString() ?? string.Empty
         };
 
-    private static string FormatHashtable(PowerShellWasmHashtable hashtable)
+    private static string FormatHashtable(IReadOnlyDictionary<string, object?> hashtable)
     {
         if (hashtable.Count == 0)
         {
@@ -573,47 +630,27 @@ public sealed class PowerShellWasmExecutionContext
     private static string JoinHashtableCells(string name, string value, int nameWidth, int valueWidth) =>
         $"{name.PadRight(nameWidth)}  {value.PadRight(valueWidth)}".TrimEnd();
 
-    private sealed record PowerShellWasmStreamRecord(string StreamName, object? Value);
+    private sealed record PowerShellWasmStreamRecord(string StreamName, object? Value, bool IsVisible = true);
 
-    private sealed class OutputCapture(PowerShellWasmExecutionContext context, List<object?> output) : IDisposable
+    internal sealed class VariableFrame(VariableFrame? parent, bool isOverlay)
     {
-        public void Dispose() =>
-            context.ReleaseOutputCapture(output);
+        internal VariableFrame? Parent { get; } = parent;
+        internal bool IsOverlay { get; } = isOverlay;
+        internal Dictionary<string, object?> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
+        internal Dictionary<string, PowerShellWasmScriptFunction> Functions { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
-    private sealed class ScriptScope(
-        PowerShellWasmExecutionContext context,
-        Dictionary<string, object?> variables,
-        Dictionary<string, PowerShellWasmScriptFunction> functions) : IDisposable
+    internal sealed record OutputPort(OutputPort? Parent, List<object?>? Output, bool CaptureStreams,
+        Func<object?, CancellationToken, ValueTask>? Route);
+    internal sealed record ErrorObserver(ErrorObserver? Parent, Action<object?> Observe);
+    internal sealed record Activation(VariableFrame Frame, OutputPort? Output, ErrorObserver? Errors, VariableFrame? ScriptCallerFrame);
+    private sealed class OutputScope(PowerShellWasmExecutionContext context, OutputPort? previous) : IDisposable
     {
-        public void Dispose()
-        {
-            context.RestoreVariables(variables);
-            context._functions.Clear();
-            foreach (var function in functions)
-            {
-                context._functions[function.Key] = function.Value;
-            }
-        }
+        public void Dispose() => context._outputPort = previous;
     }
-
-    private sealed class TemporaryVariableScope(
-        PowerShellWasmExecutionContext context,
-        IReadOnlyDictionary<string, (bool HadValue, object? Value)> variables) : IDisposable
+    private sealed class ActionScope(Action restore) : IDisposable
     {
-        public void Dispose() =>
-            context.RestoreTemporaryVariables(variables);
-    }
-
-    private sealed class PipelineItemScope(
-        PowerShellWasmExecutionContext context,
-        bool hadUnderscore,
-        object? underscore,
-        bool hadPSItem,
-        object? psItem) : IDisposable
-    {
-        public void Dispose() =>
-            context.RestorePipelineItem(hadUnderscore, underscore, hadPSItem, psItem);
+        public void Dispose() => restore();
     }
 }
 

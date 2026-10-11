@@ -21,6 +21,9 @@ public sealed class PowerShellWasmCommandContext
     public IReadOnlyList<object?> Arguments { get; }
     public IReadOnlyList<object?> PipelineInput { get; }
 
+    internal PowerShellWasmCommandContext WithPipelineInput(IReadOnlyList<object?> pipelineInput) =>
+        new(ExecutionContext, Parameters, Arguments, pipelineInput);
+
     public string? GetString(string name)
     {
         return Parameters.TryGetValue(name, out var value) ? Convert.ToString(value, CultureInfo.InvariantCulture) : null;

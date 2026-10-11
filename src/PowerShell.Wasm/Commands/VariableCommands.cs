@@ -1,10 +1,10 @@
 namespace PSWasm.Commands;
 
-internal sealed class GetVariableCommand : IPowerShellWasmCommand
+internal sealed class GetVariableCommand : IPowerShellWasmPipelineCommand
 {
     public IReadOnlyCollection<string> SwitchParameters => ["ValueOnly"];
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var valueOnly = context.Parameters.TryGetValue("ValueOnly", out var valueOnlyValue) &&
             PowerShellWasmCommandUtilities.ToBoolean(valueOnlyValue);
@@ -13,15 +13,15 @@ internal sealed class GetVariableCommand : IPowerShellWasmCommand
         foreach (var variable in variables)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.WriteOutput(valueOnly ? variable.Value : CreateVariableRecord(variable.Key, variable.Value));
+            await context.ExecutionContext.WriteOutputAsync(valueOnly ? variable.Value : CreateVariableRecord(variable.Key, variable.Value), cancellationToken);
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 
     private static IEnumerable<KeyValuePair<string, object?>> SelectVariables(PowerShellWasmCommandContext context)
     {
-        var variables = context.ExecutionContext.GetVariables();
+        var variables = context.ExecutionContext.GetRawVariables();
         var names = VariableCommandUtilities.GetNames(context).ToArray();
         if (names.Length == 0)
         {
@@ -39,7 +39,7 @@ internal sealed class GetVariableCommand : IPowerShellWasmCommand
         };
 }
 
-internal sealed class SetVariableCommand : IPowerShellWasmCommand
+internal sealed class SetVariableCommand : IPowerShellWasmPipelineCommand
 {
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -81,7 +81,7 @@ internal sealed class SetVariableCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class ClearVariableCommand : IPowerShellWasmCommand
+internal sealed class ClearVariableCommand : IPowerShellWasmPipelineCommand
 {
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -101,7 +101,7 @@ internal sealed class ClearVariableCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class RemoveVariableCommand : IPowerShellWasmCommand
+internal sealed class RemoveVariableCommand : IPowerShellWasmPipelineCommand
 {
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
@@ -144,7 +144,7 @@ internal static class VariableCommandUtilities
 
     public static IEnumerable<string> ResolveNames(PowerShellWasmCommandContext context, IEnumerable<string> names)
     {
-        var variables = context.ExecutionContext.GetVariables();
+        var variables = context.ExecutionContext.GetRawVariables();
         foreach (var name in names)
         {
             var matches = variables.Keys.Where(variableName => NameMatches(variableName, name)).ToArray();

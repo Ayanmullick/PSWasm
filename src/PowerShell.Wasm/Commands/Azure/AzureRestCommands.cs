@@ -12,7 +12,7 @@ namespace PSWasm.Commands;
 // auth host and HttpClient instead of desktop Az profile/client factories.
 internal sealed class InvokeAzRestMethodCommand(
     HttpClient httpClient,
-    IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmCommand
+    IPowerShellWasmAzureAuthHost? authHost) : IPowerShellWasmPipelineCommand
 {
     private const string ArmBaseUri = "https://management.azure.com";
     private const string ArmResourceUrl = "https://management.azure.com/";
@@ -58,7 +58,7 @@ internal sealed class InvokeAzRestMethodCommand(
 
         using var response = await httpClient.SendAsync(request, cancellationToken);
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        context.ExecutionContext.WriteOutput(CreateResponseObject(request, response, content));
+        await context.ExecutionContext.WriteOutputAsync(CreateResponseObject(request, response, content), cancellationToken);
     }
 
     private static AzureRestRequestTarget ResolveRequestTarget(PowerShellWasmCommandContext context)

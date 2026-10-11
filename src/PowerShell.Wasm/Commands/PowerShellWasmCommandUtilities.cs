@@ -6,48 +6,29 @@ internal static class PowerShellWasmCommandUtilities
 {
     public static IEnumerable<object?> EnumerateInput(IReadOnlyList<object?> input)
     {
-        foreach (var item in EnumeratePipelineInput(input))
-        {
-            yield return item.Value;
-        }
-    }
-
-    public static IEnumerable<PowerShellWasmPipelineInputItem> EnumeratePipelineInput(IReadOnlyList<object?> input)
-    {
         foreach (var item in input)
         {
-            var itemVariables = PowerShellWasmPipelineValue.GetVariables(item);
             foreach (var value in Enumerate(PowerShellWasmPipelineValue.Unwrap(item)))
             {
-                var variables = MergePipelineVariables(itemVariables, PowerShellWasmPipelineValue.GetVariables(value));
-                yield return new(
-                    PowerShellWasmPipelineValue.Unwrap(value),
-                    variables);
+                yield return PowerShellWasmPipelineValue.Unwrap(value);
             }
         }
     }
 
-    private static IReadOnlyDictionary<string, object?> MergePipelineVariables(
-        IReadOnlyDictionary<string, object?> first,
-        IReadOnlyDictionary<string, object?> second)
+    public static IEnumerable<object?> EnumeratePipelineValues(IReadOnlyList<object?> input) =>
+        EnumeratePipelineInput(input).Select(static item => item.Value);
+
+    public static IEnumerable<PowerShellWasmPipelineInputItem> EnumeratePipelineInput(IReadOnlyList<object?> input)
     {
-        if (first.Count == 0)
+        // Pipeline input already consists of emitted records; do not enumerate a nested collection or discard a null record.
+        foreach (var item in input)
         {
-            return second;
+            var value = PowerShellWasmPipelineValue.Unwrap(item);
+            if (!PowerShellWasmOutput.IsNoOutput(value))
+            {
+                yield return new(value, PowerShellWasmPipelineValue.GetVariables(item));
+            }
         }
-
-        if (second.Count == 0)
-        {
-            return first;
-        }
-
-        var merged = new Dictionary<string, object?>(first, StringComparer.OrdinalIgnoreCase);
-        foreach (var variable in second)
-        {
-            merged[variable.Key] = variable.Value;
-        }
-
-        return merged;
     }
 
     public static PowerShellWasmScriptBlock? GetScriptBlock(PowerShellWasmCommandContext context, params string[] parameterNames)
@@ -64,24 +45,29 @@ internal static class PowerShellWasmCommandUtilities
         return context.Arguments.OfType<PowerShellWasmScriptBlock>().FirstOrDefault();
     }
 
-    public static bool ToBoolean(object? value) =>
-        value switch
+    public static bool ToBoolean(object? value)
+    {
+        value = PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value));
+        return value switch
         {
             null => false,
             bool boolValue => boolValue,
-            int intValue => intValue != 0,
-            long longValue => longValue != 0,
-            double doubleValue => Math.Abs(doubleValue) > 0.0000000001,
+            byte or sbyte or short or ushort or int or uint or long or ulong or float or double =>
+                Convert.ToDouble(value, CultureInfo.InvariantCulture) != 0,
             decimal decimalValue => decimalValue != 0,
             string stringValue => stringValue.Length > 0,
-            object?[] arrayValue => ToCollectionBoolean(arrayValue),
+            System.Collections.IList listValue => ToCollectionBoolean(listValue),
             _ => true
         };
+    }
 
-    private static bool ToCollectionBoolean(IReadOnlyList<object?> values) =>
+    // Match LanguagePrimitives.IsTrue(IList): a nested singleton collection is true when it is nonempty.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L1025-L1052
+    private static bool ToCollectionBoolean(System.Collections.IList values) =>
         values.Count switch
         {
             0 => false,
+            1 when PowerShellWasmPipelineValue.Unwrap(values[0]) is System.Collections.IList nested => nested.Count != 0,
             1 => ToBoolean(values[0]),
             _ => true
         };
@@ -93,6 +79,7 @@ internal static class PowerShellWasmCommandUtilities
 
     public static bool TryGetMemberValue(object? target, string memberName, out object? value)
     {
+        target = PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(target));
         value = null;
         if (target is null)
         {
@@ -144,6 +131,7 @@ internal static class PowerShellWasmCommandUtilities
 
     public static bool TryToNumber(object? value, out double number)
     {
+        value = PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value));
         switch (value)
         {
             case bool boolValue:
@@ -162,10 +150,10 @@ internal static class PowerShellWasmCommandUtilities
     }
 
     public static string ToInvariantString(object? value) =>
-        Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+        Convert.ToString(PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value)), CultureInfo.InvariantCulture) ?? string.Empty;
 
     public static string FormatValue(object? value) =>
-        value switch
+        PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value)) switch
         {
             null => string.Empty,
             IReadOnlyDictionary<string, object?> readOnlyDictionary => FormatDictionary(readOnlyDictionary),
@@ -210,6 +198,7 @@ internal static class PowerShellWasmCommandUtilities
 
     private static IEnumerable<object?> Enumerate(object? value)
     {
+        value = PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value));
         if (value is null)
         {
             yield break;
@@ -231,7 +220,7 @@ internal static class PowerShellWasmCommandUtilities
         {
             foreach (var item in enumerable)
             {
-                yield return item;
+                yield return PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(item));
             }
 
             yield break;

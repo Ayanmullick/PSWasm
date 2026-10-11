@@ -7,9 +7,9 @@ namespace PSWasm.Commands;
 // - https://github.com/PowerShell/PowerShell/blob/master/src/Microsoft.PowerShell.Commands.Utility/commands/utility/New-Object.cs
 // Browser note: this keeps the PowerShell command shape, but object construction is limited by
 // PowerShellWasmDotNetBridge instead of opening arbitrary .NET reflection.
-internal sealed class NewObjectCommand : IPowerShellWasmCommand
+internal sealed class NewObjectCommand : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var typeName = GetTypeName(context);
@@ -19,8 +19,8 @@ internal sealed class NewObjectCommand : IPowerShellWasmCommand
             throw new InvalidOperationException($"Type [{typeName}] is not available in this browser-safe runtime.");
         }
 
-        context.ExecutionContext.WriteOutput(value);
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(value, cancellationToken);
+        return;
     }
 
     private static string GetTypeName(PowerShellWasmCommandContext context)

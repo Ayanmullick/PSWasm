@@ -1,12 +1,12 @@
 namespace PSWasm.Commands;
 
-internal sealed class NewDomSessionCommand : IPowerShellWasmCommand
+internal sealed class NewDomSessionCommand : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        context.ExecutionContext.WriteOutput(context.ExecutionContext.NewDomSession(GetName(context), GetTarget(context)));
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(context.ExecutionContext.NewDomSession(GetName(context), GetTarget(context)), cancellationToken);
+        return;
     }
 
     private static string? GetName(PowerShellWasmCommandContext context)
@@ -30,22 +30,22 @@ internal sealed class NewDomSessionCommand : IPowerShellWasmCommand
     }
 }
 
-internal sealed class GetDomSessionCommand : IPowerShellWasmCommand
+internal sealed class GetDomSessionCommand : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var sessions = DomSessionCommandUtilities.SelectSessions(context, requireSelection: false);
         foreach (var session in sessions)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.WriteOutput(session);
+            await context.ExecutionContext.WriteOutputAsync(session, cancellationToken);
         }
 
-        return ValueTask.CompletedTask;
+        return;
     }
 }
 
-internal sealed class RemoveDomSessionCommand : IPowerShellWasmCommand
+internal sealed class RemoveDomSessionCommand : IPowerShellWasmPipelineCommand
 {
     public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {

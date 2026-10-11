@@ -2,14 +2,17 @@ using System.Globalization;
 
 namespace PSWasm.Commands;
 
-internal sealed class FormatListCommand : IPowerShellWasmCommand
+internal sealed class FormatListCommand : IPowerShellWasmPipelineCommand
 {
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput);
+
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var input = FormatCommandUtilities.GetInput(context).ToArray();
         if (input.Length == 0)
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
         var explicitProperties = PowerShellWasmCommandUtilities.GetPropertyNames(context);
@@ -23,21 +26,24 @@ internal sealed class FormatListCommand : IPowerShellWasmCommand
                 $"{property.PadRight(width)} : {FormatCommandUtilities.FormatCell(FormatCommandUtilities.GetPropertyValue(item, property))}")));
         }
 
-        context.ExecutionContext.WriteOutput(string.Join(Environment.NewLine + Environment.NewLine, blocks));
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(string.Join(Environment.NewLine + Environment.NewLine, blocks), cancellationToken);
+        return;
     }
 }
 
-internal sealed class FormatTableCommand : IPowerShellWasmCommand
+internal sealed class FormatTableCommand : IPowerShellWasmPipelineCommand
 {
+    public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
+        new PowerShellWasmBufferedProcessor(this, context, hasPipelineInput);
+
     public IReadOnlyCollection<string> SwitchParameters => ["HideTableHeaders"];
 
-    public ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
+    public async ValueTask InvokeAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken)
     {
         var input = FormatCommandUtilities.GetInput(context).ToArray();
         if (input.Length == 0)
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
         var properties = PowerShellWasmCommandUtilities.GetPropertyNames(context);
@@ -66,8 +72,8 @@ internal sealed class FormatTableCommand : IPowerShellWasmCommand
         }
 
         lines.AddRange(rows.Select(row => JoinCells(row, widths)));
-        context.ExecutionContext.WriteOutput(string.Join(Environment.NewLine, lines));
-        return ValueTask.CompletedTask;
+        await context.ExecutionContext.WriteOutputAsync(string.Join(Environment.NewLine, lines), cancellationToken);
+        return;
     }
 
     private static string JoinCells(IReadOnlyList<string> cells, IReadOnlyList<int> widths) =>
@@ -84,7 +90,7 @@ internal static class FormatCommandUtilities
         }
 
         return context.PipelineInput.Count > 0
-            ? PowerShellWasmCommandUtilities.EnumerateInput(context.PipelineInput)
+            ? PowerShellWasmCommandUtilities.EnumeratePipelineValues(context.PipelineInput).Where(static item => item is not null)
             : [];
     }
 
