@@ -113,7 +113,7 @@ internal sealed class RegisterDomStorageBindingCommand : IPowerShellWasmPipeline
     {
         foreach (var argument in context.Arguments)
         {
-            if (argument is Dictionary<string, object?>)
+            if (argument is System.Collections.IDictionary or IReadOnlyDictionary<string, object?>)
             {
                 mapValue = argument;
                 return true;
@@ -126,15 +126,24 @@ internal sealed class RegisterDomStorageBindingCommand : IPowerShellWasmPipeline
 
     private static IReadOnlyDictionary<string, string> ConvertMap(object? mapValue)
     {
-        if (mapValue is not Dictionary<string, object?> dictionary || dictionary.Count == 0)
+        if (mapValue is IReadOnlyDictionary<string, object?> readOnlyDictionary && readOnlyDictionary.Count > 0)
         {
-            throw new InvalidOperationException("Register-DomStorageBinding -Map must be a non-empty hashtable.");
+            return readOnlyDictionary.ToDictionary(
+                static item => item.Key,
+                static item => PowerShellWasmCommandUtilities.ToInvariantString(item.Value),
+                StringComparer.OrdinalIgnoreCase);
         }
 
-        return dictionary.ToDictionary(
-            static item => item.Key,
-            static item => PowerShellWasmCommandUtilities.ToInvariantString(item.Value),
-            StringComparer.OrdinalIgnoreCase);
+        if (mapValue is System.Collections.IDictionary dictionary && dictionary.Count > 0)
+        {
+            // Selectors and storage keys are strings at this browser API boundary; retain raw keys in runtime dictionaries.
+            return dictionary.Cast<System.Collections.DictionaryEntry>().ToDictionary(
+                static item => PowerShellWasmCommandUtilities.ToInvariantString(item.Key),
+                static item => PowerShellWasmCommandUtilities.ToInvariantString(item.Value),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        throw new InvalidOperationException("Register-DomStorageBinding -Map must be a non-empty hashtable.");
     }
 
     private static string GetOptionalText(PowerShellWasmCommandContext context, string parameterName, string fallback) =>

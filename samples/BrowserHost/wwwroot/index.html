@@ -190,6 +190,21 @@ $table.Keys | Sort-Object
 #endregion
   </script>
           </article>
+          <article class="example" id="ordered-dictionaries">
+            <h3>Ordered dictionaries and typed keys</h3>
+            <p class="example-note">Ordered dictionaries preserve insertion order. Integer indexes select positions; an object-cast index selects a numeric key.</p>
+            <script type="pwsh" id="ordered-dictionaries-script">
+$orderedItems = [ordered]@{Second=2; First=1}
+"Order: $($orderedItems.Keys -join ',')"
+$orderedItems.Insert(1, 'Middle', 3)
+"After insert: $($orderedItems.Keys -join ',')"
+$numberKey = 4
+$mixedKeys = [ordered]@{Label='position zero'; $numberKey='number key'; '4'='text key'}
+"Position 0: $($mixedKeys[0])"
+"Integer key 4: $($mixedKeys[[object]4])"
+"String key 4: $($mixedKeys['4'])"
+  </script>
+          </article>
         </div>
       </details>
 
@@ -247,6 +262,25 @@ function Show-Bound($Name, $Value) {
     $PSBoundParameters['Value']
 }
 Show-Bound -Name 'browser' -Value 42
+  </script>
+          </article>
+          <article class="example" id="command-status">
+            <h3>Command status and error recovery</h3>
+            <p class="example-note">$? describes the last command or expression. Read it immediately; a successful expression resets it. A function's non-terminating error remains in $Error without making its caller fail.</p>
+            <script type="pwsh" id="command-status-script">
+Write-Error 'suppressed status example' -ErrorAction SilentlyContinue
+"After error: $?"
+"After successful expression: $?"
+function Show-LocalStatus {
+    Write-Error 'function status example' -ErrorAction SilentlyContinue
+    "Inside function: $?"
+}
+Show-LocalStatus
+"After function: $?"
+try { Write-Error 'caught status example' -ErrorAction Stop }
+catch { "Caught: $($_.Exception.Message)" }
+"After recovery: $?"
+"Literal automatic variable: `$?"
   </script>
           </article>
           <article class="example">
@@ -463,6 +497,18 @@ try {
     Select-Object @{Name='Label';Expression={$_.Name.ToUpperInvariant()}},@{Name='Next';Expression={$_.Value + 1}} |
     ConvertTo-Json -Compress
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}) | Select-Object N* | ConvertTo-Json -Compress
+  </script>
+          </article>
+          <article class="example" id="pipeline-selection">
+            <h3>Selecting the first items</h3>
+            <p class="example-note">First stops the producer after two items. Wait keeps the same selection and lets all five items run.</p>
+            <script type="pwsh" id="pipeline-selection-script">
+$selectionState = @{Produced=0}
+$firstSelected = @(1..5 | ForEach-Object { $selectionState.Produced++; $_ } | Select-Object -First 2)
+"First: $($firstSelected -join ','); produced: $($selectionState.Produced)"
+$selectionState.Produced = 0
+$waitSelected = @(1..5 | ForEach-Object { $selectionState.Produced++; $_ } | Select-Object -First 2 -Wait)
+"Wait: $($waitSelected -join ','); produced: $($selectionState.Produced)"
   </script>
           </article>
           <article class="example">

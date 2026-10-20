@@ -199,7 +199,11 @@ internal static class PowerShellWasmJson
         writer.WriteStartObject();
         foreach (System.Collections.DictionaryEntry item in dictionary)
         {
-            writer.WritePropertyName(Convert.ToString(item.Key, CultureInfo.InvariantCulture) ?? string.Empty);
+            // Native JSON objects require string keys; stringifying raw dictionary keys can merge distinct entries.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/WebCmdlet/JsonObject.cs#L747-L776
+            if (item.Key is not string key)
+                throw new InvalidOperationException("Cannot convert a dictionary with non-string keys to JSON.");
+            writer.WritePropertyName(key);
             WriteJsonValue(writer, item.Value, depth, currentDepth + 1);
         }
 

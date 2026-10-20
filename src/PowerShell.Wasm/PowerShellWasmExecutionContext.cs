@@ -18,7 +18,8 @@ public sealed class PowerShellWasmExecutionContext
     private VariableFrame? _scriptCallerFrame;
     private int _nextDomSessionId = 1;
     private int _nextDomEventRegistrationId = 1;
-    private int _failureSignalCount;
+    private bool _lastCommandSucceeded = true;
+    private PipelineStatus? _pipelineStatus;
 
     public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null, IPowerShellWasmDomHost? domHost = null)
     {
@@ -31,7 +32,14 @@ public sealed class PowerShellWasmExecutionContext
     public IReadOnlyList<PowerShellWasmOutputRecord> Records => _output.Where(IsVisibleOutput).Select(FormatRecord).ToArray();
     public IReadOnlyList<string> Output => Records.Select(FormatRecordLine).ToArray();
     public int ErrorCount => _errors.Count;
-    internal int FailureSignalCount => _failureSignalCount;
+    internal bool LastCommandSucceeded => _lastCommandSucceeded;
+
+    internal IDisposable WithPipelineStatus(PipelineStatus status)
+    {
+        var previous = _pipelineStatus;
+        _pipelineStatus = status;
+        return new ActionScope(() => _pipelineStatus = previous);
+    }
 
     internal void ClearOutput() =>
         _output.Clear();
@@ -60,6 +68,7 @@ public sealed class PowerShellWasmExecutionContext
     // Keep no-output values internally; callers of the public host API receive null without changing stored state.
     internal object? GetRawVariable(string name)
     {
+        if (name == "?") return _lastCommandSucceeded;
         if (name.Equals("Error", StringComparison.OrdinalIgnoreCase)) return _errors.ToArray();
         for (var frame = _frame; frame is not null; frame = frame.Parent)
         {
@@ -76,6 +85,7 @@ public sealed class PowerShellWasmExecutionContext
         foreach (var frame in frames)
             foreach (var item in frame.Values) values[item.Key] = item.Value;
         values["Error"] = _errors.ToArray();
+        values["?"] = _lastCommandSucceeded;
         return values;
     }
 
@@ -105,6 +115,7 @@ public sealed class PowerShellWasmExecutionContext
 
     public void SetVariable(string name, object? value)
     {
+        AssertWritableVariable(name);
         if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             SetEnvironmentVariable(name[4..], value is null ? null : Convert.ToString(value, CultureInfo.InvariantCulture));
@@ -116,6 +127,7 @@ public sealed class PowerShellWasmExecutionContext
 
     public void ClearVariable(string name)
     {
+        AssertWritableVariable(name);
         if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             SetEnvironmentVariable(name[4..], null);
@@ -127,6 +139,7 @@ public sealed class PowerShellWasmExecutionContext
 
     public void RemoveVariable(string name)
     {
+        AssertWritableVariable(name);
         if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             SetEnvironmentVariable(name[4..], null);
@@ -134,6 +147,12 @@ public sealed class PowerShellWasmExecutionContext
         }
 
         GetAssignmentFrame(_frame, name).Values.Remove(name);
+    }
+
+    private static void AssertWritableVariable(string name)
+    {
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/QuestionMarkVariable.cs#L17-L39
+        if (name == "?") throw new InvalidOperationException("Cannot overwrite variable ? because it is read-only.");
     }
 
     internal void SetFunction(PowerShellWasmScriptFunction function) =>
@@ -241,7 +260,7 @@ public sealed class PowerShellWasmExecutionContext
         {
             if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
             {
-                SetLastCommandSucceeded(false);
+                MarkPipelineFailed();
             }
             return HasCommonStreamVariable(streamName) ? new PowerShellWasmStreamRecord(streamName, value, IsVisible: false) : null;
         }
@@ -258,7 +277,15 @@ public sealed class PowerShellWasmExecutionContext
 
         if (streamName.Equals("Error", StringComparison.OrdinalIgnoreCase))
         {
-            RecordError(value);
+            var errorRecord = RecordError(value);
+            if (IsStoppingPreference(preference))
+            {
+                // A caught ActionPreferenceStop exposes the original error once, without writing it to the error pipe.
+                // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshCommandRuntime.cs#L2892-L2918
+                var error = CreateStoppingPreferenceException(preference, preferenceName, value);
+                error.Data[ErrorRecordDataKey] = errorRecord;
+                throw error;
+            }
         }
 
         return new PowerShellWasmStreamRecord(streamName, value);
@@ -268,20 +295,27 @@ public sealed class PowerShellWasmExecutionContext
     {
         if (IsStoppingPreference(preference))
         {
-            var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
-            throw new InvalidOperationException(
-                $"The running command stopped because the preference variable \"{preferenceName}\" is set to {preference}: {message}");
+            throw CreateStoppingPreferenceException(preference, preferenceName, value);
         }
     }
 
-    internal void SetLastCommandSucceeded(bool succeeded)
+    private static InvalidOperationException CreateStoppingPreferenceException(string preference, string? preferenceName, object? value)
     {
-        if (!succeeded)
-        {
-            _failureSignalCount++;
-        }
+        var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+        return new InvalidOperationException(
+            $"The running command stopped because the preference variable \"{preferenceName}\" is set to {preference}: {message}");
+    }
 
-        SetVariable("?", succeeded);
+    // $? belongs to the execution context, not to a function's variable frame.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ExecutionContext.cs#L958
+    internal void SetLastCommandSucceeded(bool succeeded) => _lastCommandSucceeded = succeeded;
+
+    // A cmdlet error fails its owning pipeline even when display/history are suppressed with Ignore.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshCommandRuntime.cs#L2863-L2876
+    private void MarkPipelineFailed()
+    {
+        if (_pipelineStatus is not null) _pipelineStatus.Failed = true;
+        else SetLastCommandSucceeded(false);
     }
 
     internal string OutputFieldSeparator =>
@@ -468,17 +502,19 @@ public sealed class PowerShellWasmExecutionContext
             _ => null
         };
 
-    private void RecordError(object? value)
+    private Dictionary<string, object?> RecordError(object? value)
     {
+        MarkPipelineFailed();
         var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
-        PushErrorRecord(CreateErrorRecord(message, "Error", "PSWasm.WriteError"), null);
+        var record = CreateErrorRecord(message, "Error", "PSWasm.WriteError");
+        PushErrorRecord(record, null);
+        return record;
     }
 
     private void PushErrorRecord(Dictionary<string, object?> record, string? stackTrace)
     {
         _errors.Insert(0, record);
         SetVariable("StackTrace", stackTrace);
-        SetLastCommandSucceeded(false);
         for (var observer = _errorObserver; observer is not null; observer = observer.Parent) observer.Observe(record);
     }
 
@@ -513,7 +549,7 @@ public sealed class PowerShellWasmExecutionContext
     // A suspended producer retains its frames and output port while a downstream command resumes its caller.
     // Behavioral guidance: PowerShell's Pipe and command processor lifecycle; this adaptation is awaited and single-threaded.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/Pipe.cs
-    internal Activation CaptureActivation() => new(_frame, _outputPort, _errorObserver, _scriptCallerFrame);
+    internal Activation CaptureActivation() => new(_frame, _outputPort, _errorObserver, _scriptCallerFrame, _pipelineStatus);
 
     internal IDisposable Activate(Activation activation)
     {
@@ -522,12 +558,14 @@ public sealed class PowerShellWasmExecutionContext
         _outputPort = activation.Output;
         _errorObserver = activation.Errors;
         _scriptCallerFrame = activation.ScriptCallerFrame;
+        _pipelineStatus = activation.Status;
         return new ActionScope(() =>
         {
             _frame = previous.Frame;
             _outputPort = previous.Output;
             _errorObserver = previous.Errors;
             _scriptCallerFrame = previous.ScriptCallerFrame;
+            _pipelineStatus = previous.Status;
         });
     }
 
@@ -552,8 +590,11 @@ public sealed class PowerShellWasmExecutionContext
         return new ActionScope(() => _errorObserver = previous);
     }
 
-    internal void SetVariable(Activation activation, string name, object? value) =>
+    internal void SetVariable(Activation activation, string name, object? value)
+    {
+        AssertWritableVariable(name);
         SetFrameVariable(activation.Frame, name, value);
+    }
 
     private IDisposable PushVariableFrame(IReadOnlyDictionary<string, object?> variables, bool isOverlay)
     {
@@ -600,21 +641,30 @@ public sealed class PowerShellWasmExecutionContext
             null => string.Empty,
             PowerShellWasmPipelineValue pipelineValue => FormatOutput(pipelineValue.Value),
             PowerShellWasmStreamRecord stream => FormatOutput(stream.Value),
-            PowerShellWasmHashtable hashtable => FormatHashtable(hashtable),
-            PowerShellWasmCustomObject customObject => FormatHashtable(customObject),
+            System.Collections.Hashtable hashtable => FormatHashtable(hashtable),
+            System.Collections.Specialized.OrderedDictionary ordered => FormatHashtable(ordered),
+            System.Collections.DictionaryEntry entry => FormatHashtableRows([(Convert.ToString(entry.Key, CultureInfo.InvariantCulture) ?? string.Empty, FormatOutput(entry.Value))]),
+            PowerShellWasmCustomObject customObject => FormatHashtable((IReadOnlyDictionary<string, object?>)customObject),
             Dictionary<string, object?> hashtable => "@{" + string.Join("; ", hashtable.Select(static item => $"{item.Key}={FormatOutput(item.Value)}")) + "}",
             object?[] array => string.Join(Environment.NewLine, array.Select(FormatOutput)),
             _ => value.ToString() ?? string.Empty
         };
 
-    private static string FormatHashtable(IReadOnlyDictionary<string, object?> hashtable)
+    private static string FormatHashtable(IReadOnlyDictionary<string, object?> hashtable) =>
+        FormatHashtableRows(hashtable.Select(static item => (Name: item.Key, Value: FormatOutput(item.Value))).ToArray());
+
+    private static string FormatHashtable(System.Collections.IDictionary hashtable) =>
+        FormatHashtableRows(hashtable.Cast<System.Collections.DictionaryEntry>()
+            .Select(static item => (Name: Convert.ToString(item.Key, CultureInfo.InvariantCulture) ?? string.Empty, Value: FormatOutput(item.Value)))
+            .ToArray());
+
+    private static string FormatHashtableRows((string Name, string Value)[] rows)
     {
-        if (hashtable.Count == 0)
+        if (rows.Length == 0)
         {
             return string.Empty;
         }
 
-        var rows = hashtable.Select(static item => (Name: item.Key, Value: FormatOutput(item.Value))).ToArray();
         var nameWidth = Math.Max("Name".Length, rows.Max(static row => row.Name.Length));
         var valueWidth = Math.Max("Value".Length, rows.Max(static row => row.Value.Length));
 
@@ -643,7 +693,13 @@ public sealed class PowerShellWasmExecutionContext
     internal sealed record OutputPort(OutputPort? Parent, List<object?>? Output, bool CaptureStreams,
         Func<object?, CancellationToken, ValueTask>? Route);
     internal sealed record ErrorObserver(ErrorObserver? Parent, Action<object?> Observe);
-    internal sealed record Activation(VariableFrame Frame, OutputPort? Output, ErrorObserver? Errors, VariableFrame? ScriptCallerFrame);
+    internal sealed class PipelineStatus
+    {
+        internal bool Failed { get; set; }
+    }
+
+    internal sealed record Activation(VariableFrame Frame, OutputPort? Output, ErrorObserver? Errors,
+        VariableFrame? ScriptCallerFrame, PipelineStatus? Status);
     private sealed class OutputScope(PowerShellWasmExecutionContext context, OutputPort? previous) : IDisposable
     {
         public void Dispose() => context._outputPort = previous;

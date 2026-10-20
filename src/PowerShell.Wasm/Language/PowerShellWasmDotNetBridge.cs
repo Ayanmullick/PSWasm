@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Specialized;
 using System.Globalization;
 #if PSWASM_CRYPTO
 using System.Security.Cryptography;
@@ -34,6 +35,9 @@ internal static class PowerShellWasmDotNetBridge
     private const string ArrayType = "System.Array";
     private const string HashtableType = "System.Collections.Hashtable";
     private const string DictionaryType = "System.Collections.IDictionary";
+    private const string OrderedDictionaryType = "System.Collections.Specialized.OrderedDictionary";
+    private const string EnumeratorType = "System.Collections.IEnumerator";
+    private const string ObjectType = "System.Object";
     private const string ArrayListType = "System.Collections.ArrayList";
     private const string GenericListTypePrefix = "System.Collections.Generic.List";
 #if PSWASM_CRYPTO
@@ -68,6 +72,11 @@ internal static class PowerShellWasmDotNetBridge
         aliases["System.Array"] = ArrayType;
         aliases["hashtable"] = HashtableType;
         aliases["System.Collections.Hashtable"] = HashtableType;
+        aliases["ordered"] = OrderedDictionaryType;
+        aliases["Collections.Specialized.OrderedDictionary"] = OrderedDictionaryType;
+        aliases[OrderedDictionaryType] = OrderedDictionaryType;
+        aliases["Collections.IDictionary"] = DictionaryType;
+        aliases[DictionaryType] = DictionaryType;
         aliases["ArrayList"] = ArrayListType;
         aliases["System.Collections.ArrayList"] = ArrayListType;
 #if PSWASM_CRYPTO
@@ -108,6 +117,12 @@ internal static class PowerShellWasmDotNetBridge
             return true;
         }
 
+        if (fullName is HashtableType or OrderedDictionaryType)
+        {
+            value = ConstructDictionary(fullName, arguments);
+            return true;
+        }
+
         if (IsGenericListType(fullName))
         {
             value = ConstructGenericList(fullName, arguments);
@@ -141,6 +156,24 @@ internal static class PowerShellWasmDotNetBridge
         if (!TryResolveTypeName(typeName, out var fullName))
         {
             return false;
+        }
+
+        if (fullName is HashtableType or OrderedDictionaryType or DictionaryType)
+        {
+            if (input is null) return true;
+            if (input is not IDictionary dictionary || input is PowerShellWasmCustomObject)
+                throw new InvalidOperationException($"Cannot convert this value to [{fullName}].");
+            // Native IDictionary-to-Hashtable conversion is a shallow copy with the platform default comparer.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L3384-L3392
+            value = fullName switch
+            {
+                HashtableType => input is Hashtable ? input : new Hashtable(dictionary),
+                DictionaryType => input,
+                OrderedDictionaryType when input is OrderedDictionary => input,
+                OrderedDictionaryType when dictionary.Count == 0 => new OrderedDictionary(),
+                _ => throw new InvalidOperationException($"Cannot convert dictionary entries into properties of [{fullName}].")
+            };
+            return true;
         }
 
         if (fullName.Equals(DateTimeType, StringComparison.OrdinalIgnoreCase))
@@ -193,7 +226,9 @@ internal static class PowerShellWasmDotNetBridge
             TimeSpanType => input is TimeSpan,
             TimeZoneInfoType => input is TimeZoneInfo,
             ArrayType => input is Array,
-            HashtableType => input is PowerShellWasmHashtable or Hashtable,
+            HashtableType => input is Hashtable,
+            OrderedDictionaryType => input is OrderedDictionary,
+            DictionaryType => input is IDictionary and not PowerShellWasmCustomObject,
             ArrayListType => input is ArrayList,
             _ when IsGenericListType(fullName) => GenericListTypeMatches(fullName, input),
             _ => false
@@ -207,6 +242,12 @@ internal static class PowerShellWasmDotNetBridge
         if (target is not PowerShellWasmDotNetType type)
         {
             return false;
+        }
+
+        if ((type.FullName is HashtableType or OrderedDictionaryType) && memberName.Equals("new", StringComparison.OrdinalIgnoreCase))
+        {
+            value = new PowerShellWasmDotNetMethod(type.FullName, memberName, null, IsStatic: true);
+            return true;
         }
 
         if (type.FullName.Equals(MathType, StringComparison.OrdinalIgnoreCase))
@@ -335,6 +376,41 @@ internal static class PowerShellWasmDotNetBridge
     internal static bool TryGetInstanceMember(object target, string memberName, out object? value)
     {
         value = null;
+        if (target is PowerShellWasmDotNetType descriptor)
+        {
+            if (memberName.Equals("FullName", StringComparison.OrdinalIgnoreCase)) value = descriptor.FullName;
+            else if (memberName.Equals("Name", StringComparison.OrdinalIgnoreCase)) value = descriptor.FullName[(descriptor.FullName.LastIndexOf('.') + 1)..];
+            else return false;
+            return true;
+        }
+
+        if (memberName.Equals("GetType", StringComparison.OrdinalIgnoreCase) && GetKnownRuntimeTypeName(target) is not null)
+        {
+            value = new PowerShellWasmDotNetMethod(ObjectType, memberName, target, IsStatic: false);
+            return true;
+        }
+
+        if (target is DictionaryEntry entry)
+        {
+            if (IsMember(memberName, "Key", "Name")) value = entry.Key;
+            else if (memberName.Equals("Value", StringComparison.OrdinalIgnoreCase)) value = entry.Value;
+            else return false;
+            return true;
+        }
+
+        if (target is IDictionary dictionary && (target is Hashtable or OrderedDictionary) &&
+            TryGetDictionaryInstanceMember(dictionary, memberName, out value)) return true;
+
+        if (target is IEnumerator enumerator)
+        {
+            if (memberName.Equals("Current", StringComparison.OrdinalIgnoreCase)) value = enumerator.Current;
+            else if (enumerator is IDictionaryEnumerator entries && IsMember(memberName, "Entry", "Key", "Value"))
+                value = memberName.ToLowerInvariant() switch { "entry" => entries.Entry, "key" => entries.Key, _ => entries.Value };
+            else if (IsMember(memberName, "MoveNext", "Reset"))
+                value = new PowerShellWasmDotNetMethod(EnumeratorType, memberName, target, IsStatic: false);
+            else return false;
+            return true;
+        }
 #if PSWASM_CRYPTO
         if (target is Encoding && memberName.Equals("GetBytes", StringComparison.OrdinalIgnoreCase))
         {
@@ -369,7 +445,7 @@ internal static class PowerShellWasmDotNetBridge
             return TryGetTimeZoneInfoInstanceMember(timeZone, memberName, out value);
         }
 
-        if (target is IReadOnlyDictionary<string, object?> or IDictionary<string, object?> or IDictionary &&
+        if (target is IReadOnlyDictionary<string, object?> or IDictionary<string, object?> && target is not OrderedDictionary &&
             memberName.Equals("ContainsKey", StringComparison.OrdinalIgnoreCase))
         {
             value = new PowerShellWasmDotNetMethod(DictionaryType, memberName, target, IsStatic: false);
@@ -398,6 +474,27 @@ internal static class PowerShellWasmDotNetBridge
 
     private static object? Invoke(PowerShellWasmDotNetMethod method, IReadOnlyList<object?> arguments)
     {
+        if (method.IsStatic && method.Name.Equals("new", StringComparison.OrdinalIgnoreCase) &&
+            method.DeclaringType is HashtableType or OrderedDictionaryType)
+            return ConstructDictionary(method.DeclaringType, arguments);
+
+        if (method.DeclaringType == ObjectType && method.Name.Equals("GetType", StringComparison.OrdinalIgnoreCase))
+        {
+            RequireArgumentCount(method, arguments, 0);
+            return new PowerShellWasmDotNetType(GetKnownRuntimeTypeName(method.Target!)!);
+        }
+
+        if (method.DeclaringType == EnumeratorType && method.Target is IEnumerator enumerator)
+        {
+            RequireArgumentCount(method, arguments, 0);
+            if (method.Name.Equals("MoveNext", StringComparison.OrdinalIgnoreCase)) return enumerator.MoveNext();
+            enumerator.Reset();
+            return PowerShellWasmOutput.NoOutput;
+        }
+
+        if (method.DeclaringType == DictionaryType && method.Target is IDictionary rawDictionary &&
+            method.Target is Hashtable or OrderedDictionary)
+            return InvokeDictionary(method, arguments, rawDictionary);
 #if PSWASM_CRYPTO
         if (method.DeclaringType.Equals(ConvertType, StringComparison.OrdinalIgnoreCase))
         {
@@ -491,7 +588,6 @@ internal static class PowerShellWasmDotNetBridge
             ArgumentNullException.ThrowIfNull(key);
             return method.Target switch
             {
-                PowerShellWasmHashtable hashtable => key is string keyText && hashtable.ContainsKey(keyText),
                 IReadOnlyDictionary<string, object?> dictionary => dictionary.ContainsKey(ToInvariantString(key)),
                 IDictionary<string, object?> dictionary => dictionary.ContainsKey(ToInvariantString(key)),
                 IDictionary dictionary => dictionary.Contains(key),
@@ -507,6 +603,120 @@ internal static class PowerShellWasmDotNetBridge
         }
 
         throw new InvalidOperationException($"Method '{method.Name}' is not available in this browser-safe runtime.");
+    }
+
+    // Only descriptors for known runtime values are exposed, never reflected Type instances or member discovery.
+    private static string? GetKnownRuntimeTypeName(object value) => value switch
+    {
+        OrderedDictionary => OrderedDictionaryType,
+        Hashtable => HashtableType,
+        PowerShellWasmCustomObject => "System.Management.Automation.PSCustomObject",
+        DictionaryEntry => "System.Collections.DictionaryEntry",
+        string => StringType,
+        bool => "System.Boolean",
+        char => "System.Char",
+        byte => "System.Byte",
+        sbyte => "System.SByte",
+        short => "System.Int16",
+        ushort => "System.UInt16",
+        int => "System.Int32",
+        uint => "System.UInt32",
+        long => "System.Int64",
+        ulong => "System.UInt64",
+        float => "System.Single",
+        double => "System.Double",
+        decimal => "System.Decimal",
+        System.Numerics.BigInteger => "System.Numerics.BigInteger",
+        DateTime => DateTimeType,
+        DateTimeOffset => DateTimeOffsetType,
+        TimeSpan => TimeSpanType,
+        TimeZoneInfo => TimeZoneInfoType,
+        _ => null
+    };
+
+    private static object ConstructDictionary(string typeName, IReadOnlyList<object?> arguments)
+    {
+        if (arguments.Count == 0)
+            return typeName == HashtableType ? new Hashtable() : new OrderedDictionary();
+        if (arguments.Count == 1)
+        {
+            if (typeName == HashtableType && arguments[0] is IDictionary dictionary and not PowerShellWasmCustomObject)
+                return new Hashtable(dictionary);
+            var capacity = ToInt32(arguments[0]);
+            return typeName == HashtableType ? new Hashtable(capacity) : new OrderedDictionary(capacity);
+        }
+        throw new InvalidOperationException($"Constructor for [{typeName}] expects zero arguments or one capacity argument.");
+    }
+
+    private static bool TryGetDictionaryInstanceMember(IDictionary dictionary, string name, out object? value)
+    {
+        value = name.ToLowerInvariant() switch
+        {
+            "count" => dictionary.Count,
+            "keys" => dictionary.Keys,
+            "values" => dictionary.Values,
+            "isreadonly" => dictionary.IsReadOnly,
+            "isfixedsize" => dictionary.IsFixedSize,
+            "issynchronized" => dictionary.IsSynchronized,
+            _ => null
+        };
+        if (value is not null) return true;
+        var common = IsMember(name, "Contains", "Add", "Remove", "Clear", "GetEnumerator", "ToString");
+        var ordered = dictionary is OrderedDictionary && IsMember(name, "Insert", "RemoveAt");
+        var hashtable = dictionary is Hashtable && IsMember(name, "ContainsKey", "ContainsValue", "Clone");
+        if (!common && !ordered && !hashtable) return false;
+        value = new PowerShellWasmDotNetMethod(DictionaryType, name, dictionary, IsStatic: false);
+        return true;
+    }
+
+    // Delegate the allowlisted dictionary operations to the same platform collections used by PowerShell literals.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L6520-L6536
+    // Mutating methods return no pipeline output; keys are never converted to strings by this bridge.
+    private static object? InvokeDictionary(PowerShellWasmDotNetMethod method, IReadOnlyList<object?> arguments, IDictionary dictionary)
+    {
+        // Method binding converts no-output arguments to null; literal and index storage retain their value semantics.
+        arguments = arguments.Select(PowerShellWasmOutput.AsNull).ToArray();
+        switch (method.Name.ToLowerInvariant())
+        {
+            case "contains":
+            case "containskey":
+                RequireArgumentCount(method, arguments, 1);
+                return dictionary.Contains(arguments[0] ?? throw new ArgumentNullException("key"));
+            case "containsvalue" when dictionary is Hashtable containsTable:
+                RequireArgumentCount(method, arguments, 1);
+                return containsTable.ContainsValue(arguments[0]);
+            case "add":
+                RequireArgumentCount(method, arguments, 2);
+                dictionary.Add(arguments[0] ?? throw new ArgumentNullException("key"), arguments[1]);
+                return PowerShellWasmOutput.NoOutput;
+            case "insert" when dictionary is OrderedDictionary insertOrdered:
+                RequireArgumentCount(method, arguments, 3);
+                insertOrdered.Insert(ToInt32(arguments[0]), arguments[1] ?? throw new ArgumentNullException("key"), arguments[2]);
+                return PowerShellWasmOutput.NoOutput;
+            case "remove":
+                RequireArgumentCount(method, arguments, 1);
+                dictionary.Remove(arguments[0] ?? throw new ArgumentNullException("key"));
+                return PowerShellWasmOutput.NoOutput;
+            case "removeat" when dictionary is OrderedDictionary removeOrdered:
+                RequireArgumentCount(method, arguments, 1);
+                removeOrdered.RemoveAt(ToInt32(arguments[0]));
+                return PowerShellWasmOutput.NoOutput;
+            case "clear":
+                RequireArgumentCount(method, arguments, 0);
+                dictionary.Clear();
+                return PowerShellWasmOutput.NoOutput;
+            case "clone" when dictionary is Hashtable cloneTable:
+                RequireArgumentCount(method, arguments, 0);
+                return cloneTable.Clone();
+            case "getenumerator":
+                RequireArgumentCount(method, arguments, 0);
+                return dictionary.GetEnumerator();
+            case "tostring":
+                RequireArgumentCount(method, arguments, 0);
+                return dictionary is Hashtable ? HashtableType : dictionary.ToString();
+            default:
+                throw new InvalidOperationException($"Method '{method.Name}' is not available in this browser-safe runtime.");
+        }
     }
 
     private static bool TryResolveTypeName(string typeName, out string fullName)

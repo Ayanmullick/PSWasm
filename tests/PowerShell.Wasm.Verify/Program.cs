@@ -5,6 +5,9 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("automatic status and error boundaries", StatusVerification.VerifyAsync),
+    ("ordered dictionaries and raw hashtable keys", OrderedDictionaryVerification.VerifyAsync),
+    ("pipeline selection stopping and cleanup", PipelineStopVerification.VerifyAsync),
     ("incremental pipeline lifecycle and timing", IncrementalPipelineVerification.VerifyAsync),
     ("output enumeration and stream capture", OutputCaptureVerification.VerifyAsync),
     ("public variable boundaries", PublicVariableBoundaryVerification.VerifyAsync),
@@ -586,7 +589,7 @@ $arm.StatusCode
 $arm.Method
 $arm.RequestUri
 $arm.Content
-$payload = @{query='AzureActivity'; timespan='PT1H'} | ConvertTo-Json -Compress
+$payload = [ordered]@{query='AzureActivity'; timespan='PT1H'} | ConvertTo-Json -Compress
 $logs = Invoke-AzRest -Uri 'https://api.loganalytics.azure.com/v1/workspaces/ws-1/query' -Method POST -Payload $payload
 $logs.Content
 $cosmos = Invoke-AzRestMethod -Uri 'https://acct.documents.azure.com/dbs/db/colls/c/docs' -Method POST -Headers @{'x-ms-version'='2018-12-31'} -ContentType 'application/query+json' -Payload '{"query":"SELECT * FROM c"}'
@@ -690,7 +693,7 @@ $shadow = @{Count='shadow'; Name='ok'}
 $shadow.Count
 $shadow['Count']
 $shadow.Keys.Count
-$Map = @{
+$Map = [ordered]@{
     '#tenant-id' = 'cosmosTenant'
     '#client-id' = 'cosmosClientId'
 }
@@ -1231,6 +1234,18 @@ $storageBinding.Property
 Get-DomValue '#tenant-id'
 $temporaryStorageBinding = Register-DomStorageBinding -Session $dom -Storage Local -Selector '#temporary' -Key 'temporary'
 Unregister-DomStorageBinding $temporaryStorageBinding
+$literalSession = @{SessionType='Dom'; Id=$dom.Id; Name=$dom.Name; Target=$dom.Target}
+$orderedMap = [ordered]@{'#ordered-map'='tenantId'}
+$orderedBinding = Register-DomStorageBinding -Session $literalSession -Storage Local -Map $orderedMap
+Get-DomValue '#ordered-map'
+"session=$($orderedBinding.SessionId -eq $dom.Id):$($orderedBinding.SessionName)"
+Unregister-DomStorageBinding $orderedBinding
+$plainPositional = Register-DomStorageBinding @{'#plain-positional'='tenantId'} -Session $dom
+Get-DomValue '#plain-positional'
+Unregister-DomStorageBinding $plainPositional
+$orderedPositional = Register-DomStorageBinding ([ordered]@{'#ordered-positional'='tenantId'}) -Session $dom
+Get-DomValue '#ordered-positional'
+Unregister-DomStorageBinding $orderedPositional
 $registration = Register-DomEvent -Session $dom -Selector '#query-form' -Event Submit -PreventDefault -ScriptBlock {
     param($Event)
     $AccountName,$DatabaseName = Get-DomValue '#account-name','#database-name'
@@ -1259,6 +1274,10 @@ Get-Command *-Dom* | Select-Object -ExpandProperty Name
         "Local",
         "Input",
         "Value",
+        "stored-tenant",
+        "stored-tenant",
+        "session=True:Main",
+        "stored-tenant",
         "stored-tenant",
         "DomEvent",
         "#query-form",
@@ -1494,9 +1513,9 @@ static async ValueTask VerifyObjectPipelineCommandsAsync()
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Select-Object -First 2 Name
 $rows = @(
-    @{Name='one'; Value=1; Enabled=$false; Tags=@('core')}
-    @{Name='two'; Value=2; Enabled=$true; Tags=@('web','api')}
-    @{Name='three'; Value=3; Enabled=$true; Tags=@('web')}
+    [ordered]@{Name='one'; Value=1; Enabled=$false; Tags=@('core')}
+    [ordered]@{Name='two'; Value=2; Enabled=$true; Tags=@('web','api')}
+    [ordered]@{Name='three'; Value=3; Enabled=$true; Tags=@('web')}
 )
 $rows | Where-Object Value -ge 2 | Select-Object -ExpandProperty Name
 $rows | Where-Object -Property Name -EQ 'two' | Select-Object -ExpandProperty Name
@@ -1606,7 +1625,7 @@ $sum = 0
 static async ValueTask VerifyJsonAndCsvCommandsAsync()
 {
     var result = await ExecuteAsync("""
-@{Name='one'; Value=2; Tags=@('a','b')} | ConvertTo-Json -Compress
+[ordered]@{Name='one'; Value=2; Tags=@('a','b')} | ConvertTo-Json -Compress
 '{"Name":"two","Value":3}' | ConvertFrom-Json | Select-Object -ExpandProperty Name
 '[1,2,3]' | ConvertFrom-Json | Where-Object { $_ -gt 1 }
 'Name,Value
@@ -1669,7 +1688,7 @@ static async ValueTask VerifyFormatCommandsAsync()
 {
     var result = await ExecuteAsync("""
 @(@{Name='one'; Value=1}, @{Name='two'; Value=20}) | Format-Table Name Value
-@{Name='list'; Value=3} | Format-List
+[ordered]@{Name='list'; Value=3} | Format-List
 'Name,Value
 csv,4' | ConvertFrom-Csv | Format-List Name Value
 @(@{Name='hide'; Value=5}) | Format-Table Name Value -HideTableHeaders
@@ -1723,7 +1742,7 @@ static async ValueTask VerifyGroupAndOutputCommandsAsync()
     Sort-Object Name |
     Select-Object Count Name |
     ConvertTo-Json -Compress
-@{Name='one'; Value=1} | Out-String
+[ordered]@{Name='one'; Value=1} | Out-String
 @('x','y') | Out-String
 """);
 
@@ -1743,7 +1762,7 @@ static async ValueTask VerifyRegionCommentsAsync()
 Write-Output (2 + 2)
 #endregion
 # region data
-@{Name='region'; Value=5} | ConvertTo-Json -Compress
+[ordered]@{Name='region'; Value=5} | ConvertTo-Json -Compress
 # endregion
 <#
 This block comment should be ignored by the tokenizer.
@@ -2409,7 +2428,7 @@ try {
     Write-Error 'stop error'
     'skipped'
 } catch {
-    $_.Message
+    $_.Exception.Message
 }
 """);
 
@@ -2433,8 +2452,7 @@ try {
         "1",
         "1 2 3",
         "1|2|3",
-        "[Error] stop error",
-        "The running command stopped because the preference variable \"ErrorActionPreference\" is set to Stop: stop error"
+        "stop error"
     ]);
 }
 
@@ -2481,7 +2499,7 @@ try {
     Write-Error 'stop error' -ErrorAction Stop
     'skipped'
 } catch {
-    $_.Message
+    $_.Exception.Message
 }
 """);
 
@@ -2521,8 +2539,7 @@ try {
         "buffer accepted",
         "whatif accepted",
         "confirm accepted",
-        "[Error] stop error",
-        "The running command stopped because the preference variable \"ErrorActionPreference\" is set to Stop: stop error"
+        "stop error"
     ]);
 }
 

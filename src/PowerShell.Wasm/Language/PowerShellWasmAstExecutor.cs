@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Collections;
+using System.Collections.Specialized;
 using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -139,7 +141,7 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         foreach (var clause in statement.Clauses)
         {
-            if (ToBoolean(await EvaluateExpressionAsync(clause.Condition, cancellationToken)))
+            if (await EvaluateConditionAsync(clause.Condition, cancellationToken))
             {
                 await ExecuteScriptAsync(clause.Body, cancellationToken);
                 return;
@@ -176,7 +178,7 @@ internal sealed class PowerShellWasmAstExecutor(
     private async ValueTask ExecuteWhileStatementAsync(WhileStatementAst statement, CancellationToken cancellationToken)
     {
         var iterations = 0;
-        while (ToBoolean(await EvaluateExpressionAsync(statement.Condition, cancellationToken)))
+        while (await EvaluateConditionAsync(statement.Condition, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (++iterations > MaximumLoopIterations)
@@ -222,7 +224,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 break;
             }
 
-            var condition = ToBoolean(await EvaluateExpressionAsync(statement.Condition, cancellationToken));
+            var condition = await EvaluateConditionAsync(statement.Condition, cancellationToken);
             if (statement.Until ? condition : !condition)
             {
                 break;
@@ -238,7 +240,7 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         var iterations = 0;
-        while (statement.Condition is null || ToBoolean(await EvaluateExpressionAsync(statement.Condition, cancellationToken)))
+        while (statement.Condition is null || await EvaluateConditionAsync(statement.Condition, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (++iterations > MaximumLoopIterations)
@@ -449,7 +451,11 @@ internal sealed class PowerShellWasmAstExecutor(
 
         if (statement.FinallyBlock is not null)
         {
-            await ExecuteScriptAsync(statement.FinallyBlock, cancellationToken);
+            // Native pipelines retain the first stopping reason while allowing finally to run.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/pipeline.cs#L1445-L1458
+            try { await ExecuteScriptAsync(statement.FinallyBlock, cancellationToken); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) when (pending is StopUpstreamFlowException) { }
         }
 
         if (pending is not null)
@@ -487,9 +493,8 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private async ValueTask<bool> ExecuteStatementAndGetSuccessAsync(StatementAst statement, CancellationToken cancellationToken)
     {
-        var errorCount = executionContext.ErrorCount;
         await ExecuteStatementWithStatusAsync(statement, [], cancellationToken);
-        return executionContext.ErrorCount == errorCount;
+        return executionContext.LastCommandSucceeded;
     }
 
     private async ValueTask ExecuteStatementWithStatusAsync(
@@ -497,14 +502,10 @@ internal sealed class PowerShellWasmAstExecutor(
         IReadOnlyList<object?> pipelineInput,
         CancellationToken cancellationToken)
     {
-        var errorCount = executionContext.ErrorCount;
-        var failureSignalCount = executionContext.FailureSignalCount;
         try
         {
             await ExecuteStatementAsync(statement, pipelineInput, cancellationToken);
-            executionContext.SetLastCommandSucceeded(
-                executionContext.ErrorCount == errorCount &&
-                executionContext.FailureSignalCount == failureSignalCount);
+            if (ShouldSetSuccess(statement)) executionContext.SetLastCommandSucceeded(true);
         }
         catch (OperationCanceledException)
         {
@@ -522,8 +523,122 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
+    // Adapt Compiler.ShouldSetExecutionStatusToSuccess: commands own their status; expressions reset only where native does.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L3256-L3404
+    private static bool ShouldSetSuccess(StatementAst statement) => statement switch
+    {
+        ExpressionStatementAst expression => ShouldSetSuccess(expression.Expression),
+        AssignmentStatementAst assignment => ShouldSetSuccess(assignment.Value),
+        SettableAssignmentStatementAst assignment => ShouldSetSuccess(assignment.Value),
+        CompoundAssignmentStatementAst assignment => ShouldSetSuccess(assignment.Value),
+        SettableCompoundAssignmentStatementAst assignment => ShouldSetSuccess(assignment.Value),
+        ParallelAssignmentStatementAst assignment => ShouldSetSuccess(assignment.Value),
+        StatementAssignmentAst assignment => ShouldSetSuccess(assignment.Statement),
+        SettableStatementAssignmentAst assignment => ShouldSetSuccess(assignment.Statement),
+        ParallelStatementAssignmentAst assignment => ShouldSetSuccess(assignment.Statement),
+        VariableIncrementStatementAst or SettableIncrementStatementAst => true,
+        PipelineStatementAst { Elements: [ExpressionPipelineElementAst expression] } => ShouldSetSuccess(expression.Expression),
+        _ => false
+    };
+
+    private static bool ShouldSetSuccess(ExpressionAst expression) => expression switch
+    {
+        ParenthesizedExpressionAst parenthesized => ShouldSetSuccess(parenthesized.Expression),
+        StatementExpressionAst statement => ShouldSetSuccess(statement.Statement),
+        SubexpressionAst subexpression => subexpression.Script.Statements.Count == 0,
+        ScriptExpressionAst script => script.Script.Statements.Count == 0,
+        ArraySubexpressionAst array => array.Script.Statements.Count == 0 ||
+            (array.Script.Statements.Count == 1 && ShouldSetSuccess(array.Script.Statements[0])),
+        AssignmentExpressionAst assignment => ShouldSetSuccess(assignment.Value),
+        SettableAssignmentExpressionAst assignment => ShouldSetSuccess(assignment.Value),
+        CompoundAssignmentExpressionAst assignment => ShouldSetSuccess(assignment.Value),
+        SettableCompoundAssignmentExpressionAst assignment => ShouldSetSuccess(assignment.Value),
+        _ => true
+    };
+
+    // Native condition capture restores success after command-containing conditions, including a short-circuited command.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L2385-L2408
+    private async ValueTask<bool> EvaluateConditionAsync(ExpressionAst expression, CancellationToken cancellationToken)
+    {
+        var result = ToBoolean(await EvaluateExpressionAsync(expression, cancellationToken));
+        if (ContainsCommand(expression)) executionContext.SetLastCommandSucceeded(true);
+        return result;
+    }
+
+    // Traverse our explicit AST, without reflection or entering deferred script-block/function bodies.
+    private static bool ContainsCommand(PowerShellWasmAst? ast) => ast switch
+    {
+        CommandAst or CommandStatementAst or CommandPipelineElementAst => true,
+        ScriptAst script => script.Statements.Any(ContainsCommand),
+        ExpressionStatementAst statement => ContainsCommand(statement.Expression),
+        ExpressionPipelineElementAst element => ContainsCommand(element.Expression),
+        PipelineStatementAst pipeline => pipeline.Elements.Any(ContainsCommand),
+        PipelineChainStatementAst chain => ContainsCommand(chain.First) || chain.Clauses.Any(ContainsCommand),
+        PipelineChainClauseAst clause => ContainsCommand(clause.Statement),
+        AssignmentStatementAst assignment => ContainsCommand(assignment.Value),
+        SettableAssignmentStatementAst assignment => ContainsCommand(assignment.Target) || ContainsCommand(assignment.Value),
+        CompoundAssignmentStatementAst assignment => ContainsCommand(assignment.Value),
+        SettableCompoundAssignmentStatementAst assignment => ContainsCommand(assignment.Target) || ContainsCommand(assignment.Value),
+        ParallelAssignmentStatementAst assignment => ContainsCommand(assignment.Value),
+        StatementAssignmentAst assignment => ContainsCommand(assignment.Statement),
+        SettableStatementAssignmentAst assignment => ContainsCommand(assignment.Target) || ContainsCommand(assignment.Statement),
+        ParallelStatementAssignmentAst assignment => ContainsCommand(assignment.Statement),
+        SettableIncrementStatementAst increment => ContainsCommand(increment.Target),
+        TryStatementAst statement => ContainsCommand(statement.TryBlock) || statement.CatchBlocks.Any(ContainsCommand) || ContainsCommand(statement.FinallyBlock),
+        IfStatementAst statement => statement.Clauses.Any(ContainsCommand) || ContainsCommand(statement.ElseBlock),
+        IfClauseAst clause => ContainsCommand(clause.Condition) || ContainsCommand(clause.Body),
+        ForEachStatementAst statement => ContainsCommand(statement.Collection) || ContainsCommand(statement.Body),
+        WhileStatementAst statement => ContainsCommand(statement.Condition) || ContainsCommand(statement.Body),
+        DoWhileStatementAst statement => ContainsCommand(statement.Condition) || ContainsCommand(statement.Body),
+        ForStatementAst statement => ContainsCommand(statement.Initializer) || ContainsCommand(statement.Condition) || ContainsCommand(statement.Iterator) || ContainsCommand(statement.Body),
+        SwitchStatementAst statement => ContainsCommand(statement.Input) || statement.Clauses.Any(ContainsCommand) || statement.DefaultBlocks.Any(ContainsCommand),
+        SwitchClauseAst clause => ContainsCommand(clause.Pattern) || ContainsCommand(clause.Body),
+        ReturnStatementAst statement => ContainsCommand(statement.Expression),
+        AssignmentExpressionAst assignment => ContainsCommand(assignment.Value),
+        SettableAssignmentExpressionAst assignment => ContainsCommand(assignment.Target) || ContainsCommand(assignment.Value),
+        CompoundAssignmentExpressionAst assignment => ContainsCommand(assignment.Value),
+        SettableCompoundAssignmentExpressionAst assignment => ContainsCommand(assignment.Target) || ContainsCommand(assignment.Value),
+        HashtableExpressionAst table => table.Entries.Any(ContainsCommand),
+        HashtableEntryAst entry => ContainsCommand(entry.Key) || ContainsCommand(entry.Value),
+        TypedHashtableExpressionAst table => ContainsCommand(table.Hashtable),
+        ArrayExpressionAst array => array.Items.Any(ContainsCommand),
+        ArraySubexpressionAst array => ContainsCommand(array.Script),
+        SubexpressionAst subexpression => ContainsCommand(subexpression.Script),
+        ParenthesizedExpressionAst parenthesized => ContainsCommand(parenthesized.Expression),
+        StatementExpressionAst statement => ContainsCommand(statement.Statement),
+        ScriptExpressionAst script => ContainsCommand(script.Script),
+        CastExpressionAst cast => ContainsCommand(cast.Operand),
+        MemberAccessExpressionAst member => ContainsCommand(member.Target),
+        ComputedMemberAccessExpressionAst member => ContainsCommand(member.Target) || ContainsCommand(member.MemberName),
+        NullConditionalMemberAccessExpressionAst member => ContainsCommand(member.Target),
+        StaticMemberAccessExpressionAst member => ContainsCommand(member.Target),
+        MethodInvocationExpressionAst method => ContainsCommand(method.Target) || method.Arguments.Any(ContainsCommand),
+        IndexExpressionAst index => ContainsCommand(index.Target) || ContainsCommand(index.Index),
+        UnaryExpressionAst unary => ContainsCommand(unary.Operand),
+        IncrementExpressionAst increment => ContainsCommand(increment.Target),
+        TernaryExpressionAst ternary => ContainsCommand(ternary.Condition) || ContainsCommand(ternary.IfTrue) || ContainsCommand(ternary.IfFalse),
+        BinaryExpressionAst binary => ContainsCommand(binary.Left) || ContainsCommand(binary.Right),
+        StringExpressionAst { IsExpandable: true } text => ContainsExpandableCommand(text),
+        _ => false
+    };
+
+    private static bool ContainsExpandableCommand(StringExpressionAst text)
+    {
+        var value = text.Value;
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] != '$' || text.LiteralDollarOffsets?.Contains(index) == true ||
+                !TryReadSubexpression(value, index, out var script, out var nextIndex)) continue;
+            if (ContainsCommand(new PowerShellWasmParser().Parse(script))) return true;
+            index = nextIndex - 1;
+        }
+        return false;
+    }
+
     private async ValueTask ExecutePipelineAsync(PipelineStatementAst pipeline, CancellationToken cancellationToken)
     {
+        var status = new PowerShellWasmExecutionContext.PipelineStatus();
+        using var statusScope = executionContext.WithPipelineStatus(status);
         var caller = executionContext.CaptureActivation();
         var stages = new List<PipelineStage>();
         var preparedStages = new List<PreparedCommand>();
@@ -553,12 +668,34 @@ internal sealed class PowerShellWasmAstExecutor(
                 stages.Add(new PipelineStage(executionContext, caller, prepared, stages.Count > 0));
             for (var index = 0; index < stages.Count - 1; index++) stages[index].Next = stages[index + 1];
             // Begin is lazy: an upstream Begin record starts its consumer before control returns to the producer.
-            foreach (var stage in stages) await stage.BeginAsync(cancellationToken);
-            foreach (var stage in stages) await stage.CompleteAsync(cancellationToken);
+            // Native Select-Object stops upstream stages, then completes only the stages after the requester.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/pipeline.cs#L606-L658
+            var nextBegin = 0;
+            var nextComplete = 0;
+            while (nextComplete < stages.Count)
+            {
+                try
+                {
+                    while (nextBegin < stages.Count) await stages[nextBegin++].BeginAsync(cancellationToken);
+                    while (nextComplete < stages.Count) await stages[nextComplete++].CompleteAsync(cancellationToken);
+                }
+                catch (StopUpstreamFlowException stop) when (stages.Contains(stop.Stage))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    status.Failed = stop.PipelineFailed;
+                    var afterRequester = stages.IndexOf(stop.Stage) + 1;
+                    nextBegin = Math.Max(nextBegin, afterRequester);
+                    nextComplete = Math.Max(nextComplete, afterRequester);
+                }
+            }
         }
+        catch (OperationCanceledException) { throw; }
+        catch (ControlFlowException) { throw; }
+        catch { status.Failed = true; throw; }
         finally
         {
             foreach (var stage in stages) stage.Dispose();
+            executionContext.SetLastCommandSucceeded(!status.Failed);
         }
     }
 
@@ -567,12 +704,26 @@ internal sealed class PowerShellWasmAstExecutor(
         IReadOnlyList<object?> pipelineInput,
         CancellationToken cancellationToken)
     {
-        var caller = executionContext.CaptureActivation();
-        var prepared = await PrepareCommandAsync(commandAst, cancellationToken);
-        using var stage = new PipelineStage(executionContext, caller, prepared, pipelineInput.Count > 0);
-        await stage.BeginAsync(cancellationToken);
-        foreach (var record in pipelineInput) await stage.ProcessAsync(record, cancellationToken);
-        await stage.CompleteAsync(cancellationToken);
+        var status = new PowerShellWasmExecutionContext.PipelineStatus();
+        using var statusScope = executionContext.WithPipelineStatus(status);
+        try
+        {
+            var caller = executionContext.CaptureActivation();
+            var prepared = await PrepareCommandAsync(commandAst, cancellationToken);
+            using var stage = new PipelineStage(executionContext, caller, prepared, pipelineInput.Count > 0);
+            await stage.BeginAsync(cancellationToken);
+            foreach (var record in pipelineInput) await stage.ProcessAsync(record, cancellationToken);
+            await stage.CompleteAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (ControlFlowException) { throw; }
+        catch { status.Failed = true; throw; }
+        finally
+        {
+            // Nested commands do not fail their caller's pipeline merely by writing a nonterminating error.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L521-L535
+            executionContext.SetLastCommandSucceeded(!status.Failed);
+        }
     }
 
     private async ValueTask<PreparedCommand> PrepareCommandAsync(CommandAst commandAst, CancellationToken cancellationToken)
@@ -812,6 +963,7 @@ internal sealed class PowerShellWasmAstExecutor(
         private readonly PowerShellWasmCommonParameters.Invocation _captures;
         private readonly IPowerShellWasmPipelineProcessor _processor;
         private bool _begun;
+        private bool _completed;
         internal PipelineStage? Next { get; set; }
 
         internal PipelineStage(PowerShellWasmExecutionContext context, PowerShellWasmExecutionContext.Activation caller,
@@ -833,11 +985,23 @@ internal sealed class PowerShellWasmAstExecutor(
 
         internal async ValueTask ProcessAsync(object? record, CancellationToken token)
         {
+            token.ThrowIfCancellationRequested();
+            if (_processor.IsInputComplete) throw new StopUpstreamFlowException(this, _caller.Status?.Failed == true);
             await BeginAsync(token);
             await InvokeAsync(ct => _processor.ProcessAsync(record, ct), token);
+            if (_processor.IsInputComplete)
+            {
+                await CompleteAsync(token);
+                throw new StopUpstreamFlowException(this, _caller.Status?.Failed == true);
+            }
         }
 
-        internal ValueTask CompleteAsync(CancellationToken token) => InvokeAsync(_processor.CompleteAsync, token);
+        internal async ValueTask CompleteAsync(CancellationToken token)
+        {
+            if (_completed) return;
+            _completed = true;
+            await InvokeAsync(_processor.CompleteAsync, token);
+        }
 
         private async ValueTask InvokeAsync(Func<CancellationToken, ValueTask> invoke, CancellationToken token)
         {
@@ -849,6 +1013,7 @@ internal sealed class PowerShellWasmAstExecutor(
             using var output = _context.RouteOutput(EmitAsync);
             try { await invoke(token); }
             catch (OperationCanceledException) { throw; }
+            catch (ControlFlowException) { throw; }
             catch (Exception error) { _context.RecordException(error); throw; }
         }
 
@@ -928,7 +1093,7 @@ internal sealed class PowerShellWasmAstExecutor(
             case NumberExpressionAst number:
                 return number.Value;
             case StringExpressionAst text:
-                return text.IsExpandable ? await ExpandStringAsync(text.Value, cancellationToken) : text.Value;
+                return text.IsExpandable ? await ExpandStringAsync(text, cancellationToken) : text.Value;
             case VariableExpressionAst variable:
                 return variable.IsEnvironment
                     ? executionContext.GetEnvironmentVariable(variable.Name) ?? string.Empty
@@ -1133,7 +1298,9 @@ internal sealed class PowerShellWasmAstExecutor(
             {
                 var receiver = await EvaluateExpressionAsync(index.Target, cancellationToken);
                 var key = await EvaluateExpressionAsync(index.Index, cancellationToken);
-                return new AssignmentTarget(() => EvaluateIndex(receiver, key), value => SetIndexValue(receiver, key, value));
+                var keyOnly = HasObjectIndexConstraint(index.Index);
+                return new AssignmentTarget(() => EvaluateIndex(receiver, key, keyOnly),
+                    value => SetIndexValue(receiver, key, value, keyOnly));
             }
             default:
                 throw new InvalidOperationException("Only variables, members, and indexers can be assigned in this browser-safe runtime.");
@@ -1145,13 +1312,24 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var result = new PowerShellWasmHashtable();
+        await PopulateDictionaryAsync(result, hashtable, cancellationToken);
+        return result;
+    }
+
+    // Behavioral guidance: literal keys retain their types and values are evaluated before duplicate validation.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L6520-L6547
+    // Browser adaptation uses BCL dictionaries with the same case-insensitive string comparer, without ETS.
+    private async ValueTask PopulateDictionaryAsync(IDictionary result, HashtableExpressionAst hashtable,
+        CancellationToken cancellationToken)
+    {
         foreach (var entry in hashtable.Entries)
         {
-            var key = ToInvariantString(await EvaluateExpressionAsync(entry.Key, cancellationToken));
-            result[key] = await EvaluateExpressionAsync(entry.Value, cancellationToken);
+            var key = PowerShellWasmOutput.AsNull(await EvaluateExpressionAsync(entry.Key, cancellationToken));
+            var value = await EvaluateExpressionAsync(entry.Value, cancellationToken);
+            if (key is null) throw new InvalidOperationException("A hashtable key cannot be null.");
+            if (result.Contains(key)) throw new InvalidOperationException($"Duplicate key '{key}' in hashtable literal.");
+            result.Add(key, value);
         }
-
-        return result;
     }
 
     private async ValueTask<object> EvaluateTypedHashtableAsync(
@@ -1164,17 +1342,29 @@ internal sealed class PowerShellWasmAstExecutor(
                 $"Typed hashtable literal [{typedHashtable.TypeName}]@{{}} is not available in this browser-safe runtime.");
         }
 
-        var values = await EvaluateHashtableAsync(typedHashtable.Hashtable, cancellationToken);
         var typeName = typedHashtable.TypeName.Trim();
-        return typeName.Equals("pscustomobject", StringComparison.OrdinalIgnoreCase) ||
-            typeName.Equals("System.Management.Automation.PSCustomObject", StringComparison.OrdinalIgnoreCase)
-            ? new PowerShellWasmCustomObject(values) : values;
+        var custom = typeName.Equals("pscustomobject", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("System.Management.Automation.PSCustomObject", StringComparison.OrdinalIgnoreCase);
+        if (custom || typeName.Equals("ordered", StringComparison.OrdinalIgnoreCase))
+        {
+            var values = new OrderedDictionary(StringComparer.OrdinalIgnoreCase);
+            await PopulateDictionaryAsync(values, typedHashtable.Hashtable, cancellationToken);
+            return custom ? new PowerShellWasmCustomObject(values) : values;
+        }
+        var table = await EvaluateHashtableAsync(typedHashtable.Hashtable, cancellationToken);
+        return typeName.Equals("psobject", StringComparison.OrdinalIgnoreCase) ||
+            typeName.Equals("System.Management.Automation.PSObject", StringComparison.OrdinalIgnoreCase)
+            ? table : CastValue(typeName, table)!;
     }
 
     private static bool IsSupportedTypedHashtable(string typeName)
     {
         var normalized = typeName.Trim();
         return normalized.Equals("ordered", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("hashtable", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("System.Collections.Hashtable", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("Collections.Specialized.OrderedDictionary", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("System.Collections.Specialized.OrderedDictionary", StringComparison.OrdinalIgnoreCase) ||
             normalized.Equals("pscustomobject", StringComparison.OrdinalIgnoreCase) ||
             normalized.Equals("psobject", StringComparison.OrdinalIgnoreCase) ||
             normalized.Equals("System.Management.Automation.PSCustomObject", StringComparison.OrdinalIgnoreCase) ||
@@ -1204,8 +1394,8 @@ internal sealed class PowerShellWasmAstExecutor(
             var value = await EvaluateExpressionAsync(expression.Expression, cancellationToken);
             if (PowerShellWasmOutput.IsNoOutput(value)) return [];
             if (value is object?[] values) return values;
-            return value is System.Collections.IEnumerable items and not string and not System.Collections.IDictionary
-                and not IReadOnlyDictionary<string, object?> ? items.Cast<object?>().ToArray() : [value];
+            return value is (IEnumerable or IEnumerator) and not string and not System.Collections.IDictionary
+                and not IReadOnlyDictionary<string, object?> ? Enumerate(value).ToArray() : [value];
         }
 
         var output = new List<object?>();
@@ -1277,7 +1467,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 foreach (var statement in scriptBlock.Body.Statements)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    await ExecuteStatementAsync(statement, [], cancellationToken);
+                    await ExecuteStatementWithStatusAsync(statement, [], cancellationToken);
                 }
             }
             catch (ReturnFlowException)
@@ -1508,6 +1698,12 @@ internal sealed class PowerShellWasmAstExecutor(
         if (normalizedType == "object") return value;
         if (normalizedType == "string" && PowerShellWasmOutput.IsNoOutput(value)) return null;
         value = PowerShellWasmOutput.AsNull(value);
+        if (normalizedType is "pscustomobject" or "system.management.automation.pscustomobject")
+        {
+            if (value is null or PowerShellWasmCustomObject) return value;
+            if (value is IDictionary properties) return new PowerShellWasmCustomObject(properties);
+            throw new InvalidOperationException("A custom object cast requires a dictionary in this browser-safe runtime.");
+        }
         if (PowerShellWasmDotNetBridge.TryCast(typeName, value, out var dotNetValue))
         {
             return dotNetValue;
@@ -1656,14 +1852,10 @@ internal sealed class PowerShellWasmAstExecutor(
 
         if (target is System.Collections.IDictionary legacyDictionary)
         {
-            foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
+            if (legacyDictionary.Contains(memberName))
             {
-                if (string.Equals(Convert.ToString(entry.Key, CultureInfo.InvariantCulture), memberName,
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    value = entry.Value;
-                    return true;
-                }
+                value = legacyDictionary[memberName];
+                return true;
             }
         }
 
@@ -1686,13 +1878,13 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         value = null;
         if (target is string or byte[] or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
-            target is not System.Collections.IEnumerable enumerable)
+            target is not (IEnumerable or IEnumerator))
         {
             return false;
         }
 
         var selected = new List<object?>();
-        foreach (var item in enumerable)
+        foreach (var item in Enumerate(target))
         {
             if (item is null)
             {
@@ -1871,13 +2063,13 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         value = null;
         if (target is string or byte[] or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
-            target is not System.Collections.IEnumerable enumerable)
+            target is not (IEnumerable or IEnumerator))
         {
             return false;
         }
 
         var selected = new List<object?>();
-        foreach (var item in enumerable)
+        foreach (var item in Enumerate(target))
         {
             if (!PowerShellWasmDotNetBridge.TryInvoke(item, arguments, out var itemValue))
             {
@@ -1895,12 +2087,21 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         var target = await EvaluateExpressionAsync(index.Target, cancellationToken);
         var indexValue = await EvaluateExpressionAsync(index.Index, cancellationToken);
-        return EvaluateIndex(target, indexValue);
+        return EvaluateIndex(target, indexValue, HasObjectIndexConstraint(index.Index));
     }
 
-    private static object? EvaluateIndex(object? target, object? indexValue)
+    // Explicit object casts select OrderedDictionary's key overload even when the runtime value is an Int32.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L6597-L6620
+    private static bool HasObjectIndexConstraint(ExpressionAst index) => index switch
     {
-        if (TryGetDictionaryIndex(target, indexValue, out var dictionaryValue))
+        ParenthesizedExpressionAst parenthesized => HasObjectIndexConstraint(parenthesized.Expression),
+        CastExpressionAst cast => NormalizeCastTypeName(cast.TypeName) is "object" or "psobject" or "system.management.automation.psobject",
+        _ => false
+    };
+
+    private static object? EvaluateIndex(object? target, object? indexValue, bool keyOnly = false)
+    {
+        if (TryGetDictionaryIndex(target, indexValue, keyOnly, out var dictionaryValue))
         {
             return dictionaryValue;
         }
@@ -1934,30 +2135,35 @@ internal sealed class PowerShellWasmAstExecutor(
         };
     }
 
-    private static bool TryGetDictionaryIndex(object? target, object? index, out object? value)
+    private static bool TryGetDictionaryIndex(object? target, object? index, bool keyOnly, out object? value)
     {
         value = null;
-        if (!TryAsDictionary(target, out var dictionary))
+        var stringKeys = target is IDictionary<string, object?> or IReadOnlyDictionary<string, object?>;
+        var dictionary = target as IDictionary;
+        if (dictionary is null && target is IReadOnlyDictionary<string, object?> properties)
+            dictionary = new Dictionary<string, object?>(properties, StringComparer.OrdinalIgnoreCase);
+        if (dictionary is null)
         {
             return false;
         }
-
-        var selected = new List<object?>();
-        foreach (var keyValue in Enumerate(index))
+        index = PowerShellWasmOutput.AsNull(index);
+        if (index is null) throw new InvalidOperationException("The dictionary index cannot be null.");
+        object? Read(object? key)
         {
-            var key = ToInvariantString(keyValue);
-            if (TryGetDictionaryValue(dictionary, key, out var item))
+            if (key is null) return null;
+            if (stringKeys) key = ToInvariantString(key);
+            if (!keyOnly && dictionary is OrderedDictionary ordered && key is int position)
             {
-                selected.Add(item);
+                // Native ordered reads permit negative indexes; writes use the strict BCL indexer.
+                // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L4157-L4193
+                if (position < 0) position += ordered.Count;
+                return position >= 0 && position < ordered.Count ? ordered[position] : null;
             }
+            return dictionary.Contains(key) ? dictionary[key] : null;
         }
-
-        value = selected.Count switch
-        {
-            0 => null,
-            1 => selected[0],
-            _ => selected.ToArray()
-        };
+        // A slice keeps its array shape, including missing/null slots and zero- or one-element slices.
+        value = index is IEnumerable and not string and not IDictionary
+            ? Enumerate(index).Select(Read).ToArray() : Read(index);
         return true;
     }
 
@@ -2043,12 +2249,12 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         items = [];
         if (value is null or string or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
-            value is not System.Collections.IEnumerable enumerable)
+            value is not (IEnumerable or IEnumerator))
         {
             return false;
         }
 
-        items = enumerable.Cast<object?>();
+        items = Enumerate(value);
         return true;
     }
 
@@ -2294,16 +2500,19 @@ internal sealed class PowerShellWasmAstExecutor(
                 throw new InvalidOperationException("A dictionary can only be added to another dictionary.");
             }
 
-            var result = new PowerShellWasmHashtable();
+            // Native dictionary addition preserves an ordered left operand and rejects duplicate keys.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L1407-L1461
+            IDictionary result = leftDictionary is OrderedDictionary
+                ? new OrderedDictionary(StringComparer.OrdinalIgnoreCase) : new PowerShellWasmHashtable();
             foreach (var dictionary in new[] { leftDictionary, rightDictionary })
             {
                 foreach (System.Collections.DictionaryEntry entry in dictionary)
                 {
-                    var key = ToInvariantString(entry.Key);
-                    if (!result.TryAdd(key, entry.Value))
+                    if (result.Contains(entry.Key))
                     {
-                        throw new InvalidOperationException($"The key '{key}' already exists in the combined dictionary.");
+                        throw new InvalidOperationException($"The key '{entry.Key}' already exists in the combined dictionary.");
                     }
+                    result.Add(entry.Key, entry.Value);
                 }
             }
 
@@ -2385,12 +2594,12 @@ internal sealed class PowerShellWasmAstExecutor(
     }
 
     private static bool IsOperatorCollection(object? value) =>
-        value is System.Collections.IEnumerable and not string and not System.Collections.IDictionary
+        value is (IEnumerable or IEnumerator) and not string and not System.Collections.IDictionary
             and not IReadOnlyDictionary<string, object?>;
 
     // Unlike pipeline enumeration, concatenation retains explicit nulls and enumerates byte arrays.
     private static IEnumerable<object?> EnumerateOperatorOperand(object? value) =>
-        IsOperatorCollection(value) ? ((System.Collections.IEnumerable)value!).Cast<object?>() : [value];
+        IsOperatorCollection(value) ? Enumerate(value) : [value];
 
     private static object ToArithmeticNumber(object? value)
     {
@@ -2726,24 +2935,15 @@ internal sealed class PowerShellWasmAstExecutor(
         var match = regex.Match(ToInvariantString(left));
         if (match.Success)
         {
-            var matches = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["0"] = match.Value
-            };
-
-            for (var i = 1; i < match.Groups.Count; i++)
-            {
-                if (match.Groups[i].Success)
-                {
-                    matches[i.ToString(CultureInfo.InvariantCulture)] = match.Groups[i].Value;
-                }
-            }
-
-            foreach (var name in regex.GetGroupNames().Where(static name => !int.TryParse(name, out _)))
+            // Native $Matches uses integer keys for numbered groups and string keys for named groups.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/lang/parserutils.cs#L1193-L1214
+            var matches = new Hashtable(StringComparer.CurrentCultureIgnoreCase);
+            foreach (var name in regex.GetGroupNames())
             {
                 if (match.Groups[name].Success)
                 {
-                    matches[name] = match.Groups[name].Value;
+                    object key = int.TryParse(name, out var number) ? number : name;
+                    matches[key] = match.Groups[name].Value;
                 }
             }
 
@@ -2802,6 +3002,12 @@ internal sealed class PowerShellWasmAstExecutor(
             yield break;
         }
 
+        if (value is IEnumerator iterator)
+        {
+            while (iterator.MoveNext()) yield return iterator.Current;
+            yield break;
+        }
+
         yield return value;
     }
 
@@ -2827,14 +3033,23 @@ internal sealed class PowerShellWasmAstExecutor(
             return enumerable.Cast<object?>().ToArray();
         }
 
+        if (value is IEnumerator) return Enumerate(value).ToArray();
+
         return [value];
     }
 
     private static bool TryGetCollectionProperty(object? target, string memberName, out object? value)
     {
         value = null;
-        if (TryAsDictionary(target, out var dictionary))
+        // Enumerators have no Count property: member access enumerates their current entries instead.
+        if (target is IEnumerator) return false;
+        if (target is IDictionary dictionary)
         {
+            if (target is Hashtable or OrderedDictionary)
+            {
+                if (memberName.Equals("Length", StringComparison.OrdinalIgnoreCase)) { value = 1; return true; }
+                if (memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase)) return true;
+            }
             if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
                 memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ||
                 memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase))
@@ -2851,7 +3066,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
             if (memberName.Equals("Values", StringComparison.OrdinalIgnoreCase))
             {
-                value = dictionary.Values.ToArray();
+                value = dictionary.Values.Cast<object?>().ToArray();
                 return true;
             }
         }
@@ -2916,9 +3131,6 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    private static bool TryGetDictionaryValue(Dictionary<string, object?> dictionary, string key, out object? value) =>
-        dictionary.TryGetValue(key, out value);
-
     private static void SetMemberValue(object? target, string memberName, object? value)
     {
         if (TrySetDictionaryValue(target, memberName, value))
@@ -2930,8 +3142,17 @@ internal sealed class PowerShellWasmAstExecutor(
             $"Member '{memberName}' cannot be assigned in this browser-safe runtime.");
     }
 
-    private static void SetIndexValue(object? target, object? index, object? value)
+    private static void SetIndexValue(object? target, object? index, object? value, bool keyOnly = false)
     {
+        if (target is IDictionary dictionary)
+        {
+            index = PowerShellWasmOutput.AsNull(index);
+            if (index is null) throw new InvalidOperationException("The dictionary index cannot be null.");
+            if (target is IDictionary<string, object?>) index = ToInvariantString(index);
+            if (!keyOnly && dictionary is OrderedDictionary ordered && index is int position) ordered[position] = value;
+            else dictionary[index] = value;
+            return;
+        }
         var indexes = Enumerate(index).ToArray();
         if (indexes.Length != 1)
         {
@@ -2986,21 +3207,13 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static bool TrySetDictionaryValue(object? target, string key, object? value)
     {
+        value = PowerShellWasmOutput.AsNull(value);
         switch (target)
         {
             case IDictionary<string, object?> genericDictionary:
                 genericDictionary[key] = value;
                 return true;
             case System.Collections.IDictionary legacyDictionary:
-                foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
-                {
-                    if (string.Equals(ToInvariantString(entry.Key), key, StringComparison.OrdinalIgnoreCase))
-                    {
-                        legacyDictionary[entry.Key] = value;
-                        return true;
-                    }
-                }
-
                 legacyDictionary[key] = value;
                 return true;
             default:
@@ -3008,12 +3221,13 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    private async ValueTask<string> ExpandStringAsync(string value, CancellationToken cancellationToken)
+    private async ValueTask<string> ExpandStringAsync(StringExpressionAst text, CancellationToken cancellationToken)
     {
+        var value = text.Value;
         var builder = new StringBuilder();
         for (var i = 0; i < value.Length;)
         {
-            if (value[i] != '$')
+            if (value[i] != '$' || text.LiteralDollarOffsets?.Contains(i) == true)
             {
                 builder.Append(value[i++]);
                 continue;
@@ -3158,6 +3372,14 @@ internal sealed class PowerShellWasmAstExecutor(
         name = string.Empty;
         nextIndex = start;
         var position = start + 1;
+        // Native $? consumes exactly one variable-name character, even when ordinary name text follows it.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/tokenizer.cs#L3014-L3018
+        if (position < value.Length && value[position] == '?')
+        {
+            name = "?";
+            nextIndex = position + 1;
+            return true;
+        }
         var hasEnvironmentScope = false;
         if (position + 4 <= value.Length && value.AsSpan(position, 4).Equals("env:", StringComparison.OrdinalIgnoreCase))
         {
@@ -3184,6 +3406,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private static bool IsVariableName(string name, bool allowColon)
     {
+        if (name == "?") return true;
         if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             return name.Length > 4 && IsVariableName(name[4..], allowColon: false);
@@ -3295,6 +3518,12 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private abstract class ControlFlowException : Exception
     {
+    }
+
+    private sealed class StopUpstreamFlowException(PipelineStage stage, bool pipelineFailed) : ControlFlowException
+    {
+        internal PipelineStage Stage { get; } = stage;
+        internal bool PipelineFailed { get; } = pipelineFailed;
     }
 
     private sealed class ReturnFlowException : ControlFlowException

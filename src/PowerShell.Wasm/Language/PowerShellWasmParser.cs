@@ -1960,6 +1960,8 @@ public sealed class PowerShellWasmParser
             }
 
             _position = afterTypePosition;
+            if (typeName.Equals("ordered", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The ordered attribute is valid only on a hashtable literal.");
             cast = new CastExpressionAst(typeName, ParseUnary());
             return true;
         }
@@ -2058,7 +2060,8 @@ public sealed class PowerShellWasmParser
             {
                 PowerShellWasmTokenKind.Number => ParseNumber(token.Text),
                 PowerShellWasmTokenKind.StringLiteral => new StringExpressionAst(token.Text, IsExpandable: false),
-                PowerShellWasmTokenKind.ExpandableStringLiteral => new StringExpressionAst(token.Text, IsExpandable: true),
+                PowerShellWasmTokenKind.ExpandableStringLiteral => new StringExpressionAst(token.Text, IsExpandable: true)
+                    { LiteralDollarOffsets = token.LiteralDollarOffsets },
                 PowerShellWasmTokenKind.Variable => ParseVariable(token.Text),
                 PowerShellWasmTokenKind.Identifier => new BareWordExpressionAst(token.Text),
                 PowerShellWasmTokenKind.Parameter => new BareWordExpressionAst("-" + token.Text),
@@ -2128,7 +2131,8 @@ public sealed class PowerShellWasmParser
             {
                 var token = Current;
                 _position++;
-                return new StringExpressionAst(token.Text, token.Kind == PowerShellWasmTokenKind.ExpandableStringLiteral);
+                return new StringExpressionAst(token.Text, token.Kind == PowerShellWasmTokenKind.ExpandableStringLiteral)
+                    { LiteralDollarOffsets = token.LiteralDollarOffsets };
             }
 
             if (Current.Kind == PowerShellWasmTokenKind.Variable)
@@ -2209,6 +2213,7 @@ public sealed class PowerShellWasmParser
         private HashtableExpressionAst ParseHashtable()
         {
             var entries = new List<HashtableEntryAst>();
+            var constantKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             while (Current.Kind is not PowerShellWasmTokenKind.RBrace and not PowerShellWasmTokenKind.EndOfInput)
             {
                 SkipExpressionSeparators();
@@ -2218,6 +2223,17 @@ public sealed class PowerShellWasmParser
                 }
 
                 var key = ReadHashtableKeyExpression();
+                // Native constant-key validation compares textual keys; parenthesized/dynamic keys validate at runtime.
+                // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/SemanticChecks.cs#L1112-L1137
+                var constantKey = key switch
+                {
+                    BareWordExpressionAst word => word.Value,
+                    StringExpressionAst text when !text.IsExpandable || !text.Value.Contains('$') => text.Value,
+                    NumberExpressionAst number => Convert.ToString(number.Value, CultureInfo.InvariantCulture),
+                    _ => null
+                };
+                if (constantKey is not null && !constantKeys.Add(constantKey))
+                    throw new InvalidOperationException($"Duplicate key '{constantKey}' in hashtable literal.");
                 Consume(PowerShellWasmTokenKind.Equals);
                 entries.Add(new(key, ParseAssignment()));
                 SkipExpressionSeparators();
@@ -2362,6 +2378,7 @@ public sealed class PowerShellWasmParser
         }
 
         private static bool IsCastOperandStart(PowerShellWasmToken token) =>
+            !(token.Kind == PowerShellWasmTokenKind.Identifier && token.Text.StartsWith(".", StringComparison.Ordinal)) &&
             token.Kind is
                 PowerShellWasmTokenKind.Number or
                 PowerShellWasmTokenKind.StringLiteral or

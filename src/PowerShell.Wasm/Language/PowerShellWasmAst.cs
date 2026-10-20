@@ -149,7 +149,10 @@ public sealed record BareWordExpressionAst(string Value) : ExpressionAst;
 
 public sealed record NumberExpressionAst(object Value) : ExpressionAst;
 
-public sealed record StringExpressionAst(string Value, bool IsExpandable) : ExpressionAst;
+public sealed record StringExpressionAst(string Value, bool IsExpandable) : ExpressionAst
+{
+    internal IReadOnlySet<int>? LiteralDollarOffsets { get; init; }
+}
 
 public sealed record VariableExpressionAst(string Name, bool IsEnvironment) : ExpressionAst;
 

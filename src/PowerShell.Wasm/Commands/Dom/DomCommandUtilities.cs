@@ -258,18 +258,21 @@ internal static class DomSessionCommandUtilities
     private static bool TryGetSessionRecord(object? value, out Dictionary<string, object?> session)
     {
         session = [];
-        if (value is not Dictionary<string, object?> dictionary)
+        if (value is not (IReadOnlyDictionary<string, object?> or System.Collections.IDictionary) ||
+            !PowerShellWasmCommandUtilities.ToInvariantString(PowerShellWasmCommandUtilities.GetMemberValue(value, "SessionType"))
+                .Equals("Dom", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (!dictionary.ContainsKey("SessionType") ||
-            !PowerShellWasmCommandUtilities.ToInvariantString(dictionary["SessionType"]).Equals("Dom", StringComparison.OrdinalIgnoreCase))
+        session = value switch
         {
-            return false;
-        }
-
-        session = new Dictionary<string, object?>(dictionary, StringComparer.OrdinalIgnoreCase);
+            IReadOnlyDictionary<string, object?> properties => new Dictionary<string, object?>(properties, StringComparer.OrdinalIgnoreCase),
+            System.Collections.IDictionary properties => properties.Cast<System.Collections.DictionaryEntry>().ToDictionary(
+                static item => PowerShellWasmCommandUtilities.ToInvariantString(item.Key), static item => item.Value,
+                StringComparer.OrdinalIgnoreCase),
+            _ => []
+        };
         return true;
     }
 }

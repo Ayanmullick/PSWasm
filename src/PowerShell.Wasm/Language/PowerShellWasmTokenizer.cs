@@ -348,12 +348,15 @@ public static class PowerShellWasmTokenizer
             var tokenStart = position;
             position++;
             var value = new StringBuilder();
+            HashSet<int>? literalDollarOffsets = null;
             while (position < script.Length)
             {
                 var current = script[position++];
                 if (current == '`' && quote == '"' && position < script.Length)
                 {
-                    value.Append(ReadEscapedCharacter(script[position++]));
+                    var escaped = script[position++];
+                    if (escaped == '$') (literalDollarOffsets ??= []).Add(value.Length);
+                    value.Append(ReadEscapedCharacter(escaped));
                     continue;
                 }
 
@@ -372,7 +375,8 @@ public static class PowerShellWasmTokenizer
                 value.Append(current);
             }
 
-            tokens.Add(new(kind, value.ToString(), tokenStart, position - tokenStart, leadingWhitespace));
+            tokens.Add(new(kind, value.ToString(), tokenStart, position - tokenStart, leadingWhitespace)
+                { LiteralDollarOffsets = literalDollarOffsets });
             leadingWhitespace = false;
         }
 
@@ -394,8 +398,11 @@ public static class PowerShellWasmTokenizer
                     script[position + 1] == '@')
                 {
                     var text = TrimFinalLineEnding(script[contentStart..position]);
+                    IReadOnlySet<int>? literalDollarOffsets = null;
+                    if (quote == '"') text = DecodeExpandableText(text, out literalDollarOffsets);
                     position += 2;
-                    tokens.Add(new(kind, text, tokenStart, position - tokenStart, leadingWhitespace));
+                    tokens.Add(new(kind, text, tokenStart, position - tokenStart, leadingWhitespace)
+                        { LiteralDollarOffsets = literalDollarOffsets });
                     leadingWhitespace = false;
                     return;
                 }
@@ -516,6 +523,28 @@ public static class PowerShellWasmTokenizer
 
     private static bool IsVariableCharacter(char ch) =>
         char.IsLetterOrDigit(ch) || ch is '_' or ':';
+
+    // Native expandable strings decode escapes separately from discovering nested expressions.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/tokenizer.cs#L2449-L2506
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/tokenizer.cs#L2795-L2839
+    private static string DecodeExpandableText(string text, out IReadOnlySet<int>? literalDollarOffsets)
+    {
+        var value = new StringBuilder();
+        HashSet<int>? escapedDollars = null;
+        for (var index = 0; index < text.Length; index++)
+        {
+            var current = text[index];
+            if (current == '`' && index + 1 < text.Length)
+            {
+                var escaped = text[++index];
+                if (escaped == '$') (escapedDollars ??= []).Add(value.Length);
+                value.Append(ReadEscapedCharacter(escaped));
+            }
+            else value.Append(current);
+        }
+        literalDollarOffsets = escapedDollars;
+        return value.ToString();
+    }
 
     private static char ReadEscapedCharacter(char ch) =>
         ch switch

@@ -96,4 +96,8 @@ public readonly record struct PowerShellWasmToken(
     string Text,
     int Offset,
     int Length,
-    bool HasLeadingWhitespace);
+    bool HasLeadingWhitespace)
+{
+    // Escaped dollars remain literal without inserting sentinel characters into the decoded public text.
+    internal IReadOnlySet<int>? LiteralDollarOffsets { get; init; }
+}

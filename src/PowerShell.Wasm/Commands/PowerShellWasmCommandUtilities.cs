@@ -98,17 +98,19 @@ internal static class PowerShellWasmCommandUtilities
             return true;
         }
 
-        if (target is System.Collections.IDictionary legacyDictionary)
+        if (target is System.Collections.IDictionary legacyDictionary && legacyDictionary.Contains(memberName))
         {
-            foreach (System.Collections.DictionaryEntry entry in legacyDictionary)
-            {
-                if (string.Equals(Convert.ToString(entry.Key, CultureInfo.InvariantCulture), memberName,
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    value = entry.Value;
-                    return true;
-                }
-            }
+            value = legacyDictionary[memberName];
+            return true;
+        }
+
+        if (target is System.Collections.DictionaryEntry entry)
+        {
+            if (memberName.Equals("Key", StringComparison.OrdinalIgnoreCase) ||
+                memberName.Equals("Name", StringComparison.OrdinalIgnoreCase)) value = entry.Key;
+            else if (memberName.Equals("Value", StringComparison.OrdinalIgnoreCase)) value = entry.Value;
+            else return false;
+            return true;
         }
 
         if (TryGetCollectionProperty(target, memberName, out value))
@@ -226,6 +228,12 @@ internal static class PowerShellWasmCommandUtilities
             yield break;
         }
 
+        if (value is System.Collections.IEnumerator enumerator)
+        {
+            while (enumerator.MoveNext()) yield return PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(enumerator.Current));
+            yield break;
+        }
+
         yield return value;
     }
 
@@ -255,6 +263,12 @@ internal static class PowerShellWasmCommandUtilities
 
         if (target is System.Collections.IDictionary dictionary)
         {
+            if (target is System.Collections.Hashtable or System.Collections.Specialized.OrderedDictionary)
+            {
+                // Scalar Length is an expression fallback, not a dictionary property for command projection.
+                if (memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ||
+                    memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase)) return true;
+            }
             if (IsCountLike(memberName))
             {
                 value = dictionary.Count;

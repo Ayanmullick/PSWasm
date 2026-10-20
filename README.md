@@ -69,6 +69,12 @@ The runtime includes PowerShell-style variables, arrays, hashtables, objects, op
 
 Use `&` to invoke a script block or a registered command/function by name. See [call-operator binding and scope](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#control-flow-and-functions) for named arguments, switches, and splatting.
 
+Use `[ordered]@{...}` when dictionary insertion order matters; ordinary hashtables have no guaranteed enumeration order. See [hashtables and ordered dictionaries](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#hashtables) for typed keys, indexing, and supported methods.
+
+Use `Select-Object -First` to stop a pipeline after the requested input, or add `-Wait` to consume the remaining input. See [object pipeline commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands#object-pipeline-commands) for selection and completion behavior.
+
+Use `$?`, `&&`, and `||` to inspect execution status and recover from failures. See [execution status and error handling](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#execution-status) for command boundaries, retained errors, and the supported subset.
+
 PSWasm does not provide the full desktop/server PowerShell host. Providers, native processes, profiles, remoting, jobs, unrestricted filesystem access, module autoloading, and arbitrary .NET reflection are outside its browser-safe scope.
 
 ## Documentation and Contributing

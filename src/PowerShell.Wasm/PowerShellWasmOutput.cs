@@ -35,6 +35,14 @@ internal static class PowerShellWasmOutput
                 if (!IsNoOutput(item)) yield return item;
             }
         }
+        else if (value is IEnumerator enumerator)
+        {
+            // Explicit GetEnumerator handles are consumed in place; the dictionary itself remains one record.
+            while (enumerator.MoveNext())
+            {
+                if (!IsNoOutput(enumerator.Current)) yield return enumerator.Current;
+            }
+        }
         else
         {
             yield return value;

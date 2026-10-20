@@ -1,3 +1,6 @@
+using System.Collections;
+using System.Globalization;
+
 namespace PSWasm.Language;
 
 // Behavioral guidance: PSCustomObjectConverter creates a custom object from a hashtable instead of retaining its type.
@@ -5,8 +8,12 @@ namespace PSWasm.Language;
 // Browser-safe adaptation: a distinct case-insensitive property bag retaining existing member/index access, without ETS.
 internal sealed class PowerShellWasmCustomObject : Dictionary<string, object?>
 {
-    public PowerShellWasmCustomObject(IDictionary<string, object?> properties)
-        : base(properties, StringComparer.OrdinalIgnoreCase)
+    public PowerShellWasmCustomObject(IDictionary properties)
+        : base(StringComparer.OrdinalIgnoreCase)
     {
+        foreach (DictionaryEntry entry in properties)
+        {
+            this[Convert.ToString(entry.Key, CultureInfo.InvariantCulture) ?? string.Empty] = entry.Value;
+        }
     }
 }

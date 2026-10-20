@@ -2,6 +2,8 @@ namespace PSWasm.Commands;
 
 internal sealed class SelectObjectCommand : IPowerShellWasmPipelineCommand
 {
+    public IReadOnlyCollection<string> SwitchParameters => ["Wait"];
+
     public IPowerShellWasmPipelineProcessor CreateProcessor(PowerShellWasmCommandContext context, bool hasPipelineInput) =>
         new Processor(context);
 
@@ -9,19 +11,29 @@ internal sealed class SelectObjectCommand : IPowerShellWasmPipelineCommand
     {
         var processor = new Processor(context);
         await processor.BeginAsync(cancellationToken);
-        foreach (var record in context.PipelineInput) await processor.ProcessAsync(record, cancellationToken);
+        foreach (var record in context.PipelineInput)
+        {
+            await processor.ProcessAsync(record, cancellationToken);
+            if (processor.IsInputComplete) break;
+        }
         await processor.CompleteAsync(cancellationToken);
     }
 
+    // Behavioral guidance: SelectObjectQueue streams the head and retains a disjoint tail; positive First can stop input.
+    // Browser adaptation delegates upstream interruption to the runtime pipeline, preserving awaited output delivery.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/Select-Object.cs#L233-L336
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/Select-Object.cs#L723-L751
     private sealed class Processor : IPowerShellWasmPipelineProcessor
     {
         private readonly PowerShellWasmCommandContext _context;
         private readonly string? _expandProperty;
         private readonly IReadOnlyList<SelectProperty> _properties;
-        private readonly int _skip;
-        private readonly int? _first, _last;
+        private readonly int _skip, _first, _last;
+        private readonly bool _selectionSpecified, _wait;
         private readonly Queue<PowerShellWasmPipelineInputItem> _tail = new();
-        private int _seen, _emitted;
+        private int _skipRemaining, _emitted;
+
+        public bool IsInputComplete { get; private set; }
 
         public Processor(PowerShellWasmCommandContext context)
         {
@@ -29,8 +41,11 @@ internal sealed class SelectObjectCommand : IPowerShellWasmPipelineCommand
             _expandProperty = context.GetString("ExpandProperty");
             _properties = GetProperties(context);
             _skip = Math.Max(0, context.GetInt32("Skip", 0));
-            _first = context.Parameters.ContainsKey("First") ? Math.Max(0, context.GetInt32("First", int.MaxValue)) : null;
-            _last = context.Parameters.ContainsKey("Last") ? Math.Max(0, context.GetInt32("Last", int.MaxValue)) : null;
+            _first = context.Parameters.ContainsKey("First") ? Math.Max(0, context.GetInt32("First", int.MaxValue)) : 0;
+            _last = context.Parameters.ContainsKey("Last") ? Math.Max(0, context.GetInt32("Last", int.MaxValue)) : 0;
+            _selectionSpecified = context.Parameters.ContainsKey("First") || context.Parameters.ContainsKey("Last");
+            _wait = PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Wait"));
+            _skipRemaining = _last == 0 || _first > 0 ? _skip : 0;
         }
 
         public ValueTask BeginAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
@@ -39,27 +54,35 @@ internal sealed class SelectObjectCommand : IPowerShellWasmPipelineCommand
         {
             cancellationToken.ThrowIfCancellationRequested();
             var value = PowerShellWasmPipelineValue.Unwrap(record);
-            if (value is null || PowerShellWasmOutput.IsNoOutput(value) || _seen++ < _skip) return;
-            var item = new PowerShellWasmPipelineInputItem(value, PowerShellWasmPipelineValue.GetVariables(record));
-            if (_last is not null)
+            if (value is null || PowerShellWasmOutput.IsNoOutput(value)) return;
+            if (_skipRemaining > 0)
             {
-                _tail.Enqueue(item);
-                if (_tail.Count > _last.Value) _tail.Dequeue();
+                _skipRemaining--;
                 return;
             }
 
-            if (_first is not null && _emitted >= _first.Value) return;
-            _emitted++;
-            await WriteItemAsync(item, cancellationToken);
+            var item = new PowerShellWasmPipelineInputItem(value, PowerShellWasmPipelineValue.GetVariables(record));
+            if (!_selectionSpecified || _emitted < _first)
+            {
+                _emitted++;
+                await WriteItemAsync(item, cancellationToken);
+                // The input record counts even if ExpandProperty produces no output or expands to many records.
+                IsInputComplete = !_wait && _first > 0 && _last == 0 && _emitted >= _first;
+            }
+            else if (_last > 0)
+            {
+                _tail.Enqueue(item);
+                var capacity = (long)_last + (_first == 0 ? _skip : 0);
+                if (_tail.Count > capacity) _tail.Dequeue();
+            }
         }
 
         public async ValueTask CompleteAsync(CancellationToken cancellationToken)
         {
-            foreach (var item in _tail)
+            var skipTail = _first == 0 ? _skip : 0;
+            while (_tail.Count > skipTail)
             {
-                if (_first is not null && _emitted >= _first.Value) break;
-                _emitted++;
-                await WriteItemAsync(item, cancellationToken);
+                await WriteItemAsync(_tail.Dequeue(), cancellationToken);
             }
         }
 

@@ -113,6 +113,8 @@ internal static class FormatCommandUtilities
 
     public static IReadOnlyList<string> GetPropertyNames(object? item)
     {
+        if (item is System.Collections.DictionaryEntry) return ["Name", "Value"];
+
         if (item is IReadOnlyDictionary<string, object?> readOnlyDictionary)
         {
             return readOnlyDictionary.Keys.ToArray();

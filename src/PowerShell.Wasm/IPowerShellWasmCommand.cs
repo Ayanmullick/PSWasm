@@ -16,6 +16,7 @@ internal interface IPowerShellWasmPipelineCommand : IPowerShellWasmCommand
 
 internal interface IPowerShellWasmPipelineProcessor
 {
+    bool IsInputComplete => false;
     ValueTask BeginAsync(CancellationToken cancellationToken);
     ValueTask ProcessAsync(object? record, CancellationToken cancellationToken);
     ValueTask CompleteAsync(CancellationToken cancellationToken);
