@@ -111,6 +111,11 @@ public sealed record MetadataAttributeStatementAst(string Name) : StatementAst;
 
 public sealed record ReturnStatementAst(ExpressionAst? Expression) : StatementAst;
 
+public sealed record ThrowStatementAst(ExpressionAst? Expression) : StatementAst
+{
+    public bool IsRethrow { get; init; }
+}
+
 public sealed record BreakStatementAst : StatementAst;
 
 public sealed record ContinueStatementAst : StatementAst;
@@ -152,11 +157,15 @@ public sealed record NumberExpressionAst(object Value) : ExpressionAst;
 public sealed record StringExpressionAst(string Value, bool IsExpandable) : ExpressionAst
 {
     internal IReadOnlySet<int>? LiteralDollarOffsets { get; init; }
+    internal bool IsInCatch { get; init; }
+    internal bool IsInFinally { get; init; }
 }
 
 public sealed record VariableExpressionAst(string Name, bool IsEnvironment) : ExpressionAst;
 
 public sealed record AssignmentExpressionAst(string VariableName, ExpressionAst Value) : ExpressionAst;
+
+public sealed record ParallelAssignmentExpressionAst(IReadOnlyList<string> VariableNames, ExpressionAst Value) : ExpressionAst;
 
 public sealed record SettableAssignmentExpressionAst(ExpressionAst Target, ExpressionAst Value) : ExpressionAst;
 

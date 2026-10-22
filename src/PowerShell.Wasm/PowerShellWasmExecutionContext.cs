@@ -1,5 +1,6 @@
 using PSWasm.Language;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace PSWasm;
 
@@ -20,6 +21,8 @@ public sealed class PowerShellWasmExecutionContext
     private int _nextDomEventRegistrationId = 1;
     private bool _lastCommandSucceeded = true;
     private PipelineStatus? _pipelineStatus;
+    private Exception? _currentException;
+    private readonly ConditionalWeakTable<object, ErrorIdentity> _errorExceptions = new();
 
     public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null, IPowerShellWasmDomHost? domHost = null)
     {
@@ -68,6 +71,7 @@ public sealed class PowerShellWasmExecutionContext
     // Keep no-output values internally; callers of the public host API receive null without changing stored state.
     internal object? GetRawVariable(string name)
     {
+        name = UnaliasVariableName(name);
         if (name == "?") return _lastCommandSucceeded;
         if (name.Equals("Error", StringComparison.OrdinalIgnoreCase)) return _errors.ToArray();
         for (var frame = _frame; frame is not null; frame = frame.Parent)
@@ -86,6 +90,7 @@ public sealed class PowerShellWasmExecutionContext
             foreach (var item in frame.Values) values[item.Key] = item.Value;
         values["Error"] = _errors.ToArray();
         values["?"] = _lastCommandSucceeded;
+        if (values.TryGetValue("_", out var pipelineItem)) values["PSItem"] = pipelineItem;
         return values;
     }
 
@@ -146,6 +151,7 @@ public sealed class PowerShellWasmExecutionContext
             return;
         }
 
+        name = UnaliasVariableName(name);
         GetAssignmentFrame(_frame, name).Values.Remove(name);
     }
 
@@ -189,6 +195,52 @@ public sealed class PowerShellWasmExecutionContext
         {
             ["_"] = value, ["PSItem"] = value
         });
+    }
+
+    // Catch saves/restores the current exception independently of pipeline activation and $_.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L5255-L5294
+    internal IDisposable WithCaughtException(Exception error)
+    {
+        var previous = _currentException;
+        _currentException = error;
+        var original = RecordException(error);
+        var record = new Dictionary<string, object?>(original, StringComparer.OrdinalIgnoreCase);
+        var identity = _errorExceptions.GetValue(original, _ => new(error, error, IsException: false));
+        _errorExceptions.Add(record, identity with { Error = error, IsException = false });
+        var variables = WithPipelineItem(record);
+        return new ActionScope(() => { variables.Dispose(); _currentException = previous; });
+    }
+
+    internal Exception? CurrentException => _currentException;
+
+    internal bool TryGetErrorException(object value, out Exception error)
+    {
+        error = null!;
+        if (!_errorExceptions.TryGetValue(value, out var identity)) return false;
+        error = identity.Error;
+        if (identity.IsException)
+        {
+            // Throwing an exception constructs a new record/id; throwing an ErrorRecord preserves its id.
+            // Both retain the same exception identity, including head-only history deduplication.
+            var original = (Dictionary<string, object?>)error.Data[ErrorRecordDataKey]!;
+            error = new InvalidOperationException(error.Message);
+            var record = new Dictionary<string, object?>(original, StringComparer.OrdinalIgnoreCase)
+            {
+                ["FullyQualifiedErrorId"] = identity.ThrowId
+            };
+            error.Data[ErrorRecordDataKey] = record;
+            _errorExceptions.Add(record, identity with { Error = error, IsException = false });
+        }
+        return true;
+    }
+
+    // Throw accepts the original error/exception, or creates a RuntimeException for the converted value.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L2079-L2120
+    internal Exception CreateThrowException(string message)
+    {
+        var error = new InvalidOperationException(message);
+        CreateErrorRecord(error, "RuntimeException", message, "RuntimeException");
+        return error;
     }
 
     public void WriteOutput(object? value)
@@ -323,13 +375,14 @@ public sealed class PowerShellWasmExecutionContext
 
     internal Dictionary<string, object?> RecordException(Exception error)
     {
-        if (error.Data[ErrorRecordDataKey] is Dictionary<string, object?> existingRecord)
-        {
-            return existingRecord;
-        }
-
-        var record = CreateErrorRecord(error.Message, error.GetType().Name, error.GetType().FullName ?? error.GetType().Name);
-        error.Data[ErrorRecordDataKey] = record;
+        var record = error.Data[ErrorRecordDataKey] as Dictionary<string, object?> ??
+            CreateErrorRecord(error, error.GetType().Name, error.GetType().FullName ?? error.GetType().Name);
+        // Only the latest error is deduplicated. An older error rethrown after another error returns to the head.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ExecutionContext.cs#L833-L857
+        if (_errors.Count > 0 && _errors[0] is Dictionary<string, object?> head &&
+            (ReferenceEquals(head, record) || _errorExceptions.TryGetValue(head, out var headIdentity) &&
+                _errorExceptions.TryGetValue(record, out var recordIdentity) &&
+                ReferenceEquals(headIdentity.ExceptionIdentity, recordIdentity.ExceptionIdentity))) return record;
         PushErrorRecord(record, error.ToString());
         return record;
     }
@@ -506,7 +559,7 @@ public sealed class PowerShellWasmExecutionContext
     {
         MarkPipelineFailed();
         var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
-        var record = CreateErrorRecord(message, "Error", "PSWasm.WriteError");
+        var record = CreateErrorRecord(new InvalidOperationException(message), "Error", "PSWasm.WriteError", message);
         PushErrorRecord(record, null);
         return record;
     }
@@ -521,17 +574,27 @@ public sealed class PowerShellWasmExecutionContext
     // Behavioral guidance: ErrorRecord.Exception.Message in PowerShell's ErrorPackage.cs.
     // https://github.com/PowerShell/PowerShell/blob/v7.5.2/src/System.Management.Automation/engine/ErrorPackage.cs
     // Expose a small data descriptor, not a reflected CLR exception; retain Message for existing browser consumers.
-    private static Dictionary<string, object?> CreateErrorRecord(string message, string exception, string fullyQualifiedErrorId) =>
-        new(StringComparer.OrdinalIgnoreCase)
+    private Dictionary<string, object?> CreateErrorRecord(Exception error, string exception, string fullyQualifiedErrorId,
+        string? exceptionThrowId = null)
+    {
+        var descriptor = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Message"] = message,
-            ["Exception"] = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["Message"] = message,
-                ["TypeName"] = exception
-            },
+            ["Message"] = error.Message, ["TypeName"] = exception
+        };
+        var record = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Message"] = error.Message,
+            ["Exception"] = descriptor,
             ["FullyQualifiedErrorId"] = fullyQualifiedErrorId
         };
+        error.Data[ErrorRecordDataKey] = record;
+        // Identity is private metadata: user-created lookalike dictionaries cannot impersonate exceptions.
+        _errorExceptions.Add(record, new(error, error, IsException: false));
+        _errorExceptions.Add(descriptor, new(error, error, IsException: true, exceptionThrowId ?? error.Message));
+        return record;
+    }
+
+    private sealed record ErrorIdentity(Exception Error, object ExceptionIdentity, bool IsException, string? ThrowId = null);
 
     private static Dictionary<string, object?> CreateDomSessionRecord(int id, string name, string target) =>
         new(StringComparer.OrdinalIgnoreCase)
@@ -600,7 +663,7 @@ public sealed class PowerShellWasmExecutionContext
     {
         var previous = _frame;
         _frame = new VariableFrame(previous, isOverlay);
-        foreach (var item in variables) _frame.Values[item.Key] = item.Value;
+        foreach (var item in variables) _frame.Values[UnaliasVariableName(item.Key)] = item.Value;
         return new ActionScope(() => _frame = previous);
     }
 
@@ -616,8 +679,16 @@ public sealed class PowerShellWasmExecutionContext
         return frame;
     }
 
-    private static void SetFrameVariable(VariableFrame frame, string name, object? value) =>
+    // $_ and $PSItem are names for the same slot, including parameter frames and variable cmdlets.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/MutableTuple.cs#L80-L135
+    private static string UnaliasVariableName(string name) =>
+        name.Equals("PSItem", StringComparison.OrdinalIgnoreCase) ? "_" : name;
+
+    private static void SetFrameVariable(VariableFrame frame, string name, object? value)
+    {
+        name = UnaliasVariableName(name);
         GetAssignmentFrame(frame, name).Values[name] = value;
+    }
 
     private static bool IsVisibleOutput(object? value) =>
         PowerShellWasmPipelineValue.Unwrap(value) is not PowerShellWasmStreamRecord { IsVisible: false } &&

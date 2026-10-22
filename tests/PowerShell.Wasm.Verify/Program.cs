@@ -5,6 +5,8 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("return operand and control-flow fidelity", ReturnVerification.VerifyAsync),
+    ("throw expression and rethrow fidelity", RethrowVerification.VerifyAsync),
     ("automatic status and error boundaries", StatusVerification.VerifyAsync),
     ("ordered dictionaries and raw hashtable keys", OrderedDictionaryVerification.VerifyAsync),
     ("pipeline selection stopping and cleanup", PipelineStopVerification.VerifyAsync),
@@ -1121,9 +1123,9 @@ Write-Output 'Pipe' | ForEach-Object { $_ + 'Ok' } && Write-Output 'AfterPipe'
 Write-Output 'NewLineLeft' &&
     Write-Output 'NewLineRight'
 try {
-    throw 'ChainStop' && Write-Output 'SkippedThrow'
+    throw 'ChainStop' && Write-Output 'CapturedThrow'
 } catch {
-    $_.Message
+    $_.Exception.Message
 }
 """);
 
@@ -1138,7 +1140,7 @@ try {
         "AfterPipe",
         "NewLineLeft",
         "NewLineRight",
-        "ChainStop"
+        "ChainStop CapturedThrow"
     ]);
 }
 
@@ -2049,9 +2051,7 @@ $prefix = 'scope'
         "default-fallback:0",
         "metadata-block:inline",
         "scope:a|b",
-        "input-count:2",
-        "input-item:1",
-        "input-item:2",
+        "input-count:1 1",
         "underscore:",
         "param-item:1",
         "param-item:2"
@@ -2308,7 +2308,7 @@ switch -Regex ('id42') {
         "yes",
         "switch-current=red/red",
         "switch-default-current=blue/blue",
-        "switch-after=outer-under/outer-item",
+        "switch-after=outer-item/outer-item",
         "switch-pattern-current=pattern",
         "switch-regex-current=id42/42"
     ]);

@@ -403,12 +403,18 @@ internal static class PowerShellWasmDotNetBridge
 
         if (target is IEnumerator enumerator)
         {
-            if (memberName.Equals("Current", StringComparison.OrdinalIgnoreCase)) value = enumerator.Current;
-            else if (enumerator is IDictionaryEnumerator entries && IsMember(memberName, "Entry", "Key", "Value"))
-                value = memberName.ToLowerInvariant() switch { "entry" => entries.Entry, "key" => entries.Key, _ => entries.Value };
-            else if (IsMember(memberName, "MoveNext", "Reset"))
-                value = new PowerShellWasmDotNetMethod(EnumeratorType, memberName, target, IsStatic: false);
-            else return false;
+            // PowerShell property getters yield null when an enumerator is before its first or after its last item.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L5580-L5594
+            try
+            {
+                if (memberName.Equals("Current", StringComparison.OrdinalIgnoreCase)) value = enumerator.Current;
+                else if (enumerator is IDictionaryEnumerator entries && IsMember(memberName, "Entry", "Key", "Value"))
+                    value = memberName.ToLowerInvariant() switch { "entry" => entries.Entry, "key" => entries.Key, _ => entries.Value };
+                else if (IsMember(memberName, "MoveNext", "Reset"))
+                    value = new PowerShellWasmDotNetMethod(EnumeratorType, memberName, target, IsStatic: false);
+                else return false;
+            }
+            catch (InvalidOperationException) { value = null; }
             return true;
         }
 #if PSWASM_CRYPTO

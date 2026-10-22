@@ -9,10 +9,65 @@ namespace PSWasm.Language;
 // Browser note: this parser models a browser-safe PowerShell subset and produces the PSWasm AST profile.
 public sealed class PowerShellWasmParser
 {
-    public ScriptAst Parse(string script)
+    public ScriptAst Parse(string script) => Parse(script, insideCatch: false);
+
+    internal ScriptAst Parse(string script, bool insideCatch, bool insideFinally = false)
     {
-        var tokens = PowerShellWasmTokenizer.Tokenize(script);
+        IReadOnlyList<PowerShellWasmToken> tokens = PowerShellWasmTokenizer.Tokenize(script);
+        if (insideCatch) tokens = MarkInsideCatch(tokens);
+        if (insideFinally) tokens = MarkInsideFinally(tokens, true);
         return ParseScript(tokens);
+    }
+
+    // A bare throw is a rethrow only when lexically within a catch, including nested function/scriptblock definitions.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/ast.cs#L5468-L5498
+    // Token copies carry that ancestry into nested parses; strings retain it for their later-parsed $() expressions.
+    private static IReadOnlyList<PowerShellWasmToken> MarkInsideCatch(IEnumerable<PowerShellWasmToken> tokens) =>
+        tokens.Select(static token => token with { IsInCatch = true }).ToArray();
+
+    // Return cannot leave a finally block; a nested function/scriptblock starts its own return boundary.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/SemanticChecks.cs#L630-L665
+    private static IReadOnlyList<PowerShellWasmToken> MarkInsideFinally(IEnumerable<PowerShellWasmToken> tokens, bool value) =>
+        tokens.Select(token => token with { IsInFinally = value }).ToArray();
+
+    private static StringExpressionAst ParseStringToken(PowerShellWasmToken token)
+    {
+        var expression = new StringExpressionAst(token.Text, token.Kind == PowerShellWasmTokenKind.ExpandableStringLiteral)
+            { LiteralDollarOffsets = token.LiteralDollarOffsets, IsInCatch = token.IsInCatch, IsInFinally = token.IsInFinally };
+        if (!expression.IsExpandable || !token.IsInFinally) return expression;
+
+        // Native semantic validation visits interpolation ASTs even in unreachable code. Keep late string evaluation,
+        // but reject a return that leaves finally now, before any part of the enclosing script executes.
+        for (var index = 0; index < token.Text.Length; index++)
+        {
+            if (token.Text[index] != '$' || token.LiteralDollarOffsets?.Contains(index) == true ||
+                !TryReadExpandableSubexpression(token.Text, index, out var script, out var nextIndex)) continue;
+            _ = new PowerShellWasmParser().Parse(script, token.IsInCatch, insideFinally: true);
+            index = nextIndex - 1;
+        }
+        return expression;
+    }
+
+    internal static bool TryReadExpandableSubexpression(string value, int start, out string script, out int nextIndex)
+    {
+        script = string.Empty;
+        nextIndex = start;
+        if (start + 1 >= value.Length || value[start + 1] != '(') return false;
+
+        var expressionStart = start + 2;
+        var depth = 1;
+        // Native string interpolation balances raw parentheses before parsing the nested code, including in comments/quotes.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/tokenizer.cs#L2362-L2446
+        for (var index = expressionStart; index < value.Length; index++)
+        {
+            var ch = value[index];
+            if (ch == '(') { depth++; continue; }
+            if (ch != ')' || --depth != 0) continue;
+            script = value[expressionStart..index];
+            nextIndex = index + 1;
+            return true;
+        }
+        return false;
     }
 
     private static ScriptAst ParseScript(IReadOnlyList<PowerShellWasmToken> tokens)
@@ -124,9 +179,21 @@ public sealed class PowerShellWasmParser
             return metadataAttribute;
         }
 
+        if (IsKeyword(tokens, 0, "throw"))
+        {
+            // Throw owns the complete following pipeline-chain, rather than receiving a command's argument list.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs#L2286-L2296
+            return new ThrowStatementAst(tokens.Count == 1 ? null : ParseParenthesizedExpressionValue(tokens.Skip(1).ToArray()))
+                { IsRethrow = tokens.Count == 1 && tokens[0].IsInCatch };
+        }
+
         if (IsKeyword(tokens, 0, "return"))
         {
-            return new ReturnStatementAst(tokens.Count == 1 ? null : ParseExpression(tokens.Skip(1).ToArray()));
+            if (tokens[0].IsInFinally)
+                throw new InvalidOperationException("Flow of control cannot leave a Finally block.");
+            // Return owns a pipeline-chain, including command invocation and assignment; explicit grouping remains distinct.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs#L2262-L2271
+            return new ReturnStatementAst(tokens.Count == 1 ? null : ParseParenthesizedExpressionValue(tokens.Skip(1).ToArray()));
         }
 
         if (IsKeyword(tokens, 0, "break"))
@@ -350,7 +417,7 @@ public sealed class PowerShellWasmParser
 
         return new ForStatementAst(
             sections[0].Count == 0 ? null : ParseStatement(sections[0]),
-            sections[1].Count == 0 ? null : ParseExpression(sections[1]),
+            sections[1].Count == 0 ? null : ParseParenthesizedExpressionValue(sections[1]),
             sections[2].Count == 0 ? null : ParseStatement(sections[2]),
             body);
     }
@@ -804,7 +871,7 @@ public sealed class PowerShellWasmParser
             {
                 var expressionTokens = tokens.Skip(start).Take(position - start).ToArray();
                 position++;
-                return ParseExpression(expressionTokens);
+                return ParseParenthesizedExpressionValue(expressionTokens);
             }
 
             UpdateDepth(tokens[position], ref depth);
@@ -828,7 +895,7 @@ public sealed class PowerShellWasmParser
             {
                 var expressionTokens = tokens.Skip(start).Take(position - start).ToArray();
                 position++;
-                return ParseExpression(expressionTokens);
+                return ParseParenthesizedExpressionValue(expressionTokens);
             }
 
             UpdateDepth(tokens[position], ref depth);
@@ -855,14 +922,14 @@ public sealed class PowerShellWasmParser
                     position++;
                 }
 
-                catchBlocks.Add(ReadScriptBlock(tokens, ref position, "catch"));
+                catchBlocks.Add(ReadScriptBlock(tokens, ref position, "catch", isCatchBody: true));
                 continue;
             }
 
             if (IsKeyword(tokens, position, "finally"))
             {
                 position++;
-                finallyBlock = ReadScriptBlock(tokens, ref position, "finally");
+                finallyBlock = ReadScriptBlock(tokens, ref position, "finally", isFinallyBody: true);
                 break;
             }
 
@@ -877,7 +944,9 @@ public sealed class PowerShellWasmParser
         return new TryStatementAst(tryBlock, catchBlocks, finallyBlock);
     }
 
-    private static ScriptAst ReadScriptBlock(IReadOnlyList<PowerShellWasmToken> tokens, ref int position, string blockName)
+    private static ScriptAst ReadScriptBlock(
+        IReadOnlyList<PowerShellWasmToken> tokens, ref int position, string blockName, bool isCatchBody = false,
+        bool isFinallyBody = false)
     {
         if (position >= tokens.Count || tokens[position].Kind != PowerShellWasmTokenKind.LBrace)
         {
@@ -892,8 +961,12 @@ public sealed class PowerShellWasmParser
         {
             if (tokens[position].Kind == PowerShellWasmTokenKind.RBrace && depth == 0)
             {
-                var bodyTokens = tokens.Skip(start).Take(position - start).ToArray();
+                IReadOnlyList<PowerShellWasmToken> bodyTokens = tokens.Skip(start).Take(position - start).ToArray();
                 position++;
+                if (isCatchBody) bodyTokens = MarkInsideCatch(bodyTokens);
+                if (isFinallyBody) bodyTokens = MarkInsideFinally(bodyTokens, true);
+                // Signature parameter ASTs are outside the function body; body param blocks are inside this boundary.
+                if (blockName == "function") bodyTokens = MarkInsideFinally(bodyTokens, false);
                 return ParseScript(bodyTokens);
             }
 
@@ -1250,6 +1323,8 @@ public sealed class PowerShellWasmParser
         var equals = FindAssignmentEquals(normalized);
         if (equals > 0)
         {
+            if (TryReadAssignmentTargets(normalized, equals, out var names) && names.Count > 1)
+                return new ParallelAssignmentExpressionAst(names, ParseAssignmentValue(normalized.Skip(equals + 1).ToArray()));
             var target = new ExpressionParser(normalized.Take(equals).ToArray()).Parse(requireComplete: true);
             if (IsSettableAssignmentTarget(target))
             {
@@ -2059,9 +2134,7 @@ public sealed class PowerShellWasmParser
             return token.Kind switch
             {
                 PowerShellWasmTokenKind.Number => ParseNumber(token.Text),
-                PowerShellWasmTokenKind.StringLiteral => new StringExpressionAst(token.Text, IsExpandable: false),
-                PowerShellWasmTokenKind.ExpandableStringLiteral => new StringExpressionAst(token.Text, IsExpandable: true)
-                    { LiteralDollarOffsets = token.LiteralDollarOffsets },
+                PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral => ParseStringToken(token),
                 PowerShellWasmTokenKind.Variable => ParseVariable(token.Text),
                 PowerShellWasmTokenKind.Identifier => new BareWordExpressionAst(token.Text),
                 PowerShellWasmTokenKind.Parameter => new BareWordExpressionAst("-" + token.Text),
@@ -2131,8 +2204,7 @@ public sealed class PowerShellWasmParser
             {
                 var token = Current;
                 _position++;
-                return new StringExpressionAst(token.Text, token.Kind == PowerShellWasmTokenKind.ExpandableStringLiteral)
-                    { LiteralDollarOffsets = token.LiteralDollarOffsets };
+                return ParseStringToken(token);
             }
 
             if (Current.Kind == PowerShellWasmTokenKind.Variable)
@@ -2207,7 +2279,7 @@ public sealed class PowerShellWasmParser
 
             var bodyTokens = tokens.Skip(start).Take(_position - start).ToArray();
             Consume(PowerShellWasmTokenKind.RBrace);
-            return new ScriptBlockExpressionAst(ParseScript(bodyTokens));
+            return new ScriptBlockExpressionAst(ParseScript(MarkInsideFinally(bodyTokens, false)));
         }
 
         private HashtableExpressionAst ParseHashtable()

@@ -444,6 +444,8 @@ $options = @{Text='browser'; Uppercase=$true}
 & 'Add-Prefix' @options -Uppercase:$false
 $greet = { param($Name) "Hello, $Name!" }
 & $greet -Name 'browser'
+. { function Get-SharedGreeting { 'Available in the caller scope' } }
+Get-SharedGreeting
   </script>
           </article>
           <article class="example">
@@ -459,18 +461,23 @@ function First-Matches($Items) {
         }
         $item
     }
-    return 'done'
+    return Write-Output 'done' | ForEach-Object { "result:$_" }
 }
 First-Matches @(1,2,3,4)
   </script>
           </article>
           <article class="example">
-            <h3>Try, catch, and finally</h3>
+            <h3>Try, catch, rethrow, and finally</h3>
             <script type="pwsh">
 try {
-    throw 'Browser try/catch sample'
+    try {
+        throw 'Browser try/catch sample'
+    } catch {
+        'Rethrowing the original error'
+        throw
+    }
 } catch {
-    $_.Message
+    $_.Exception.Message
 } finally {
     'finally ran'
 }
