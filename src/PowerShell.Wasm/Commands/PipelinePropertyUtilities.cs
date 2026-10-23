@@ -21,7 +21,8 @@ internal static class PipelinePropertyUtilities
         {
             if (expressions[index] is PowerShellWasmScriptBlock scriptBlock)
             {
-                var result = await scriptBlock.InvokeAsync(item.Value, null, item.Variables, cancellationToken);
+                var result = await scriptBlock.InvokeCallbackAsync(item.Value, null, item.Variables,
+                    PowerShellWasmScriptBlockInvocation.CalculatedProperty, cancellationToken);
                 values[index] = result.Count switch { 0 => null, 1 => result[0], _ => result.ToArray() };
             }
             else

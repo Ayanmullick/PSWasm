@@ -198,7 +198,8 @@ internal sealed class SelectObjectCommand : IPowerShellWasmPipelineCommand
     {
         if (expression is PowerShellWasmScriptBlock scriptBlock)
         {
-            var output = await scriptBlock.InvokeAsync(item.Value, null, item.Variables, cancellationToken);
+            var output = await scriptBlock.InvokeCallbackAsync(item.Value, null, item.Variables,
+                PowerShellWasmScriptBlockInvocation.CalculatedProperty, cancellationToken);
             return output.Count switch
             {
                 0 => null,

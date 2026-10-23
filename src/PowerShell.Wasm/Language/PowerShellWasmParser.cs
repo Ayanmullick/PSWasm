@@ -13,7 +13,8 @@ public sealed class PowerShellWasmParser
 
     internal ScriptAst Parse(string script, bool insideCatch, bool insideFinally = false)
     {
-        IReadOnlyList<PowerShellWasmToken> tokens = PowerShellWasmTokenizer.Tokenize(script);
+        IReadOnlyList<PowerShellWasmToken> tokens = PowerShellWasmTokenizer.Tokenize(script)
+            .Select(token => token with { SourceScript = script }).ToArray();
         if (insideCatch) tokens = MarkInsideCatch(tokens);
         if (insideFinally) tokens = MarkInsideFinally(tokens, true);
         return ParseScript(tokens);
@@ -246,7 +247,7 @@ public sealed class PowerShellWasmParser
             }
 
             var target = ParseExpression(tokens.Take(equals).ToArray());
-            if (!IsSettableAssignmentTarget(target))
+            if (!IsSimpleAssignmentTarget(target))
             {
                 throw new InvalidOperationException("Expected one or more assignment targets before '='.");
             }
@@ -1326,7 +1327,7 @@ public sealed class PowerShellWasmParser
             if (TryReadAssignmentTargets(normalized, equals, out var names) && names.Count > 1)
                 return new ParallelAssignmentExpressionAst(names, ParseAssignmentValue(normalized.Skip(equals + 1).ToArray()));
             var target = new ExpressionParser(normalized.Take(equals).ToArray()).Parse(requireComplete: true);
-            if (IsSettableAssignmentTarget(target))
+            if (IsSimpleAssignmentTarget(target))
             {
                 return new SettableAssignmentExpressionAst(target, ParseAssignmentValue(normalized.Skip(equals + 1).ToArray()));
             }
@@ -1578,8 +1579,22 @@ public sealed class PowerShellWasmParser
         return names.Count > 0 && !expectVariable;
     }
 
-    private static bool IsSettableAssignmentTarget(ExpressionAst target) =>
-        target is VariableExpressionAst or MemberAccessExpressionAst or ComputedMemberAccessExpressionAst or IndexExpressionAst;
+    private static bool IsSettableAssignmentTarget(ExpressionAst target) => target switch
+    {
+        VariableExpressionAst or MemberAccessExpressionAst or ComputedMemberAccessExpressionAst or IndexExpressionAst => true,
+        CastExpressionAst cast => IsSettableAssignmentTarget(cast.Operand),
+        ParenthesizedExpressionAst parenthesized => IsSettableAssignmentTarget(parenthesized.Expression),
+        _ => false
+    };
+
+    // Only simple assignment can distribute a value across multiple targets; += and ++ require one writable location.
+    private static bool IsSimpleAssignmentTarget(ExpressionAst target) => target switch
+    {
+        ArrayExpressionAst array => array.Items.Count > 0 && array.Items.All(IsSimpleAssignmentTarget),
+        CastExpressionAst cast => IsSimpleAssignmentTarget(cast.Operand),
+        ParenthesizedExpressionAst parenthesized => IsSimpleAssignmentTarget(parenthesized.Expression),
+        _ => IsSettableAssignmentTarget(target)
+    };
 
     private static bool TryFindTopLevelCompoundAssignment(
         IReadOnlyList<PowerShellWasmToken> tokens,
@@ -1932,7 +1947,7 @@ public sealed class PowerShellWasmParser
             }
 
             var target = ParseTernaryExpression();
-            if (Current.Kind == PowerShellWasmTokenKind.Equals && IsSettableAssignmentTarget(target))
+            if (Current.Kind == PowerShellWasmTokenKind.Equals && IsSimpleAssignmentTarget(target))
             {
                 _position++;
                 return new SettableAssignmentExpressionAst(target, ParseAssignment());
@@ -2278,8 +2293,11 @@ public sealed class PowerShellWasmParser
             }
 
             var bodyTokens = tokens.Skip(start).Take(_position - start).ToArray();
+            var openingToken = tokens[start - 1];
+            var closingToken = Current;
             Consume(PowerShellWasmTokenKind.RBrace);
-            return new ScriptBlockExpressionAst(ParseScript(MarkInsideFinally(bodyTokens, false)));
+            var sourceText = openingToken.SourceScript?[(openingToken.Offset + openingToken.Length)..closingToken.Offset];
+            return new ScriptBlockExpressionAst(ParseScript(MarkInsideFinally(bodyTokens, false))) { SourceText = sourceText };
         }
 
         private HashtableExpressionAst ParseHashtable()

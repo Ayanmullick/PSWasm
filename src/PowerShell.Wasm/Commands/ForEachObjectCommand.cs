@@ -37,7 +37,8 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmPipelineCommand
 
         public async ValueTask BeginAsync(CancellationToken cancellationToken)
         {
-            if (_begin is not null) await _begin.InvokeOutputAsync(null, NoPipelineVariables, cancellationToken);
+            if (_begin is not null) await _begin.InvokeOutputAsync(PowerShellWasmOutput.NoOutput, NoPipelineVariables,
+                cancellationToken, PowerShellWasmScriptBlockInvocation.PipelineBeginEnd);
         }
 
         public async ValueTask ProcessAsync(object? record, CancellationToken cancellationToken)
@@ -59,8 +60,9 @@ internal sealed class ForEachObjectCommand : IPowerShellWasmPipelineCommand
 
         public async ValueTask CompleteAsync(CancellationToken cancellationToken)
         {
-            if (!_hasPipelineInput) await ProcessAsync(null, cancellationToken);
-            if (_end is not null) await _end.InvokeOutputAsync(null, NoPipelineVariables, cancellationToken);
+            if (!_hasPipelineInput) await ProcessAsync(PowerShellWasmOutput.NoOutput, cancellationToken);
+            if (_end is not null) await _end.InvokeOutputAsync(PowerShellWasmOutput.NoOutput, NoPipelineVariables,
+                cancellationToken, PowerShellWasmScriptBlockInvocation.PipelineBeginEnd);
         }
     }
 

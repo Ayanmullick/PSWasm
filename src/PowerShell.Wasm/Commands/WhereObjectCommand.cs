@@ -14,7 +14,8 @@ internal sealed class WhereObjectCommand : IPowerShellWasmPipelineCommand
         {
             foreach (var item in PowerShellWasmCommandUtilities.EnumeratePipelineInput(context.PipelineInput))
             {
-                var filterOutput = await scriptBlock.InvokeAsync(item.Value, null, item.Variables, cancellationToken);
+                var filterOutput = await scriptBlock.InvokeCallbackAsync(item.Value, null, item.Variables,
+                    PowerShellWasmScriptBlockInvocation.Pipeline, cancellationToken);
                 // Behavioral guidance: test the captured success result as a whole, after collapsing zero/one outputs.
                 // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/InternalCommands.cs#L2233-L2254
                 var matches = filterOutput.Count switch

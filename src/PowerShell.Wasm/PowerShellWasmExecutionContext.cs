@@ -94,6 +94,17 @@ public sealed class PowerShellWasmExecutionContext
         return values;
     }
 
+    internal bool HasVariableInCurrentScope(string name)
+    {
+        name = UnaliasVariableName(name);
+        for (var frame = _frame; frame is not null; frame = frame.Parent)
+        {
+            if (frame.Values.ContainsKey(name)) return true;
+            if (!frame.IsOverlay) break;
+        }
+        return false;
+    }
+
     internal Dictionary<string, object?> NewDomSession(string? name, string? target)
     {
         var id = _nextDomSessionId++;
@@ -130,6 +141,13 @@ public sealed class PowerShellWasmExecutionContext
         SetFrameVariable(_frame, name, value);
     }
 
+    internal object? AssignVariable(string name, object? value)
+    {
+        AssertWritableVariable(name);
+        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase)) { SetVariable(name, value); return value; }
+        return SetFrameVariable(_frame, name, value);
+    }
+
     public void ClearVariable(string name)
     {
         AssertWritableVariable(name);
@@ -152,7 +170,60 @@ public sealed class PowerShellWasmExecutionContext
         }
 
         name = UnaliasVariableName(name);
-        GetAssignmentFrame(_frame, name).Values.Remove(name);
+        var frame = GetAssignmentFrame(_frame, name);
+        frame.Values.Remove(name);
+        frame.Constraints.Remove(name);
+    }
+
+    // Type-constrained assignments replace attributes only after successful conversion; ordinary writes reuse them.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/VariableOps.cs#L17-L120
+    internal object? SetTypedVariable(string name, object? value, IReadOnlyList<string> typeNames)
+    {
+        AssertWritableVariable(name);
+        name = UnaliasVariableName(name);
+        var frame = GetAssignmentFrame(_frame, name);
+        if (frame.OptimizedTypes.TryGetValue(name, out var localType))
+        {
+            value = PowerShellWasmAstExecutor.ConvertOptimizedValue(localType, value, OutputFieldSeparator);
+            frame.Values[name] = value;
+            return value;
+        }
+        var constraint = new VariableConstraint(typeNames, []);
+        value = constraint.Convert(value, OutputFieldSeparator);
+        frame.Values[name] = value;
+        frame.Constraints[name] = constraint;
+        return value;
+    }
+
+    internal void SetParameterConstraints(IReadOnlyList<ParameterDeclarationAst> parameters)
+    {
+        foreach (var parameter in parameters)
+        {
+            var name = UnaliasVariableName(parameter.Name);
+            GetAssignmentFrame(_frame, name).Constraints[name] = VariableConstraint.ForParameter(parameter);
+        }
+    }
+
+    internal void SetParameterVariable(ParameterDeclarationAst parameter, object? value, bool retainConstraint)
+    {
+        AssertWritableVariable(parameter.Name);
+        var name = UnaliasVariableName(parameter.Name);
+        var frame = GetAssignmentFrame(_frame, name);
+        var existed = frame.Values.ContainsKey(name);
+        if (frame.OptimizedTypes.TryGetValue(name, out var localType))
+            value = PowerShellWasmAstExecutor.ConvertOptimizedValue(localType, value, OutputFieldSeparator);
+        frame.Values[name] = value;
+        frame.Constraints.Remove(name);
+        if (retainConstraint || !existed) frame.Constraints[name] = VariableConstraint.ForParameter(parameter);
+    }
+
+    internal void ClearParameterConstraints(IEnumerable<string> names)
+    {
+        foreach (var parameterName in names)
+        {
+            var name = UnaliasVariableName(parameterName);
+            GetAssignmentFrame(_frame, name).Constraints.Remove(name);
+        }
     }
 
     private static void AssertWritableVariable(string name)
@@ -179,9 +250,10 @@ public sealed class PowerShellWasmExecutionContext
         return names;
     }
 
-    internal IDisposable WithScriptScope(IReadOnlyDictionary<string, object?> variables)
+    internal IDisposable WithScriptScope(IReadOnlyDictionary<string, object?> variables,
+        IReadOnlyDictionary<string, string>? optimizedTypes = null)
     {
-        return PushVariableFrame(variables, isOverlay: false);
+        return PushVariableFrame(variables, isOverlay: false, optimizedTypes);
     }
 
     internal IDisposable WithTemporaryVariables(IReadOnlyDictionary<string, object?> variables)
@@ -659,11 +731,14 @@ public sealed class PowerShellWasmExecutionContext
         SetFrameVariable(activation.Frame, name, value);
     }
 
-    private IDisposable PushVariableFrame(IReadOnlyDictionary<string, object?> variables, bool isOverlay)
+    private IDisposable PushVariableFrame(IReadOnlyDictionary<string, object?> variables, bool isOverlay,
+        IReadOnlyDictionary<string, string>? optimizedTypes = null)
     {
         var previous = _frame;
         _frame = new VariableFrame(previous, isOverlay);
         foreach (var item in variables) _frame.Values[UnaliasVariableName(item.Key)] = item.Value;
+        if (optimizedTypes is not null)
+            foreach (var item in optimizedTypes) _frame.OptimizedTypes[UnaliasVariableName(item.Key)] = item.Value;
         return new ActionScope(() => _frame = previous);
     }
 
@@ -684,10 +759,20 @@ public sealed class PowerShellWasmExecutionContext
     private static string UnaliasVariableName(string name) =>
         name.Equals("PSItem", StringComparison.OrdinalIgnoreCase) ? "_" : name;
 
-    private static void SetFrameVariable(VariableFrame frame, string name, object? value)
+    private object? SetFrameVariable(VariableFrame frame, string name, object? value)
     {
         name = UnaliasVariableName(name);
-        GetAssignmentFrame(frame, name).Values[name] = value;
+        frame = GetAssignmentFrame(frame, name);
+        if (frame.OptimizedTypes.TryGetValue(name, out var localType))
+        {
+            value = PowerShellWasmAstExecutor.ConvertOptimizedValue(localType, value, OutputFieldSeparator);
+            frame.Values[name] = value;
+            return value;
+        }
+        var originalValue = value;
+        if (frame.Constraints.TryGetValue(name, out var constraint)) value = constraint.Convert(value, OutputFieldSeparator);
+        frame.Values[name] = value;
+        return originalValue;
     }
 
     private static bool IsVisibleOutput(object? value) =>
@@ -758,7 +843,23 @@ public sealed class PowerShellWasmExecutionContext
         internal VariableFrame? Parent { get; } = parent;
         internal bool IsOverlay { get; } = isOverlay;
         internal Dictionary<string, object?> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
+        internal Dictionary<string, VariableConstraint> Constraints { get; } = new(StringComparer.OrdinalIgnoreCase);
+        internal Dictionary<string, string> OptimizedTypes { get; } = new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, PowerShellWasmScriptFunction> Functions { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    internal sealed record VariableConstraint(IReadOnlyList<string> TypeNames, IReadOnlyList<string> ValidValues)
+    {
+        internal static VariableConstraint ForParameter(ParameterDeclarationAst parameter) =>
+            new(parameter.TypeName is null ? [] : [parameter.TypeName], parameter.ValidateSet);
+
+        internal object? Convert(object? value, string separator)
+        {
+            foreach (var typeName in TypeNames.Reverse())
+                value = PowerShellWasmAstExecutor.ConvertConstrainedValue(typeName, value, separator);
+            PowerShellWasmAstExecutor.ValidateConstrainedValue(ValidValues, value);
+            return value;
+        }
     }
 
     internal sealed record OutputPort(OutputPort? Parent, List<object?>? Output, bool CaptureStreams,
@@ -784,4 +885,9 @@ public sealed class PowerShellWasmExecutionContext
 internal sealed record PowerShellWasmScriptFunction(
     string Name,
     IReadOnlyList<ParameterDeclarationAst> Parameters,
-    ScriptAst Body);
+    ScriptAst Body)
+{
+    private IReadOnlyDictionary<string, string>? _localTypes;
+    internal IReadOnlyDictionary<string, string> LocalTypes =>
+        _localTypes ??= PowerShellWasmVariableAnalysis.Analyze(Body, Parameters);
+}

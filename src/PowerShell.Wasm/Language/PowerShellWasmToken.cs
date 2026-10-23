@@ -102,4 +102,5 @@ public readonly record struct PowerShellWasmToken(
     internal IReadOnlySet<int>? LiteralDollarOffsets { get; init; }
     internal bool IsInCatch { get; init; }
     internal bool IsInFinally { get; init; }
+    internal string? SourceScript { get; init; }
 }

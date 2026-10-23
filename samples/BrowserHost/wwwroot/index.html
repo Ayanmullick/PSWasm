@@ -231,6 +231,19 @@ $repo.full_name
         <div class="group-content">
           <p class="example-note">The automatic-variable example deliberately writes an error to show how $? and $Error change.</p>
           <article class="example">
+            <h3>Typed variables</h3>
+            <p class="example-note">A declaration keeps its conversion rule for later assignments. A failed conversion preserves the previous value.</p>
+            <script type="pwsh">
+[int]$Count = '2'
+$Count = '3'
+"Count: $Count; integer: $($Count -is [int])"
+try { $Count = 'invalid' } catch { "Rejected value; Count is still $Count" }
+[int[]]$Values = '1','2'
+$Values += '3'
+"Values: $($Values -join ','); type: $($Values.GetType().Name)"
+  </script>
+          </article>
+          <article class="example">
             <h3>Variable commands</h3>
             <script type="pwsh">
 Set-Variable -Name BrowserName -Value 'PSWasm'
@@ -491,8 +504,10 @@ try {
         <div class="group-content">
           <article class="example">
             <h3>Filtering and projection</h3>
+            <p class="example-note">Pipeline callbacks use $_ for the current item; param defaults are evaluated for each item.</p>
             <script type="pwsh">
 1..4 | Where-Object { $_ -gt 2 } | ForEach-Object { $_ * 10 }
+1..2 | ForEach-Object { param($prefix='item') "$prefix $_" }
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Where-Object { $PSItem.Value -ge 2 } |
     Select-Object -ExpandProperty Name
@@ -538,6 +553,7 @@ csv,8' | ConvertFrom-Csv | Select-Object -ExpandProperty Name
 @(@{Name='one'; Value=1}, @{Name='two'; Value=2}, @{Name='three'; Value=3}) |
     Measure-Object Value -Sum -Average -Minimum -Maximum |
     ConvertTo-Json -Compress
+1..3 | Measure-Object -Property { $_ * 2 } -Sum | Select-Object -ExpandProperty Sum
 @('b','a','b') |
     Group-Object |
     Sort-Object Name |

@@ -5,6 +5,8 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("typed variable constraints and assignment fidelity", TypedVariableVerification.VerifyAsync),
+    ("pipeline callback binding and scope", CallbackVerification.VerifyAsync),
     ("return operand and control-flow fidelity", ReturnVerification.VerifyAsync),
     ("throw expression and rethrow fidelity", RethrowVerification.VerifyAsync),
     ("automatic status and error boundaries", StatusVerification.VerifyAsync),
@@ -1964,7 +1966,7 @@ try {
     'validate-error'
 }
 function Type-Param {
-    param([int]$Count, [switch]$Enabled, [bool]$Flag = 'true')
+    param([int]$Count, [switch]$Enabled, [bool]$Flag = $true)
     'count:' + ($Count + 1)
     'enabled:' + $Enabled
     'flag:' + $Flag
@@ -2053,8 +2055,8 @@ $prefix = 'scope'
         "scope:a|b",
         "input-count:1 1",
         "underscore:",
-        "param-item:1",
-        "param-item:2"
+        "param-item:",
+        "param-item:"
     ]);
 }
 
@@ -2565,6 +2567,34 @@ $value
     ExpectLines(second, [
         "2"
     ]);
+
+    ExpectLines(await runtime.ExecuteAsync("""
+[int]$typedCount=3
+[int[]]$typedValues=1,2
+[bool]$typedFlag=$true
+"count=$typedCount;values=$($typedValues -join ',');flag=$typedFlag"
+"""), ["count=3;values=1,2;flag=True"]);
+
+    ExpectLines(await runtime.ExecuteAsync("""
+$typedCount='4'
+$typedValues='5','6'
+$typedFlag=0
+"count=$typedCount/$($typedCount -is [int]);values=$($typedValues -join ',')/$($typedValues.GetType().Name);flag=$typedFlag"
+"""), ["count=4/True;values=5,6/Int32[];flag=False"]);
+
+    ExpectLines(await runtime.ExecuteAsync("""
+try { $typedCount='bad' } catch { 'count-rejected' }
+try { $typedValues='7','bad' } catch { 'array-rejected' }
+try { $typedFlag='false' } catch { 'bool-rejected' }
+"count=$typedCount;values=$($typedValues -join ',');flag=$typedFlag"
+"""), ["count-rejected", "array-rejected", "bool-rejected", "count=4;values=5,6;flag=False"]);
+
+    ExpectLines(await runtime.ExecuteAsync("""
+$typedCount='8'
+$typedValues='9'
+$typedFlag=1
+"count=$typedCount/$($typedCount -is [int]);values=$($typedValues -join ',')/$($typedValues.GetType().Name);flag=$typedFlag"
+"""), ["count=8/True;values=9/Int32[];flag=True"]);
 }
 
 static ValueTask<PowerShellWasmResult> ExecuteAsync(string script)

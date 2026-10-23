@@ -196,13 +196,16 @@ internal static class PowerShellWasmDotNetBridge
 
         if (fullName.Equals(ArrayListType, StringComparison.OrdinalIgnoreCase))
         {
-            value = new ArrayList(EnumerateForCollection(input).ToArray());
+            // Assignment-compatible references, including null, keep their identity before collection conversion.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L5643-L5657
+            value = input is null or ArrayList ? input : new ArrayList(EnumerateForCollection(input).ToArray());
             return true;
         }
 
         if (IsGenericListType(fullName))
         {
-            value = ConstructGenericList(fullName, EnumerateForCollection(input).ToArray());
+            value = input is null || GenericListTypeMatches(fullName, input)
+                ? input : ConstructGenericList(fullName, EnumerateForCollection(input).ToArray());
             return true;
         }
 
@@ -614,6 +617,25 @@ internal static class PowerShellWasmDotNetBridge
     // Only descriptors for known runtime values are exposed, never reflected Type instances or member discovery.
     private static string? GetKnownRuntimeTypeName(object value) => value switch
     {
+        string[] => "System.String[]",
+        bool[] => "System.Boolean[]",
+        char[] => "System.Char[]",
+        byte[] => "System.Byte[]",
+        sbyte[] => "System.SByte[]",
+        short[] => "System.Int16[]",
+        ushort[] => "System.UInt16[]",
+        int[] => "System.Int32[]",
+        uint[] => "System.UInt32[]",
+        long[] => "System.Int64[]",
+        ulong[] => "System.UInt64[]",
+        float[] => "System.Single[]",
+        double[] => "System.Double[]",
+        decimal[] => "System.Decimal[]",
+        System.Numerics.BigInteger[] => "System.Numerics.BigInteger[]",
+        DateTime[] => "System.DateTime[]",
+        DateTimeOffset[] => "System.DateTimeOffset[]",
+        TimeSpan[] => "System.TimeSpan[]",
+        object[] array when array.GetType() == typeof(object[]) => "System.Object[]",
         OrderedDictionary => OrderedDictionaryType,
         Hashtable => HashtableType,
         PowerShellWasmCustomObject => "System.Management.Automation.PSCustomObject",

@@ -191,7 +191,10 @@ public sealed record ArraySubexpressionAst(ScriptAst Script) : ExpressionAst;
 
 public sealed record SubexpressionAst(ScriptAst Script) : ExpressionAst;
 
-public sealed record ScriptBlockExpressionAst(ScriptAst Body) : ExpressionAst;
+public sealed record ScriptBlockExpressionAst(ScriptAst Body) : ExpressionAst
+{
+    internal string? SourceText { get; init; }
+}
 
 public sealed record ParenthesizedExpressionAst(ExpressionAst Expression) : ExpressionAst;
 

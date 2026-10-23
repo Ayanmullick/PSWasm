@@ -21,39 +21,56 @@ internal sealed class MeasureObjectCommand : IPowerShellWasmPipelineCommand
     {
         private readonly PowerShellWasmCommandContext _context;
         private readonly string? _propertyName;
+        private readonly PowerShellWasmScriptBlock? _propertyScript;
         private readonly List<double> _numericValues = [];
-        private int _count;
+        private int _count, _nullValues;
 
         public Processor(PowerShellWasmCommandContext context)
         {
             _context = context;
-            var propertyNames = PowerShellWasmCommandUtilities.GetPropertyNames(context);
-            _propertyName = propertyNames.Count > 0 ? propertyNames[0] : null;
+            var property = PipelinePropertyUtilities.GetExpressions(context).FirstOrDefault();
+            _propertyScript = property as PowerShellWasmScriptBlock;
+            _propertyName = _propertyScript is not null
+                ? _propertyScript.SourceText ?? string.Empty
+                : property is null ? null : PowerShellWasmCommandUtilities.ToInvariantString(property);
         }
 
         public ValueTask BeginAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
-        public ValueTask ProcessAsync(object? record, CancellationToken cancellationToken)
+        public async ValueTask ProcessAsync(object? record, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var value = PowerShellWasmPipelineValue.Unwrap(record);
-            if (value is null || PowerShellWasmOutput.IsNoOutput(value)) return ValueTask.CompletedTask;
+            if (value is null || PowerShellWasmOutput.IsNoOutput(value)) return;
             _count++;
-            var measured = string.IsNullOrWhiteSpace(_propertyName)
-                ? value : PowerShellWasmCommandUtilities.GetMemberValue(value, _propertyName);
+            object? measured;
+            if (_propertyScript is not null)
+            {
+                var output = await _propertyScript.InvokeCallbackAsync(value, null, PowerShellWasmPipelineValue.GetVariables(record),
+                    PowerShellWasmScriptBlockInvocation.CalculatedProperty, cancellationToken);
+                // A property expression produces one measurement per input, including an empty or multi-value result.
+                // No output converts to zero; explicit null contributes to Sum/Average but not Minimum/Maximum.
+                measured = output.Count switch { 0 => 0, 1 => output[0], _ => output.ToArray() };
+                if (PowerShellWasmOutput.AsNull(measured) is null) _nullValues++;
+            }
+            else
+            {
+                measured = string.IsNullOrWhiteSpace(_propertyName)
+                    ? value : PowerShellWasmCommandUtilities.GetMemberValue(value, _propertyName);
+            }
             if (PowerShellWasmCommandUtilities.TryToNumber(measured, out var number)) _numericValues.Add(number);
-            return ValueTask.CompletedTask;
         }
 
         public ValueTask CompleteAsync(CancellationToken cancellationToken)
         {
             var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["Count"] = _count };
-            if (!string.IsNullOrWhiteSpace(_propertyName)) result["Property"] = _propertyName;
-            AddStatistics(result, _context, _numericValues);
+            if (_propertyScript is not null || !string.IsNullOrWhiteSpace(_propertyName)) result["Property"] = _propertyName;
+            AddStatistics(result, _context, _numericValues, _nullValues);
             return _context.ExecutionContext.WriteOutputAsync(result, cancellationToken);
         }
     }
-    private static void AddStatistics(Dictionary<string, object?> result, PowerShellWasmCommandContext context, IReadOnlyList<double> values)
+    private static void AddStatistics(Dictionary<string, object?> result, PowerShellWasmCommandContext context,
+        IReadOnlyList<double> values, int nullValues)
     {
         if (PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Sum")))
         {
@@ -62,7 +79,8 @@ internal sealed class MeasureObjectCommand : IPowerShellWasmPipelineCommand
 
         if (PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Average")))
         {
-            result["Average"] = values.Count == 0 ? null : NormalizeNumber(values.Average());
+            var numericCount = values.Count + nullValues;
+            result["Average"] = numericCount == 0 ? null : NormalizeNumber(values.Sum() / numericCount);
         }
 
         if (PowerShellWasmCommandUtilities.ToBoolean(context.Parameters.GetValueOrDefault("Minimum")))

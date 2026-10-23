@@ -67,11 +67,15 @@ The `AzAuth` flavor adds user-delegated Entra authentication and authenticated A
 
 The runtime includes PowerShell-style variables, arrays, hashtables, objects, operators, functions, control flow, splatting, pipelines, stream output, and a limited set of .NET helpers. Browser commands cover JSON/CSV/HTML conversion, DOM events and storage, HTTP requests, and optional Azure authentication.
 
+Use `[int]$Count = 1` to retain a variable's type across later assignments. See [typed variables](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#typed-variables) for conversion, arrays, scope, and assignment results.
+
 Use `&` to invoke a script block or a registered command/function by name, or `.` to run a script block/function in the current scope. `return` accepts expressions, commands, and pipelines. See [binding, scope, and return behavior](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#control-flow-and-functions) for the browser-safe subset.
 
 Use `[ordered]@{...}` when dictionary insertion order matters; ordinary hashtables have no guaranteed enumeration order. See [hashtables and ordered dictionaries](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#hashtables) for typed keys, indexing, and supported methods.
 
 Use `Select-Object -First` to stop a pipeline after the requested input, or add `-Wait` to consume the remaining input. See [object pipeline commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands#object-pipeline-commands) for selection and completion behavior.
+
+Use `$_` or `$PSItem` for the current item in pipeline callbacks; `param($Item)` does not receive that item implicitly. See [callback parameters, input, and scope](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#pipeline-callback-scope).
 
 Use `$?`, `&&`, and `||` to inspect execution status and recover from failures. See [execution status and error handling](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#execution-status) for command boundaries, retained errors, and the supported subset.
 

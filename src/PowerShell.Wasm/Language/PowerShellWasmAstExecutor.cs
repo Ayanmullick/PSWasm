@@ -503,6 +503,7 @@ internal sealed class PowerShellWasmAstExecutor(
             ? null
             : executionContext.WithTemporaryVariables(
                 await CreateParameterLocalsAsync(script.Parameters, null, [], null, bindInputToFirstParameter: false, null, cancellationToken));
+        if (script.Parameters.Count != 0) executionContext.SetParameterConstraints(script.Parameters);
 
         foreach (var statement in script.Statements)
         {
@@ -1101,14 +1102,16 @@ internal sealed class PowerShellWasmAstExecutor(
             {
                 ["input"] = pipelineInput.ToArray().GetEnumerator()
             },
-            cancellationToken, dotSource ? executionContext.SetVariable : null);
+            cancellationToken, dotSource ? (parameter, value) =>
+                executionContext.SetParameterVariable(parameter, value, retainConstraint: false) : null);
 
         if (dotSource)
         {
             foreach (var name in new[] { "args", "input", "PSBoundParameters" }) executionContext.SetVariable(name, locals[name]);
         }
-        using (dotSource ? null : executionContext.WithScriptScope(locals))
+        using (dotSource ? null : executionContext.WithScriptScope(locals, function.LocalTypes))
         {
+            if (!dotSource) executionContext.SetParameterConstraints(function.Parameters);
             try
             {
                 await ExecuteScriptAsync(function.Body, cancellationToken);
@@ -1239,8 +1242,7 @@ internal sealed class PowerShellWasmAstExecutor(
     private async ValueTask<object?> EvaluateAssignmentAsync(AssignmentExpressionAst assignment, CancellationToken cancellationToken)
     {
         var value = await EvaluateExpressionAsync(assignment.Value, cancellationToken);
-        executionContext.SetVariable(assignment.VariableName, value);
-        return value;
+        return executionContext.AssignVariable(assignment.VariableName, value);
     }
 
     // Behavioral guidance: Compiler's assignable values cache receivers/keys; index assignment evaluates the RHS first.
@@ -1251,14 +1253,40 @@ internal sealed class PowerShellWasmAstExecutor(
         Func<ValueTask<object?>> evaluateValue,
         CancellationToken cancellationToken)
     {
+        target = UnwrapAssignmentTarget(target);
+        if (target is ArrayExpressionAst arrayTarget)
+            return await AssignArrayTargetsAsync(arrayTarget, await evaluateValue(), cancellationToken);
         // Plain member assignment captures its receiver/name before the value; index assignment evaluates the value first.
-        AssignmentTarget? location = target is MemberAccessExpressionAst or ComputedMemberAccessExpressionAst
+        var untypedTarget = target;
+        while (untypedTarget is CastExpressionAst cast) untypedTarget = UnwrapAssignmentTarget(cast.Operand);
+        AssignmentTarget? location = untypedTarget is MemberAccessExpressionAst or ComputedMemberAccessExpressionAst
             ? await ResolveAssignmentTargetAsync(target, cancellationToken)
             : null;
         var value = await evaluateValue();
         location ??= await ResolveAssignmentTargetAsync(target, cancellationToken);
-        location.Value.Write(value);
-        return value;
+        return location.Value.Write(value);
+    }
+
+    private async ValueTask<object?[]> AssignArrayTargetsAsync(ArrayExpressionAst targets, object? value, CancellationToken token)
+    {
+        var values = Enumerate(value).ToArray();
+        var assigned = new object?[targets.Items.Count];
+        for (var i = 0; i < targets.Items.Count; i++)
+        {
+            var item = i >= values.Length ? null : i == targets.Items.Count - 1 && values.Length > targets.Items.Count
+                ? values.Skip(i).ToArray() : values[i];
+            var target = UnwrapAssignmentTarget(targets.Items[i]);
+            if (target is ArrayExpressionAst nested) await AssignArrayTargetsAsync(nested, item, token);
+            else (await ResolveAssignmentTargetAsync(target, token)).Write(item);
+            assigned[i] = item;
+        }
+        return assigned;
+    }
+
+    private static ExpressionAst UnwrapAssignmentTarget(ExpressionAst target)
+    {
+        while (target is ParenthesizedExpressionAst parenthesized) target = parenthesized.Expression;
+        return target;
     }
 
     private async ValueTask<object?> EvaluateCompoundAssignmentAsync(
@@ -1270,15 +1298,14 @@ internal sealed class PowerShellWasmAstExecutor(
         var left = EvaluateVariableAssignmentTarget(variableName);
         if (op == PowerShellWasmBinaryOperator.NullCoalesce && PowerShellWasmOutput.AsNull(left) is not null)
         {
-            return left;
+            return executionContext.AssignVariable(variableName, left);
         }
 
         var right = await EvaluateExpressionAsync(expression, cancellationToken);
         var value = op == PowerShellWasmBinaryOperator.NullCoalesce
             ? right
             : ApplyBinaryOperator(left, op, right);
-        executionContext.SetVariable(variableName, value);
-        return value;
+        return executionContext.AssignVariable(variableName, value);
     }
 
     private async ValueTask<object?> EvaluateSettableCompoundAssignmentAsync(
@@ -1292,16 +1319,14 @@ internal sealed class PowerShellWasmAstExecutor(
         if (op == PowerShellWasmBinaryOperator.NullCoalesce && PowerShellWasmOutput.AsNull(left) is not null)
         {
             // PowerShell skips the right operand, but still assigns through the captured target (which may be read-only).
-            location.Write(left);
-            return left;
+            return location.Write(left);
         }
 
         var right = await EvaluateExpressionAsync(expression, cancellationToken);
         var value = op == PowerShellWasmBinaryOperator.NullCoalesce
             ? right
             : ApplyBinaryOperator(left, op, right);
-        location.Write(value);
-        return value;
+        return location.Write(value);
     }
 
     private object? EvaluateVariableAssignmentTarget(string variableName)
@@ -1329,12 +1354,32 @@ internal sealed class PowerShellWasmAstExecutor(
 
     // Behavioral guidance: ReduceAssignment reuses an assignable value for the read/write, including ??= write-back.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L979-L1008
-    private readonly record struct AssignmentTarget(Func<object?> Read, Action<object?> Write);
+    private readonly record struct AssignmentTarget(Func<object?> Read, Func<object?, object?> Write);
 
     private async ValueTask<AssignmentTarget> ResolveAssignmentTargetAsync(
         ExpressionAst target,
         CancellationToken cancellationToken)
     {
+        target = UnwrapAssignmentTarget(target);
+        if (target is CastExpressionAst)
+        {
+            var types = new List<string>();
+            while (target is CastExpressionAst cast)
+            {
+                types.Add(cast.TypeName);
+                target = UnwrapAssignmentTarget(cast.Operand);
+            }
+            if (target is VariableExpressionAst { IsEnvironment: false } typedVariable)
+                return new AssignmentTarget(() => EvaluateVariable(typedVariable.Name),
+                    value => executionContext.SetTypedVariable(typedVariable.Name, value, types));
+            var inner = await ResolveAssignmentTargetAsync(target, cancellationToken);
+            return new AssignmentTarget(inner.Read, value =>
+            {
+                foreach (var type in types.AsEnumerable().Reverse())
+                    value = ConvertOptimizedValue(type, value, executionContext.OutputFieldSeparator);
+                return inner.Write(value);
+            });
+        }
         switch (target)
         {
             case VariableExpressionAst variable:
@@ -1342,22 +1387,22 @@ internal sealed class PowerShellWasmAstExecutor(
                 {
                     return new AssignmentTarget(
                         () => executionContext.GetEnvironmentVariable(variable.Name) ?? string.Empty,
-                        value => executionContext.SetEnvironmentVariable(variable.Name, value is null ? null : ToInvariantString(value)));
+                        value => { executionContext.SetEnvironmentVariable(variable.Name, value is null ? null : ToInvariantString(value)); return value; });
                 }
                 return new AssignmentTarget(
-                    () => EvaluateVariable(variable.Name), value => executionContext.SetVariable(variable.Name, value));
+                    () => EvaluateVariable(variable.Name), value => executionContext.AssignVariable(variable.Name, value));
             case MemberAccessExpressionAst member:
             {
                 var receiver = await EvaluateExpressionAsync(member.Target, cancellationToken);
                 return new AssignmentTarget(
-                    () => EvaluateMemberAccess(receiver, member.MemberName), value => SetMemberValue(receiver, member.MemberName, value));
+                    () => EvaluateMemberAccess(receiver, member.MemberName), value => { SetMemberValue(receiver, member.MemberName, value); return value; });
             }
             case ComputedMemberAccessExpressionAst member:
             {
                 var receiver = await EvaluateExpressionAsync(member.Target, cancellationToken);
                 var name = ToInvariantString(await EvaluateExpressionAsync(member.MemberName, cancellationToken));
                 return new AssignmentTarget(
-                    () => EvaluateMemberAccess(receiver, name), value => SetMemberValue(receiver, name, value));
+                    () => EvaluateMemberAccess(receiver, name), value => { SetMemberValue(receiver, name, value); return value; });
             }
             case IndexExpressionAst index:
             {
@@ -1365,7 +1410,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 var key = await EvaluateExpressionAsync(index.Index, cancellationToken);
                 var keyOnly = HasObjectIndexConstraint(index.Index);
                 return new AssignmentTarget(() => EvaluateIndex(receiver, key, keyOnly),
-                    value => SetIndexValue(receiver, key, value, keyOnly));
+                    value => { SetIndexValue(receiver, key, value, keyOnly); return value; });
             }
             default:
                 throw new InvalidOperationException("Only variables, members, and indexers can be assigned in this browser-safe runtime.");
@@ -1551,25 +1596,65 @@ internal sealed class PowerShellWasmAstExecutor(
 
     private PowerShellWasmScriptBlock CreateScriptBlock(ScriptBlockExpressionAst scriptBlock)
     {
+        IReadOnlyDictionary<string, string>? localTypes = null;
         async ValueTask ExecuteBodyAsync(
             object? input,
             IReadOnlyList<object?>? arguments,
             IReadOnlyDictionary<string, object?>? variables,
+            PowerShellWasmScriptBlockInvocation invocation,
             CancellationToken cancellationToken)
         {
             // Script callbacks see the caller's preferences, not their enclosing cmdlet's common-parameter overrides.
-            using var callerScope = executionContext.EnterScriptCaller();
-            var locals = await CreateParameterLocalsAsync(
-                scriptBlock.Body.Parameters,
-                null,
-                arguments ?? [],
-                input,
-                bindInputToFirstParameter: arguments is null,
-                variables,
-                cancellationToken);
-            using var variableScope = locals.Count == 0 ? null : executionContext.WithTemporaryVariables(locals);
-            using var pipelineScope = executionContext.WithPipelineItem(input);
+            using var callerScope = invocation == PowerShellWasmScriptBlockInvocation.Collection
+                ? null : executionContext.EnterScriptCaller();
+            if (invocation == PowerShellWasmScriptBlockInvocation.Host)
+            {
+                var locals = await CreateParameterLocalsAsync(scriptBlock.Body.Parameters, null, arguments ?? [], input,
+                    bindInputToFirstParameter: arguments is null, variables, cancellationToken);
+                using var variableScope = executionContext.WithTemporaryVariables(locals);
+                using var pipelineScope = executionContext.WithPipelineItem(input);
+                executionContext.SetParameterConstraints(scriptBlock.Body.Parameters);
+                await ExecuteStatementsAsync(cancellationToken);
+                return;
+            }
 
+            // Cmdlet callbacks run in caller scope with a one-record input array; collection methods inherit input.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/InternalCommands.cs#L919-L934
+            // Calculated properties instead use a child scope; none of these callbacks implicitly bind $_ as an argument.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/FormatAndOutput/common/Utilities/Mshexpression.cs#L310-L325
+            var callbackLocals = variables is null ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, object?>(variables, StringComparer.OrdinalIgnoreCase);
+            callbackLocals["args"] = executionContext.GetRawVariable("args");
+            callbackLocals["PSBoundParameters"] = executionContext.GetRawVariable("PSBoundParameters");
+            callbackLocals["_"] = PowerShellWasmOutput.IsNoOutput(input) ? executionContext.GetRawVariable("_") : input;
+            callbackLocals["input"] = invocation switch
+            {
+                PowerShellWasmScriptBlockInvocation.Pipeline => new object?[] { input },
+                PowerShellWasmScriptBlockInvocation.PipelineBeginEnd => Array.Empty<object?>(),
+                _ => executionContext.GetRawVariable("input")
+            };
+
+            var childScope = invocation == PowerShellWasmScriptBlockInvocation.CalculatedProperty;
+            if (!childScope)
+            {
+                foreach (var parameter in scriptBlock.Body.Parameters)
+                    if (!executionContext.HasVariableInCurrentScope(parameter.Name) && !callbackLocals.ContainsKey(parameter.Name))
+                        callbackLocals[parameter.Name] = executionContext.GetRawVariable(parameter.Name);
+            }
+            using var callbackScope = childScope ? executionContext.WithScriptScope(callbackLocals,
+                localTypes ??= PowerShellWasmVariableAnalysis.Analyze(scriptBlock.Body))
+                : executionContext.WithTemporaryVariables(callbackLocals);
+            var boundNames = new List<string>();
+            try
+            {
+                await BindCallbackParametersAsync(scriptBlock.Body.Parameters, arguments ?? [], boundNames, cancellationToken);
+                await ExecuteStatementsAsync(cancellationToken);
+            }
+            finally { executionContext.ClearParameterConstraints(boundNames); }
+        }
+
+        async ValueTask ExecuteStatementsAsync(CancellationToken cancellationToken)
+        {
             try
             {
                 foreach (var statement in scriptBlock.Body.Statements)
@@ -1585,11 +1670,11 @@ internal sealed class PowerShellWasmAstExecutor(
 
         async ValueTask<IReadOnlyList<object?>> InvokeCoreAsync(
             object? input, IReadOnlyList<object?>? arguments, IReadOnlyDictionary<string, object?>? variables,
-            bool captureStreams, CancellationToken cancellationToken)
+            PowerShellWasmScriptBlockInvocation invocation, bool captureStreams, CancellationToken cancellationToken)
         {
             var output = new List<object?>();
             using var outputScope = executionContext.CaptureOutput(output, captureStreams);
-            await ExecuteBodyAsync(input, arguments, variables, cancellationToken);
+            await ExecuteBodyAsync(input, arguments, variables, invocation, cancellationToken);
             return captureStreams ? output : executionContext.GetCapturedOutput(output);
         }
 
@@ -1597,30 +1682,61 @@ internal sealed class PowerShellWasmAstExecutor(
             object? input,
             IReadOnlyList<object?>? arguments,
             IReadOnlyDictionary<string, object?>? variables,
+            PowerShellWasmScriptBlockInvocation invocation,
             CancellationToken cancellationToken) =>
-            InvokeCoreAsync(input, arguments, variables, captureStreams: false, cancellationToken);
+            InvokeCoreAsync(input, arguments, variables, invocation, captureStreams: false, cancellationToken);
 
         async ValueTask<PowerShellWasmResult> InvokeResultAsync(
             object? input,
             IReadOnlyList<object?>? arguments,
             IReadOnlyDictionary<string, object?>? variables,
+            PowerShellWasmScriptBlockInvocation invocation,
             CancellationToken cancellationToken) =>
-            executionContext.CreateResult(await InvokeCoreAsync(input, arguments, variables, captureStreams: true, cancellationToken));
+            executionContext.CreateResult(await InvokeCoreAsync(input, arguments, variables, invocation, captureStreams: true, cancellationToken));
 
         async ValueTask InvokeOutputAsync(
-            object? input, IReadOnlyDictionary<string, object?>? variables, CancellationToken cancellationToken)
+            object? input, IReadOnlyDictionary<string, object?>? variables,
+            PowerShellWasmScriptBlockInvocation invocation, CancellationToken cancellationToken)
         {
             var output = executionContext.CurrentOutputPort;
             using var outputScope = executionContext.RouteOutput((item, token) => executionContext.WriteToPortAsync(output,
                 variables is null || PowerShellWasmExecutionContext.IsStreamRecord(item)
                     ? item : PowerShellWasmPipelineValue.Wrap(item, variables), token));
-            await ExecuteBodyAsync(input, null, variables, cancellationToken);
+            await ExecuteBodyAsync(input, null, variables, invocation, cancellationToken);
         }
 
         var commandBody = new PowerShellWasmScriptFunction("&", scriptBlock.Body.Parameters, new ScriptAst(scriptBlock.Body.Statements));
         return new PowerShellWasmScriptBlock(InvokeAsync, InvokeResultAsync, scriptBlock.Body.Parameters,
             (context, dotSource, cancellationToken) => ExecuteScriptFunctionAsync(
-                commandBody, context.Parameters, context.Arguments, context.PipelineInput, cancellationToken, dotSource), InvokeOutputAsync);
+                commandBody, context.Parameters, context.Arguments, context.PipelineInput, cancellationToken, dotSource),
+            InvokeOutputAsync, scriptBlock.SourceText);
+    }
+
+    // Callback arguments/defaults bind sequentially in the invocation scope; only declared parameters replace
+    // PSBoundParameters. Existing parameter variables retain their mutations; newly introduced ones are temporary.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/CompiledScriptBlock.cs#L1288-L1355
+    private async ValueTask BindCallbackParametersAsync(IReadOnlyList<ParameterDeclarationAst> parameters,
+        IReadOnlyList<object?> arguments, List<string> boundNames, CancellationToken cancellationToken)
+    {
+        var bound = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        var emptyLocals = new Dictionary<string, object?>();
+        var unbound = new List<object?>();
+        var argumentIndex = 0;
+        foreach (var parameter in parameters)
+        {
+            boundNames.Add(parameter.Name);
+            object? value = null;
+            var wasBound = TryTakePositionalArgument(arguments, ref argumentIndex, unbound, out value);
+            var hasValue = wasBound || parameter.DefaultValue is not null;
+            if (!wasBound && parameter.DefaultValue is not null)
+                value = await EvaluateParameterDefaultAsync(parameter.DefaultValue, emptyLocals, cancellationToken);
+            value = ConvertParameterValue(parameter, value, hasValue);
+            ValidateParameterValue(parameter, value is null ? new object?[] { null } : value);
+            executionContext.SetParameterVariable(parameter, value, retainConstraint: true);
+            if (wasBound) bound[parameter.Name] = value;
+        }
+        executionContext.SetVariable("args", unbound.Concat(arguments.Skip(argumentIndex)).ToArray());
+        if (parameters.Count != 0) executionContext.SetVariable("PSBoundParameters", bound);
     }
 
     private async ValueTask<Dictionary<string, object?>> CreateParameterLocalsAsync(
@@ -1631,7 +1747,7 @@ internal sealed class PowerShellWasmAstExecutor(
         bool bindInputToFirstParameter,
         IReadOnlyDictionary<string, object?>? variables,
         CancellationToken cancellationToken,
-        Action<string, object?>? bindInCaller = null)
+        Action<ParameterDeclarationAst, object?>? bindInCaller = null)
     {
         var locals = variables is null
             ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
@@ -1680,7 +1796,7 @@ internal sealed class PowerShellWasmAstExecutor(
             locals[parameterName] = value;
             // Successful dot-sourced bindings survive a later parameter conversion/validation failure.
             // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/scriptparameterbinder.cs#L101-L135
-            bindInCaller?.Invoke(parameterName, value);
+            bindInCaller?.Invoke(parameter, value);
             if (wasBound)
             {
                 boundParameters[parameterName] = value;
@@ -1697,7 +1813,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 ValidateParameterValue(parameter, value);
                 locals[parameter.Name] = value;
             }
-            bindInCaller?.Invoke(parameter.Name, locals[parameter.Name]);
+            bindInCaller?.Invoke(parameter, locals[parameter.Name]);
         }
 
         locals["PSBoundParameters"] = boundParameters;
@@ -1761,6 +1877,7 @@ internal sealed class PowerShellWasmAstExecutor(
         }
 
         var type = NormalizeCastTypeName(parameter.TypeName);
+        if (type == "bool") return hasValue ? ConvertConstrainedValue(type, value, executionContext.OutputFieldSeparator) : false;
         if (type == "string" && value is IEnumerator) return ToExpandableString(value);
         return hasValue || type is "int" or "long" or "byte" or "double" or "decimal" or "bool" or "string"
             ? CastValue(parameter.TypeName, value) : value;
@@ -1829,6 +1946,8 @@ internal sealed class PowerShellWasmAstExecutor(
         if (normalizedType == "object") return value;
         if (normalizedType == "string" && PowerShellWasmOutput.IsNoOutput(value)) return null;
         value = PowerShellWasmOutput.AsNull(value);
+        if (normalizedType is "array" or "system.array")
+            return value is null or Array ? value : Enumerate(value).ToArray();
         if (normalizedType is "pscustomobject" or "system.management.automation.pscustomobject")
         {
             if (value is null or PowerShellWasmCustomObject) return value;
@@ -1848,9 +1967,56 @@ internal sealed class PowerShellWasmAstExecutor(
         return CastScalarValue(normalizedType, value);
     }
 
+    // ArgumentTypeConverterAttribute enforces scalar Boolean/switch constraints more strictly than an explicit cast.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ArgumentTypeConverterAttribute.cs
+    internal static object? ConvertConstrainedValue(string typeName, object? value, string separator)
+    {
+        var type = NormalizeCastTypeName(typeName);
+        if (type is "void" or "system.void") throw new InvalidOperationException("A variable cannot have type void.");
+        if (type is "bool" or "switch")
+        {
+            value = PowerShellWasmOutput.AsNull(value);
+            if (value is bool boolean) return boolean;
+            if (type == "switch" && value is null) return false;
+            if (type == "bool" && value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal)
+                return ToBoolean(value);
+            throw new InvalidOperationException($"Cannot convert this value to type [{typeName}].");
+        }
+        if (type == "string" && value is IEnumerable and not string and not IDictionary or IEnumerator)
+            return string.Join(separator, Enumerate(value).Select(ToInvariantString));
+        return CastValue(typeName, value);
+    }
+
+    // Statically typed local tuple fields use a language conversion rather than PSVariable attribute transformation.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/ast.cs#L9504-L9549
+    internal static object? ConvertOptimizedValue(string typeName, object? value, string separator) =>
+        NormalizeCastTypeName(typeName) is "bool" or "switch" ? CastValue(typeName, value)
+            : ConvertConstrainedValue(typeName, value, separator);
+
+    internal static void ValidateConstrainedValue(IReadOnlyList<string> validValues, object? value)
+    {
+        if (validValues.Count == 0) return;
+        foreach (var item in value is null ? new object?[] { null } : Enumerate(value))
+            if (!validValues.Contains(ToInvariantString(item), StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Variable failed ValidateSet. Expected one of: {string.Join(", ", validValues)}.");
+    }
+
     private static object? CastArrayValue(string elementType, object? value)
     {
         if (PowerShellWasmOutput.AsNull(value) is null) return null;
+        // Conversion to an assignable array type preserves identity, including reference-array covariance.
+        var alreadyAssignable = elementType switch
+        {
+            "byte" => value is byte[],
+            "string" => value is string[],
+            "int" => value is int[],
+            "long" => value is long[],
+            "double" => value is double[],
+            "bool" or "switch" => value is bool[],
+            "object" => value is object[],
+            _ => false
+        };
+        if (alreadyAssignable) return value;
         var values = Enumerate(value).Select(item => CastScalarValue(elementType, item)).ToArray();
         return elementType switch
         {
@@ -1886,7 +2052,7 @@ internal sealed class PowerShellWasmAstExecutor(
     private static double ToCastNumber(object? value) =>
         value is null ? 0 : ToNumber(value);
 
-    private static string NormalizeCastTypeName(string typeName)
+    internal static string NormalizeCastTypeName(string typeName)
     {
         var normalized = typeName.Trim();
         var isArray = normalized.EndsWith("[]", StringComparison.Ordinal);
@@ -2164,7 +2330,8 @@ internal sealed class PowerShellWasmAstExecutor(
             var output = new List<object?>();
             foreach (var item in Enumerate(target))
             {
-                output.AddRange(await scriptBlock.InvokeAsync(item, null, null, cancellationToken));
+                output.AddRange(await scriptBlock.InvokeCallbackAsync(item, arguments.Skip(1).ToArray(), null,
+                    PowerShellWasmScriptBlockInvocation.Collection, cancellationToken));
             }
 
             return (true, output.ToArray());
@@ -2175,7 +2342,8 @@ internal sealed class PowerShellWasmAstExecutor(
             var selected = new List<object?>();
             foreach (var item in Enumerate(target))
             {
-                if (ToBoolean(ToCapturedExpressionValue(await scriptBlock.InvokeAsync(item, null, null, cancellationToken))))
+                if (ToBoolean(ToCapturedExpressionValue(await scriptBlock.InvokeCallbackAsync(item, null, null,
+                    PowerShellWasmScriptBlockInvocation.Collection, cancellationToken))))
                 {
                     selected.Add(item);
                 }
