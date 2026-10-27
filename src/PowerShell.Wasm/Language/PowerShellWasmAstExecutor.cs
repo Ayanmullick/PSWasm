@@ -41,7 +41,7 @@ internal sealed class PowerShellWasmAstExecutor(
         switch (statement)
         {
             case AssignmentStatementAst assignment:
-                executionContext.SetVariable(assignment.VariableName, await EvaluateExpressionAsync(assignment.Value, cancellationToken));
+                executionContext.AssignVariable(assignment.VariableName, await EvaluateExpressionAsync(assignment.Value, cancellationToken));
                 break;
             case SettableAssignmentStatementAst assignment:
                 await EvaluateSettableAssignmentAsync(
@@ -173,7 +173,7 @@ internal sealed class PowerShellWasmAstExecutor(
         foreach (var item in Enumerate(await EvaluateExpressionAsync(statement.Collection, cancellationToken)))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            executionContext.SetVariable(statement.VariableName, item);
+            executionContext.AssignVariable(statement.VariableName, item);
             try
             {
                 await ExecuteScriptAsync(statement.Body, cancellationToken);
@@ -376,7 +376,7 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         var output = await CaptureExpressionOutputAsync(
             () => ExecuteStatementAsync(assignment.Statement, [], cancellationToken), cancellationToken);
-        executionContext.SetVariable(assignment.VariableName, ToCapturedExpressionValue(output));
+        executionContext.AssignVariable(assignment.VariableName, ToCapturedExpressionValue(output));
     }
 
     private async ValueTask ExecuteSettableStatementAssignmentAsync(
@@ -1092,6 +1092,12 @@ internal sealed class PowerShellWasmAstExecutor(
                 ["args"] = executionContext.GetRawVariable("args"), ["input"] = executionContext.GetRawVariable("input"),
                 ["PSBoundParameters"] = executionContext.GetRawVariable("PSBoundParameters")
             }) : null;
+        // Defaults execute in the same scope as the body, before invocation automatic variables receive their final values.
+        // A temporary caller overlay would misresolve local:/numeric scopes and lose mutations to earlier parameters.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ScriptCommandProcessor.cs#L331-L338
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/scriptparameterbindercontroller.cs#L77-L102
+        using var functionScope = dotSource ? null : executionContext.WithScriptScope(
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase), function.LocalTypes);
         var locals = await CreateParameterLocalsAsync(
             function.Parameters,
             parameters,
@@ -1102,23 +1108,17 @@ internal sealed class PowerShellWasmAstExecutor(
             {
                 ["input"] = pipelineInput.ToArray().GetEnumerator()
             },
-            cancellationToken, dotSource ? (parameter, value) =>
-                executionContext.SetParameterVariable(parameter, value, retainConstraint: false) : null);
+            cancellationToken, (parameter, value) =>
+                executionContext.SetParameterVariable(parameter, value,
+                    retainConstraint: !dotSource && !PowerShellWasmExecutionContext.IsRootScopedParameter(parameter.Name)));
 
-        if (dotSource)
+        foreach (var name in new[] { "args", "input", "PSBoundParameters" }) executionContext.SetVariable(name, locals[name]);
+        try
         {
-            foreach (var name in new[] { "args", "input", "PSBoundParameters" }) executionContext.SetVariable(name, locals[name]);
+            await ExecuteScriptAsync(function.Body, cancellationToken);
         }
-        using (dotSource ? null : executionContext.WithScriptScope(locals, function.LocalTypes))
+        catch (ReturnFlowException)
         {
-            if (!dotSource) executionContext.SetParameterConstraints(function.Parameters);
-            try
-            {
-                await ExecuteScriptAsync(function.Body, cancellationToken);
-            }
-            catch (ReturnFlowException)
-            {
-            }
         }
     }
 
@@ -1409,8 +1409,9 @@ internal sealed class PowerShellWasmAstExecutor(
                 var receiver = await EvaluateExpressionAsync(index.Target, cancellationToken);
                 var key = await EvaluateExpressionAsync(index.Index, cancellationToken);
                 var keyOnly = HasObjectIndexConstraint(index.Index);
-                return new AssignmentTarget(() => EvaluateIndex(receiver, key, keyOnly),
-                    value => { SetIndexValue(receiver, key, value, keyOnly); return value; });
+                var multipleIndexes = index.Index is ArrayExpressionAst { Items.Count: > 1 };
+                return new AssignmentTarget(() => EvaluateIndex(receiver, key, keyOnly, multipleIndexes),
+                    value => { SetIndexValue(receiver, key, value, keyOnly, multipleIndexes); return value; });
             }
             default:
                 throw new InvalidOperationException("Only variables, members, and indexers can be assigned in this browser-safe runtime.");
@@ -1638,19 +1639,29 @@ internal sealed class PowerShellWasmAstExecutor(
             if (!childScope)
             {
                 foreach (var parameter in scriptBlock.Body.Parameters)
-                    if (!executionContext.HasVariableInCurrentScope(parameter.Name) && !callbackLocals.ContainsKey(parameter.Name))
-                        callbackLocals[parameter.Name] = executionContext.GetRawVariable(parameter.Name);
+                {
+                    if (PowerShellWasmExecutionContext.IsRootScopedParameter(parameter.Name)) continue;
+                    var name = PowerShellWasmExecutionContext.GetParameterVariableName(parameter.Name);
+                    if (!executionContext.HasVariableInCurrentScope(name) && !callbackLocals.ContainsKey(name))
+                        callbackLocals[name] = executionContext.GetRawVariable(parameter.Name);
+                }
             }
             using var callbackScope = childScope ? executionContext.WithScriptScope(callbackLocals,
                 localTypes ??= PowerShellWasmVariableAnalysis.Analyze(scriptBlock.Body))
                 : executionContext.WithTemporaryVariables(callbackLocals);
             var boundNames = new List<string>();
+            var parameterBackups = new List<IDisposable>();
             try
             {
-                await BindCallbackParametersAsync(scriptBlock.Body.Parameters, arguments ?? [], boundNames, cancellationToken);
+                await BindCallbackParametersAsync(scriptBlock.Body.Parameters, arguments ?? [], boundNames,
+                    childScope ? null : parameterBackups, cancellationToken);
                 await ExecuteStatementsAsync(cancellationToken);
             }
-            finally { executionContext.ClearParameterConstraints(boundNames); }
+            finally
+            {
+                executionContext.ClearParameterConstraints(boundNames);
+                foreach (var backup in parameterBackups) backup.Dispose();
+            }
         }
 
         async ValueTask ExecuteStatementsAsync(CancellationToken cancellationToken)
@@ -1716,7 +1727,8 @@ internal sealed class PowerShellWasmAstExecutor(
     // PSBoundParameters. Existing parameter variables retain their mutations; newly introduced ones are temporary.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/CompiledScriptBlock.cs#L1288-L1355
     private async ValueTask BindCallbackParametersAsync(IReadOnlyList<ParameterDeclarationAst> parameters,
-        IReadOnlyList<object?> arguments, List<string> boundNames, CancellationToken cancellationToken)
+        IReadOnlyList<object?> arguments, List<string> boundNames, List<IDisposable>? parameterBackups,
+        CancellationToken cancellationToken)
     {
         var bound = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var emptyLocals = new Dictionary<string, object?>();
@@ -1730,6 +1742,8 @@ internal sealed class PowerShellWasmAstExecutor(
             var hasValue = wasBound || parameter.DefaultValue is not null;
             if (!wasBound && parameter.DefaultValue is not null)
                 value = await EvaluateParameterDefaultAsync(parameter.DefaultValue, emptyLocals, cancellationToken);
+            if (parameterBackups is not null && PowerShellWasmExecutionContext.IsRootScopedParameter(parameter.Name))
+                parameterBackups.Add(executionContext.BackUpRootScopedCallbackParameter(parameter.Name));
             value = ConvertParameterValue(parameter, value, hasValue);
             ValidateParameterValue(parameter, value is null ? new object?[] { null } : value);
             executionContext.SetParameterVariable(parameter, value, retainConstraint: true);
@@ -1747,7 +1761,7 @@ internal sealed class PowerShellWasmAstExecutor(
         bool bindInputToFirstParameter,
         IReadOnlyDictionary<string, object?>? variables,
         CancellationToken cancellationToken,
-        Action<ParameterDeclarationAst, object?>? bindInCaller = null)
+        Action<ParameterDeclarationAst, object?>? bindInCurrentScope = null)
     {
         var locals = variables is null
             ? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
@@ -1756,10 +1770,22 @@ internal sealed class PowerShellWasmAstExecutor(
         var unboundArguments = new List<object?>();
         var argumentIndex = 0;
         var inputBound = false;
+        var parameterValues = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var parameter in parameters)
         {
-            locals[parameter.Name] = ConvertParameterValue(parameter, null, hasValue: false);
+            var value = ConvertParameterValue(parameter, null, hasValue: false);
+            parameterValues[parameter.Name] = value;
+            if (!PowerShellWasmExecutionContext.IsRootScopedParameter(parameter.Name)) locals[parameter.Name] = value;
+        }
+
+        void BindParameter(ParameterDeclarationAst parameter, object? value)
+        {
+            parameterValues[parameter.Name] = value;
+            if (!PowerShellWasmExecutionContext.IsRootScopedParameter(parameter.Name)) locals[parameter.Name] = value;
+            if (bindInCurrentScope is not null) bindInCurrentScope(parameter, value);
+            else if (PowerShellWasmExecutionContext.IsRootScopedParameter(parameter.Name))
+                executionContext.SetParameterVariable(parameter, value, retainConstraint: false);
         }
 
         foreach (var parameter in parameters)
@@ -1793,10 +1819,9 @@ internal sealed class PowerShellWasmAstExecutor(
 
             value = ConvertParameterValue(parameter, value, hasValue);
             ValidateParameterValue(parameter, value);
-            locals[parameterName] = value;
             // Successful dot-sourced bindings survive a later parameter conversion/validation failure.
             // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/scriptparameterbinder.cs#L101-L135
-            bindInCaller?.Invoke(parameter, value);
+            BindParameter(parameter, value);
             if (wasBound)
             {
                 boundParameters[parameterName] = value;
@@ -1808,12 +1833,13 @@ internal sealed class PowerShellWasmAstExecutor(
             if (boundParameters.ContainsKey(parameter.Name)) continue;
             if (parameter.DefaultValue is not null)
             {
-                var value = await EvaluateParameterDefaultAsync(parameter.DefaultValue, locals, cancellationToken);
+                var value = await EvaluateParameterDefaultAsync(parameter.DefaultValue,
+                    bindInCurrentScope is null ? locals : null, cancellationToken);
                 value = ConvertParameterValue(parameter, value, hasValue: true);
                 ValidateParameterValue(parameter, value);
-                locals[parameter.Name] = value;
+                parameterValues[parameter.Name] = value;
             }
-            bindInCaller?.Invoke(parameter, locals[parameter.Name]);
+            BindParameter(parameter, parameterValues[parameter.Name]);
         }
 
         locals["PSBoundParameters"] = boundParameters;
@@ -1907,10 +1933,10 @@ internal sealed class PowerShellWasmAstExecutor(
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L2131-L2211
     private async ValueTask<object?> EvaluateParameterDefaultAsync(
         ExpressionAst expression,
-        IReadOnlyDictionary<string, object?> locals,
+        IReadOnlyDictionary<string, object?>? locals,
         CancellationToken cancellationToken)
     {
-        using var parameterScope = locals.Count == 0 ? null : executionContext.WithTemporaryVariables(locals);
+        using var parameterScope = locals is null || locals.Count == 0 ? null : executionContext.WithTemporaryVariables(locals);
         var output = new List<object?>();
         using var outputScope = executionContext.CaptureOutput(output, captureStreams: false);
         try
@@ -2004,10 +2030,12 @@ internal sealed class PowerShellWasmAstExecutor(
     private static object? CastArrayValue(string elementType, object? value)
     {
         if (PowerShellWasmOutput.AsNull(value) is null) return null;
+        if (elementType == "char" && value is string text) return text.ToCharArray();
         // Conversion to an assignable array type preserves identity, including reference-array covariance.
         var alreadyAssignable = elementType switch
         {
             "byte" => value is byte[],
+            "char" => value is char[],
             "string" => value is string[],
             "int" => value is int[],
             "long" => value is long[],
@@ -2021,6 +2049,7 @@ internal sealed class PowerShellWasmAstExecutor(
         return elementType switch
         {
             "byte" => values.Select(item => Convert.ToByte(item, CultureInfo.InvariantCulture)).ToArray(),
+            "char" => values.Cast<char>().ToArray(),
             "string" => values.Select(ToInvariantString).ToArray(),
             "int" => values.Select(item => Convert.ToInt32(item, CultureInfo.InvariantCulture)).ToArray(),
             "long" => values.Select(item => Convert.ToInt64(item, CultureInfo.InvariantCulture)).ToArray(),
@@ -2037,6 +2066,7 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             "object" => value,
             "string" => ToInvariantString(value),
+            "char" => ToCharacter(value),
             "bool" => ToBoolean(value),
             "int" => Convert.ToInt32(ToCastNumber(value), CultureInfo.InvariantCulture),
             "long" => Convert.ToInt64(ToCastNumber(value), CultureInfo.InvariantCulture),
@@ -2048,6 +2078,19 @@ internal sealed class PowerShellWasmAstExecutor(
             "switch" => ToBoolean(value),
             _ => throw new InvalidOperationException($"Cast type '[{typeName}]' is not available in this browser-safe runtime.")
         };
+
+    // Character conversion accepts one UTF-16 code unit or an integral code; floating-point and Boolean values reject.
+    // String-to-char-array conversion above preserves UTF-16 units, including surrogate pairs.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L4478-L4485
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L4564-L4575
+    private static char ToCharacter(object? value) => PowerShellWasmOutput.AsNull(value) switch
+    {
+        null => '\0',
+        char character => character,
+        string text when text.Length == 1 => text[0],
+        byte or sbyte or short or ushort or int or uint or long or ulong => (char)Convert.ToUInt16(value, CultureInfo.InvariantCulture),
+        _ => throw new InvalidOperationException("The value cannot be converted to System.Char.")
+    };
 
     private static double ToCastNumber(object? value) =>
         value is null ? 0 : ToNumber(value);
@@ -2070,6 +2113,7 @@ internal sealed class PowerShellWasmAstExecutor(
             var value when value.Equals("int32", StringComparison.OrdinalIgnoreCase) => "int",
             var value when value.Equals("int64", StringComparison.OrdinalIgnoreCase) => "long",
             var value when value.Equals("System.String", StringComparison.OrdinalIgnoreCase) => "string",
+            var value when value.Equals("System.Char", StringComparison.OrdinalIgnoreCase) => "char",
             var value when value.Equals("System.Boolean", StringComparison.OrdinalIgnoreCase) => "bool",
             var value when value.Equals("System.Int32", StringComparison.OrdinalIgnoreCase) => "int",
             var value when value.Equals("System.Int64", StringComparison.OrdinalIgnoreCase) => "long",
@@ -2386,7 +2430,8 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         var target = await EvaluateExpressionAsync(index.Target, cancellationToken);
         var indexValue = await EvaluateExpressionAsync(index.Index, cancellationToken);
-        return EvaluateIndex(target, indexValue, HasObjectIndexConstraint(index.Index));
+        return EvaluateIndex(target, indexValue, HasObjectIndexConstraint(index.Index),
+            index.Index is ArrayExpressionAst { Items.Count: > 1 });
     }
 
     // Explicit object casts select OrderedDictionary's key overload even when the runtime value is an Int32.
@@ -2398,45 +2443,63 @@ internal sealed class PowerShellWasmAstExecutor(
         _ => false
     };
 
-    private static object? EvaluateIndex(object? target, object? indexValue, bool keyOnly = false)
+    // Native slicing preserves array identity and filters only AutomationNull, not actual null values.
+    // Direct comma indexes on non-array indexers retain failed slots; one enumerable index filters them.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L4001-L4530
+    private object? EvaluateIndex(object? target, object? indexValue, bool keyOnly = false, bool multipleIndexes = false)
     {
-        if (TryGetDictionaryIndex(target, indexValue, keyOnly, out var dictionaryValue))
+        target = PowerShellWasmOutput.AsNull(target);
+        indexValue = PowerShellWasmOutput.AsNull(indexValue);
+        if (target is null) throw new InvalidOperationException("Cannot index into a null array.");
+        if (indexValue is null) throw new InvalidOperationException("Index operation failed; the array index evaluated to null.");
+        if (TryGetDictionaryIndex(target, indexValue, keyOnly, multipleIndexes, out var dictionaryValue))
         {
             return dictionaryValue;
         }
 
-        var values = ToIndexableValues(target);
-        if (values.Length == 0)
+        var slicing = IsOperatorCollection(indexValue);
+        if (target is not string and not IList)
         {
-            return null;
+            // Objects without an indexer are their own scalar element at 0/-1, including explicit enumerators.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/ArrayOps.cs#L271-L300
+            return !slicing && (ValuesEqual(0, indexValue, false) || ValuesEqual(-1, indexValue, false))
+                ? target : PowerShellWasmOutput.NoOutput;
         }
 
+        var length = target is string text ? text.Length : ((IList)target).Count;
+        object? Read(object? item)
+        {
+            item = PowerShellWasmOutput.AsNull(item);
+            // An unavailable conversion is an error; a supported conversion that fails returns a missing slot.
+            if (!CanConvertIndex(item)) throw new InvalidOperationException("The index cannot be converted to System.Int32.");
+            try
+            {
+                var position = Convert.ToInt32(ToArithmeticNumber(item), CultureInfo.InvariantCulture);
+                if (position < 0) position += length;
+                if (position >= 0 && position < length)
+                    return target is string characters ? characters[position] : ((IList)target)[position];
+            }
+            catch (Exception error) when (error is FormatException or OverflowException or InvalidOperationException) { }
+            return slicing ? PowerShellWasmOutput.NoOutput : null;
+        }
+
+        if (!slicing) return Read(indexValue);
         var selected = new List<object?>();
         foreach (var item in Enumerate(indexValue))
         {
-            var itemIndex = Convert.ToInt32(ToNumber(item), CultureInfo.InvariantCulture);
-            if (itemIndex < 0)
-            {
-                itemIndex = values.Length + itemIndex;
-            }
-
-            if (itemIndex >= 0 && itemIndex < values.Length)
-            {
-                selected.Add(values[itemIndex]);
-            }
+            var value = Read(item);
+            if (multipleIndexes && target is not Array || !PowerShellWasmOutput.IsNoOutput(value)) selected.Add(value);
         }
-
-        return selected.Count switch
-        {
-            0 => null,
-            1 => selected[0],
-            _ => selected.ToArray()
-        };
+        return selected.ToArray();
     }
 
-    private static bool TryGetDictionaryIndex(object? target, object? index, bool keyOnly, out object? value)
+    private static bool CanConvertIndex(object? value) =>
+        value is null or bool or byte or char or int or long or double or decimal or string;
+
+    private static bool TryGetDictionaryIndex(object? target, object? index, bool keyOnly, bool multipleIndexes, out object? value)
     {
         value = null;
+        if (target is PowerShellWasmCustomObject) return false;
         var stringKeys = target is IDictionary<string, object?> or IReadOnlyDictionary<string, object?>;
         var dictionary = target as IDictionary;
         if (dictionary is null && target is IReadOnlyDictionary<string, object?> properties)
@@ -2447,8 +2510,10 @@ internal sealed class PowerShellWasmAstExecutor(
         }
         index = PowerShellWasmOutput.AsNull(index);
         if (index is null) throw new InvalidOperationException("The dictionary index cannot be null.");
+        var slicing = IsOperatorCollection(index);
         object? Read(object? key)
         {
+            key = PowerShellWasmOutput.AsNull(key);
             if (key is null) return null;
             if (stringKeys) key = ToInvariantString(key);
             if (!keyOnly && dictionary is OrderedDictionary ordered && key is int position)
@@ -2456,13 +2521,13 @@ internal sealed class PowerShellWasmAstExecutor(
                 // Native ordered reads permit negative indexes; writes use the strict BCL indexer.
                 // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L4157-L4193
                 if (position < 0) position += ordered.Count;
-                return position >= 0 && position < ordered.Count ? ordered[position] : null;
+                return position >= 0 && position < ordered.Count ? ordered[position]
+                    : slicing ? PowerShellWasmOutput.NoOutput : null;
             }
             return dictionary.Contains(key) ? dictionary[key] : null;
         }
-        // A slice keeps its array shape, including missing/null slots and zero- or one-element slices.
-        value = index is IEnumerable and not string and not IDictionary
-            ? Enumerate(index).Select(Read).ToArray() : Read(index);
+        value = slicing ? Enumerate(index).Select(Read)
+            .Where(item => multipleIndexes || !PowerShellWasmOutput.IsNoOutput(item)).ToArray() : Read(index);
         return true;
     }
 
@@ -2748,6 +2813,8 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             "object" => true,
             "string" => value is string,
+            "char" => value is char,
+            "scriptblock" or "system.management.automation.scriptblock" => value is PowerShellWasmScriptBlock,
             "bool" => value is bool,
             "switch" => value is bool,
             "int" => value is int,
@@ -2757,6 +2824,7 @@ internal sealed class PowerShellWasmAstExecutor(
             "byte" => value is byte,
             "object[]" => value is object?[],
             "string[]" => value is string[],
+            "char[]" => value is char[],
             "bool[]" => value is bool[],
             "switch[]" => value is bool[],
             "int[]" => value is int[],
@@ -3449,8 +3517,15 @@ internal sealed class PowerShellWasmAstExecutor(
             $"Member '{memberName}' cannot be assigned in this browser-safe runtime.");
     }
 
-    private static void SetIndexValue(object? target, object? index, object? value, bool keyOnly = false)
+    private static void SetIndexValue(object? target, object? index, object? value, bool keyOnly = false, bool multipleIndexes = false)
     {
+        target = PowerShellWasmOutput.AsNull(target);
+        index = PowerShellWasmOutput.AsNull(index);
+        if (target is null) throw new InvalidOperationException("Cannot index into a null array.");
+        if (index is null) throw new InvalidOperationException("Index operation failed; the array index evaluated to null.");
+        if (multipleIndexes) throw new InvalidOperationException("Index assignment requires exactly one index value.");
+        if (target is PowerShellWasmCustomObject)
+            throw new InvalidOperationException("A custom object does not have an indexer; assign its named properties instead.");
         if (target is IDictionary dictionary)
         {
             index = PowerShellWasmOutput.AsNull(index);
@@ -3460,20 +3535,15 @@ internal sealed class PowerShellWasmAstExecutor(
             else dictionary[index] = value;
             return;
         }
-        var indexes = Enumerate(index).ToArray();
-        if (indexes.Length != 1)
-        {
-            throw new InvalidOperationException("Index assignment requires exactly one index value.");
-        }
-
-        if (TrySetDictionaryValue(target, ToInvariantString(indexes[0]), value))
+        if (TrySetDictionaryValue(target, ToInvariantString(index), value))
         {
             return;
         }
 
         if (target is System.Collections.IList list)
         {
-            var itemIndex = Convert.ToInt32(ToNumber(indexes[0]), CultureInfo.InvariantCulture);
+            if (!CanConvertIndex(index)) throw new InvalidOperationException("The index cannot be converted to System.Int32.");
+            var itemIndex = Convert.ToInt32(ToArithmeticNumber(index), CultureInfo.InvariantCulture);
             if (itemIndex < 0)
             {
                 itemIndex = list.Count + itemIndex;
@@ -3481,7 +3551,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
             if (itemIndex < 0 || itemIndex >= list.Count)
             {
-                throw new InvalidOperationException($"Index {indexes[0]} is outside the target collection.");
+                throw new InvalidOperationException($"Index {index} is outside the target collection.");
             }
 
             list[itemIndex] = CoerceListItemValue(list, value);
@@ -3499,6 +3569,7 @@ internal sealed class PowerShellWasmAstExecutor(
         var elementType = list switch
         {
             string[] or List<string> => "string",
+            char[] or List<char> => "char",
             int[] or List<int> => "int",
             long[] or List<long> => "long",
             double[] or List<double> => "double",
@@ -3547,14 +3618,14 @@ internal sealed class PowerShellWasmAstExecutor(
                 continue;
             }
 
-            if (TryReadBracedVariable(value, i, out var bracedName, out nextIndex))
+            if (TryReadBracedVariable(value, i, text.VariableBoundaryOffsets, out var bracedName, out nextIndex))
             {
                 builder.Append(ExpandVariable(bracedName));
                 i = nextIndex;
                 continue;
             }
 
-            if (TryReadVariable(value, i, out var name, out nextIndex))
+            if (TryReadVariable(value, i, text.VariableBoundaryOffsets, out var name, out nextIndex))
             {
                 builder.Append(ExpandVariable(name));
                 i = nextIndex;
@@ -3594,90 +3665,20 @@ internal sealed class PowerShellWasmAstExecutor(
     private static bool TryReadSubexpression(string value, int start, out string script, out int nextIndex)
         => PowerShellWasmParser.TryReadExpandableSubexpression(value, start, out script, out nextIndex);
 
-    private static bool TryReadBracedVariable(string value, int start, out string name, out int nextIndex)
+    private static bool TryReadBracedVariable(string value, int start, IReadOnlySet<int>? boundaries,
+        out string name, out int nextIndex)
     {
         name = string.Empty;
         nextIndex = start;
-        if (start + 2 >= value.Length || value[start + 1] != '{')
-        {
-            return false;
-        }
-
-        var end = value.IndexOf('}', start + 2);
-        if (end < 0)
-        {
-            return false;
-        }
-
-        var candidate = value[(start + 2)..end];
-        if (!IsVariableName(candidate, allowColon: true))
-        {
-            return false;
-        }
-
-        name = candidate;
-        nextIndex = end + 1;
-        return true;
+        return start + 1 < value.Length && value[start + 1] == '{' &&
+            PowerShellWasmTokenizer.TryReadVariableName(value, start, out name, out nextIndex,
+                inExpandableString: true, variableBoundaryOffsets: boundaries);
     }
 
-    private static bool TryReadVariable(string value, int start, out string name, out int nextIndex)
-    {
-        name = string.Empty;
-        nextIndex = start;
-        var position = start + 1;
-        // Native $? consumes exactly one variable-name character, even when ordinary name text follows it.
-        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/tokenizer.cs#L3014-L3018
-        if (position < value.Length && value[position] == '?')
-        {
-            name = "?";
-            nextIndex = position + 1;
-            return true;
-        }
-        var hasEnvironmentScope = false;
-        if (position + 4 <= value.Length && value.AsSpan(position, 4).Equals("env:", StringComparison.OrdinalIgnoreCase))
-        {
-            hasEnvironmentScope = true;
-            position += 4;
-        }
-
-        var nameStart = position;
-        if (position >= value.Length || !IsVariableStart(value[position]))
-        {
-            return false;
-        }
-
-        position++;
-        while (position < value.Length && IsVariablePart(value[position]))
-        {
-            position++;
-        }
-
-        name = hasEnvironmentScope ? "env:" + value[nameStart..position] : value[nameStart..position];
-        nextIndex = position;
-        return true;
-    }
-
-    private static bool IsVariableName(string name, bool allowColon)
-    {
-        if (name == "?") return true;
-        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
-        {
-            return name.Length > 4 && IsVariableName(name[4..], allowColon: false);
-        }
-
-        if (name.Length == 0 || !IsVariableStart(name[0]))
-        {
-            return false;
-        }
-
-        return name.Skip(1).All(ch => allowColon && ch == ':' || IsVariablePart(ch));
-    }
-
-    private static bool IsVariableStart(char ch) =>
-        ch is '_' || char.IsLetter(ch);
-
-    private static bool IsVariablePart(char ch) =>
-        ch is '_' || char.IsLetterOrDigit(ch);
+    private static bool TryReadVariable(string value, int start, IReadOnlySet<int>? boundaries,
+        out string name, out int nextIndex)
+        => PowerShellWasmTokenizer.TryReadVariableName(value, start, out name, out nextIndex,
+            inExpandableString: true, variableBoundaryOffsets: boundaries);
 
     // Native string conversion consumes a plain enumerator with $OFS, without recursively expanding its elements.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshObject.cs#L1093-L1127
@@ -3693,6 +3694,7 @@ internal sealed class PowerShellWasmAstExecutor(
         {
             null => 0,
             byte byteValue => byteValue,
+            char character => character,
             bool boolValue => boolValue ? 1 : 0,
             int intValue => intValue,
             long longValue => longValue,
@@ -3716,6 +3718,7 @@ internal sealed class PowerShellWasmAstExecutor(
             double doubleValue => doubleValue != 0,
             decimal decimalValue => decimalValue != 0,
             string stringValue => stringValue.Length > 0,
+            char character => character != '\0',
             System.Collections.IList list => ToCollectionBoolean(list),
             _ => true
         };
@@ -3753,7 +3756,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 assignedValue = values[i];
             }
 
-            executionContext.SetVariable(variableNames[i], assignedValue);
+            executionContext.AssignVariable(variableNames[i], assignedValue);
             assigned[i] = assignedValue;
         }
         return assigned;
@@ -3762,7 +3765,7 @@ internal sealed class PowerShellWasmAstExecutor(
     private void IncrementVariable(string variableName, int delta)
     {
         var value = EvaluateVariableAssignmentTarget(variableName);
-        executionContext.SetVariable(variableName, IncrementNumber(value, delta));
+        executionContext.AssignVariable(variableName, IncrementNumber(value, delta));
     }
 
     private static object IncrementNumber(object? value, int delta)

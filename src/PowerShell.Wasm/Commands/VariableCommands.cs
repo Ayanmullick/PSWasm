@@ -8,7 +8,7 @@ internal sealed class GetVariableCommand : IPowerShellWasmPipelineCommand
     {
         var valueOnly = context.Parameters.TryGetValue("ValueOnly", out var valueOnlyValue) &&
             PowerShellWasmCommandUtilities.ToBoolean(valueOnlyValue);
-        var variables = SelectVariables(context).OrderBy(static item => item.Key, StringComparer.OrdinalIgnoreCase);
+        var variables = SelectVariables(context);
 
         foreach (var variable in variables)
         {
@@ -21,14 +21,15 @@ internal sealed class GetVariableCommand : IPowerShellWasmPipelineCommand
 
     private static IEnumerable<KeyValuePair<string, object?>> SelectVariables(PowerShellWasmCommandContext context)
     {
-        var variables = context.ExecutionContext.GetRawVariables();
+        var variables = context.ExecutionContext.GetRawVariables(VariableCommandUtilities.GetScope(context));
         var names = VariableCommandUtilities.GetNames(context).ToArray();
         if (names.Length == 0)
         {
-            return variables;
+            return variables.OrderBy(static item => item.Key, StringComparer.OrdinalIgnoreCase);
         }
 
-        return names.SelectMany(name => variables.Where(item => VariableCommandUtilities.NameMatches(item.Key, name)));
+        return VariableCommandUtilities.ResolveNames(context, names, variables)
+            .Select(name => new KeyValuePair<string, object?>(name, variables[name]));
     }
 
     private static Dictionary<string, object?> CreateVariableRecord(string name, object? value) =>
@@ -49,11 +50,21 @@ internal sealed class SetVariableCommand : IPowerShellWasmPipelineCommand
             throw new InvalidOperationException("Set-Variable requires a variable name.");
         }
 
+        var scope = VariableCommandUtilities.GetScope(context);
+        var variables = context.ExecutionContext.GetRawVariables(scope, searchParents: false);
         var value = GetValue(context);
         foreach (var name in names)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.SetVariable(name, value);
+            var matches = variables.Keys.Where(variableName => VariableCommandUtilities.NameMatches(variableName, name)).ToArray();
+            if (matches.Length == 0)
+            {
+                if (!VariableCommandUtilities.HasWildcard(name)) context.ExecutionContext.SetNewVariable(name, value, scope);
+                continue;
+            }
+
+            // Matched variable names are literal; only a new unscoped name can contain a scope qualifier.
+            foreach (var match in matches) context.ExecutionContext.SetVariable(match, value, scope ?? "local");
         }
 
         return ValueTask.CompletedTask;
@@ -91,10 +102,12 @@ internal sealed class ClearVariableCommand : IPowerShellWasmPipelineCommand
             throw new InvalidOperationException("Clear-Variable requires a variable name.");
         }
 
-        foreach (var name in VariableCommandUtilities.ResolveNames(context, names))
+        var scope = VariableCommandUtilities.GetScope(context);
+        var variables = context.ExecutionContext.GetRawVariables(scope);
+        foreach (var name in VariableCommandUtilities.ResolveNames(context, names, variables))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.ClearVariable(name);
+            context.ExecutionContext.ClearVariable(name, scope);
         }
 
         return ValueTask.CompletedTask;
@@ -111,10 +124,12 @@ internal sealed class RemoveVariableCommand : IPowerShellWasmPipelineCommand
             throw new InvalidOperationException("Remove-Variable requires a variable name.");
         }
 
-        foreach (var name in VariableCommandUtilities.ResolveNames(context, names))
+        var scope = VariableCommandUtilities.GetScope(context);
+        var variables = context.ExecutionContext.GetRawVariables(scope, searchParents: false);
+        foreach (var name in VariableCommandUtilities.ResolveNames(context, names, variables))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            context.ExecutionContext.RemoveVariable(name);
+            context.ExecutionContext.RemoveVariable(name, scope ?? "local");
         }
 
         return ValueTask.CompletedTask;
@@ -123,6 +138,18 @@ internal sealed class RemoveVariableCommand : IPowerShellWasmPipelineCommand
 
 internal static class VariableCommandUtilities
 {
+    // Behavioral guidance: variable cmdlets select an exact -Scope view; only unscoped Get/Clear search parents.
+    // Removal defaults to local. Names are matched literally within that view before wildcard expansion.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/Var.cs#L148-L160
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/Var.cs#L1140-L1169
+    public static string? GetScope(PowerShellWasmCommandContext context)
+    {
+        if (!context.Parameters.ContainsKey("Scope")) return null;
+        var scope = context.GetString("Scope");
+        return string.IsNullOrEmpty(scope)
+            ? throw new InvalidOperationException("The Scope parameter cannot be null or empty.") : scope;
+    }
+
     public static IEnumerable<string> GetNames(PowerShellWasmCommandContext context)
     {
         if (context.Parameters.TryGetValue("Name", out var parameterName))
@@ -142,15 +169,16 @@ internal static class VariableCommandUtilities
         }
     }
 
-    public static IEnumerable<string> ResolveNames(PowerShellWasmCommandContext context, IEnumerable<string> names)
+    public static IEnumerable<string> ResolveNames(PowerShellWasmCommandContext context, IEnumerable<string> names,
+        IReadOnlyDictionary<string, object?> variables)
     {
-        var variables = context.ExecutionContext.GetRawVariables();
         foreach (var name in names)
         {
-            var matches = variables.Keys.Where(variableName => NameMatches(variableName, name)).ToArray();
+            var matches = variables.Keys.Where(variableName => NameMatches(variableName, name))
+                .Order(StringComparer.OrdinalIgnoreCase).ToArray();
             if (matches.Length == 0 && !HasWildcard(name))
             {
-                yield return name;
+                context.ExecutionContext.WriteStream("Error", $"Cannot find a variable with the name '{name}'.");
                 continue;
             }
 
@@ -183,7 +211,7 @@ internal static class VariableCommandUtilities
         }
     }
 
-    private static bool HasWildcard(string value) =>
+    public static bool HasWildcard(string value) =>
         value.Contains('*', StringComparison.Ordinal) || value.Contains('?', StringComparison.Ordinal);
 
     private static bool MatchWildcard(string name, string pattern)

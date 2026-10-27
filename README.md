@@ -69,9 +69,13 @@ The runtime includes PowerShell-style variables, arrays, hashtables, objects, op
 
 Use `[int]$Count = 1` to retain a variable's type across later assignments. See [typed variables](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#typed-variables) for conversion, arrays, scope, and assignment results.
 
+Use `$local:Name`, `$script:Name`, `$global:Name`, or `$private:Name` to select variable scope explicitly. See [variable scope](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#variable-scope) for visibility, session lifetime, and variable-command `-Scope` arguments.
+
 Use `&` to invoke a script block or a registered command/function by name, or `.` to run a script block/function in the current scope. `return` accepts expressions, commands, and pipelines. See [binding, scope, and return behavior](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#control-flow-and-functions) for the browser-safe subset.
 
-Use `[ordered]@{...}` when dictionary insertion order matters; ordinary hashtables have no guaranteed enumeration order. See [hashtables and ordered dictionaries](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#hashtables) for typed keys, indexing, and supported methods.
+Use `[ordered]@{...}` when dictionary insertion order matters; ordinary hashtables have no guaranteed enumeration order. See [hashtables and ordered dictionaries](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#hashtables) for statement-valued entries, typed keys, indexing, and supported methods.
+
+Array and string indexing supports negative positions and slices. See [indexing and slices](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#indexing-and-slices) for result shape, missing values, and character results.
 
 Use `Select-Object -First` to stop a pipeline after the requested input, or add `-Wait` to consume the remaining input. See [object pipeline commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands#object-pipeline-commands) for selection and completion behavior.
 

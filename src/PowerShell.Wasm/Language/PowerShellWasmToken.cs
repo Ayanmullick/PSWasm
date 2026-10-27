@@ -100,6 +100,7 @@ public readonly record struct PowerShellWasmToken(
 {
     // Escaped dollars remain literal without inserting sentinel characters into the decoded public text.
     internal IReadOnlySet<int>? LiteralDollarOffsets { get; init; }
+    internal IReadOnlySet<int>? VariableBoundaryOffsets { get; init; }
     internal bool IsInCatch { get; init; }
     internal bool IsInFinally { get; init; }
     internal string? SourceScript { get; init; }

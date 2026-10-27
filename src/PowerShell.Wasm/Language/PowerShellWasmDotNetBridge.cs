@@ -28,6 +28,7 @@ namespace PSWasm.Language;
 internal static class PowerShellWasmDotNetBridge
 {
     private const string MathType = "System.Math";
+    private const string DoubleType = "System.Double";
     private const string DateTimeType = "System.DateTime";
     private const string DateTimeOffsetType = "System.DateTimeOffset";
     private const string TimeSpanType = "System.TimeSpan";
@@ -37,6 +38,7 @@ internal static class PowerShellWasmDotNetBridge
     private const string DictionaryType = "System.Collections.IDictionary";
     private const string OrderedDictionaryType = "System.Collections.Specialized.OrderedDictionary";
     private const string EnumeratorType = "System.Collections.IEnumerator";
+    private const string EnumerableType = "System.Collections.IEnumerable";
     private const string ObjectType = "System.Object";
     private const string ArrayListType = "System.Collections.ArrayList";
     private const string GenericListTypePrefix = "System.Collections.Generic.List";
@@ -55,6 +57,8 @@ internal static class PowerShellWasmDotNetBridge
         var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         aliases["Math"] = MathType;
         aliases["System.Math"] = MathType;
+        aliases["double"] = DoubleType;
+        aliases[DoubleType] = DoubleType;
         aliases["DateTime"] = DateTimeType;
         aliases["datetime"] = DateTimeType;
         aliases["System.DateTime"] = DateTimeType;
@@ -224,6 +228,7 @@ internal static class PowerShellWasmDotNetBridge
         {
             MathType => input is PowerShellWasmDotNetType type &&
                 type.FullName.Equals(MathType, StringComparison.OrdinalIgnoreCase),
+            DoubleType => input is double,
             DateTimeType => input is DateTime,
             DateTimeOffsetType => input is DateTimeOffset,
             TimeSpanType => input is TimeSpan,
@@ -250,6 +255,19 @@ internal static class PowerShellWasmDotNetBridge
         if ((type.FullName is HashtableType or OrderedDictionaryType) && memberName.Equals("new", StringComparison.OrdinalIgnoreCase))
         {
             value = new PowerShellWasmDotNetMethod(type.FullName, memberName, null, IsStatic: true);
+            return true;
+        }
+
+        // Preserve the CLR's non-finite numeric values so ordinary conversions decide how an operation handles them.
+        // https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Private.CoreLib/src/System/Double.cs#L43-L45
+        if (type.FullName == DoubleType && IsMember(memberName, "NaN", "PositiveInfinity", "NegativeInfinity"))
+        {
+            value = memberName.ToLowerInvariant() switch
+            {
+                "nan" => double.NaN,
+                "positiveinfinity" => double.PositiveInfinity,
+                _ => double.NegativeInfinity
+            };
             return true;
         }
 
@@ -382,7 +400,7 @@ internal static class PowerShellWasmDotNetBridge
         if (target is PowerShellWasmDotNetType descriptor)
         {
             if (memberName.Equals("FullName", StringComparison.OrdinalIgnoreCase)) value = descriptor.FullName;
-            else if (memberName.Equals("Name", StringComparison.OrdinalIgnoreCase)) value = descriptor.FullName[(descriptor.FullName.LastIndexOf('.') + 1)..];
+            else if (memberName.Equals("Name", StringComparison.OrdinalIgnoreCase)) value = GetSimpleTypeName(descriptor.FullName);
             else return false;
             return true;
         }
@@ -403,6 +421,16 @@ internal static class PowerShellWasmDotNetBridge
 
         if (target is IDictionary dictionary && (target is Hashtable or OrderedDictionary) &&
             TryGetDictionaryInstanceMember(dictionary, memberName, out value)) return true;
+
+        // Use the collection's actual iterator, retaining shared position and concrete identity; do not enumerate a copy.
+        // https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Private.CoreLib/src/System/Array.cs#L3062-L3065
+        // https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Private.CoreLib/src/System/Collections/Hashtable.cs#L1180-L1240
+        if (target is ICollection and not PowerShellWasmCustomObject &&
+            memberName.Equals("GetEnumerator", StringComparison.OrdinalIgnoreCase))
+        {
+            value = new PowerShellWasmDotNetMethod(EnumerableType, memberName, target, IsStatic: false);
+            return true;
+        }
 
         if (target is IEnumerator enumerator)
         {
@@ -491,6 +519,12 @@ internal static class PowerShellWasmDotNetBridge
         {
             RequireArgumentCount(method, arguments, 0);
             return new PowerShellWasmDotNetType(GetKnownRuntimeTypeName(method.Target!)!);
+        }
+
+        if (method.DeclaringType == EnumerableType && method.Target is ICollection collection)
+        {
+            RequireArgumentCount(method, arguments, 0);
+            return collection.GetEnumerator();
         }
 
         if (method.DeclaringType == EnumeratorType && method.Target is IEnumerator enumerator)
@@ -614,7 +648,7 @@ internal static class PowerShellWasmDotNetBridge
         throw new InvalidOperationException($"Method '{method.Name}' is not available in this browser-safe runtime.");
     }
 
-    // Only descriptors for known runtime values are exposed, never reflected Type instances or member discovery.
+    // Only descriptors for runtime values and collection interfaces are exposed, never reflected Type instances or member discovery.
     private static string? GetKnownRuntimeTypeName(object value) => value switch
     {
         string[] => "System.String[]",
@@ -659,8 +693,17 @@ internal static class PowerShellWasmDotNetBridge
         DateTimeOffset => DateTimeOffsetType,
         TimeSpan => TimeSpanType,
         TimeZoneInfo => TimeZoneInfoType,
+        IEnumerator or ICollection => value.GetType().FullName,
         _ => null
     };
+
+    private static string GetSimpleTypeName(string fullName)
+    {
+        // CLR nested collection types use '+'; generic argument namespaces do not belong to the simple type name.
+        var name = fullName.Contains('`') && fullName.IndexOf('[') is var arguments && arguments >= 0
+            ? fullName[..arguments] : fullName;
+        return name[(Math.Max(name.LastIndexOf('.'), name.LastIndexOf('+')) + 1)..];
+    }
 
     private static object ConstructDictionary(string typeName, IReadOnlyList<object?> arguments)
     {

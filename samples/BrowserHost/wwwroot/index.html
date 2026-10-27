@@ -190,6 +190,22 @@ $table.Keys | Sort-Object
 #endregion
   </script>
           </article>
+          <article class="example" id="statement-values-and-slices">
+            <h3>Statement values and collection slices</h3>
+            <p class="example-note">Hashtable entries capture statement output. Slices keep their array shape, and strings expose character values.</p>
+            <script type="pwsh" id="statement-values-and-slices-script">
+$Summary = @{
+    Status = if ($true) { 'ready' } else { 'waiting' }
+    Values = foreach ($Number in 1..3) { $Number * 10 }
+}
+$Selected = $Summary.Values[@(2,0)]
+$First = 'PSWasm'[0]
+$View = [pscustomobject]@{Label='Selected values'; Items=$Selected}
+"$($Summary.Status): $($View.Label) = $($View.Items -join ',')"
+"Singleton slice count: $($Summary.Values[@(1)].Count)"
+"First character: $First ($($First.GetType().Name))"
+  </script>
+          </article>
           <article class="example" id="ordered-dictionaries">
             <h3>Ordered dictionaries and typed keys</h3>
             <p class="example-note">Ordered dictionaries preserve insertion order. Integer indexes select positions; an object-cast index selects a numeric key.</p>
@@ -249,6 +265,21 @@ $Values += '3'
 Set-Variable -Name BrowserName -Value 'PSWasm'
 Get-Variable BrowserName -ValueOnly
 Get-Variable BrowserName | Format-List Name Value
+  </script>
+          </article>
+          <article class="example">
+            <h3>Variable scope</h3>
+            <p class="example-note">A child scope has its own local values. Explicit scope selection can update the caller or the shared session root.</p>
+            <script type="pwsh">
+$ScopeCount = 0
+$global:ScopeTotal = 0
+& {
+    $local:ScopeCount = 10
+    $global:ScopeTotal += 2
+    Set-Variable ScopeCount 3 -Scope 1
+    "Child: local=$local:ScopeCount; parent=$(Get-Variable ScopeCount -Scope 1 -ValueOnly)"
+}
+"Caller: Count=$ScopeCount; shared=$global:ScopeTotal"
   </script>
           </article>
           <article class="example">

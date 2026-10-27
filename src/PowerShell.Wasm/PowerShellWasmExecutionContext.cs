@@ -71,28 +71,42 @@ public sealed class PowerShellWasmExecutionContext
     // Keep no-output values internally; callers of the public host API receive null without changing stored state.
     internal object? GetRawVariable(string name)
     {
-        name = UnaliasVariableName(name);
+        var path = ParseVariablePath(name);
+        name = path.Name;
         if (name == "?") return _lastCommandSucceeded;
-        if (name.Equals("Error", StringComparison.OrdinalIgnoreCase)) return _errors.ToArray();
-        for (var frame = _frame; frame is not null; frame = frame.Parent)
+        if (name.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+        if (name.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
+        if (name.Equals("null", StringComparison.OrdinalIgnoreCase)) return null;
+        var start = path.Scope is null ? _frame : GetScopeStart(_frame, path.Scope);
+        foreach (var frame in EnumerateScopeFrames(start, includeParents: path.Scope is null))
         {
-            if (frame.Values.TryGetValue(name, out var value)) return value;
+            if (!IsVisibleVariable(frame, name, _frame)) continue;
+            if (frame.Values.TryGetValue(name, out var value)) return GetVariableValue(frame, name, value);
         }
         return null;
     }
 
-    internal IReadOnlyDictionary<string, object?> GetRawVariables()
+    // Scope-qualified reads select one scope; unqualified reads walk parents and skip their private variables.
+    // Browser sessions have one root script/global scope; temporary invocation frames do not add scope depth.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/SessionStateVariableAPIs.cs#L1791-L1853
+    internal IReadOnlyDictionary<string, object?> GetRawVariables(string? scope = null, bool searchParents = true)
     {
         var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        var frames = new Stack<VariableFrame>();
-        for (var frame = _frame; frame is not null; frame = frame.Parent) frames.Push(frame);
-        foreach (var frame in frames)
-            foreach (var item in frame.Values) values[item.Key] = item.Value;
-        values["Error"] = _errors.ToArray();
+        var start = scope is null ? _frame : GetScopeStart(_frame, scope);
+        foreach (var frame in EnumerateScopeFrames(start, includeParents: scope is null && searchParents))
+            foreach (var item in frame.Values)
+                if (!values.ContainsKey(item.Key) && (scope is not null || IsVisibleVariable(frame, item.Key, _frame)))
+                    values[item.Key] = GetVariableValue(frame, item.Key, item.Value);
         values["?"] = _lastCommandSucceeded;
+        values["true"] = true;
+        values["false"] = false;
+        values["null"] = null;
         if (values.TryGetValue("_", out var pipelineItem)) values["PSItem"] = pipelineItem;
         return values;
     }
+
+    private object? GetVariableValue(VariableFrame frame, string name, object? value) =>
+        frame.Parent is null && name.Equals("Error", StringComparison.OrdinalIgnoreCase) ? _errors.ToArray() : value;
 
     internal bool HasVariableInCurrentScope(string name)
     {
@@ -129,68 +143,86 @@ public sealed class PowerShellWasmExecutionContext
     internal PowerShellWasmResult CreateResult(IEnumerable<object?> output) =>
         new(output.Where(IsVisibleOutput).Select(FormatRecord).ToArray());
 
-    public void SetVariable(string name, object? value)
+    public void SetVariable(string name, object? value, string? scope = null)
     {
-        AssertWritableVariable(name);
-        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        if (scope is null && name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             SetEnvironmentVariable(name[4..], value is null ? null : Convert.ToString(value, CultureInfo.InvariantCulture));
             return;
         }
 
-        SetFrameVariable(_frame, name, value);
+        SetFrameVariable(_frame, name, value, scope, commandWrite: true);
+    }
+
+    // Set-Variable creates a PSVariable when its literal Name does not match an existing entry. A qualifier can
+    // then select an existing slot, replacing that slot's attributes and options instead of assigning its value.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/SessionStateScope.cs#L430-L490
+    internal void SetNewVariable(string name, object? value, string? scope)
+    {
+        if (scope is null && name.StartsWith("env:", StringComparison.OrdinalIgnoreCase)) { SetVariable(name, value); return; }
+        var target = ResolveVariableAssignment(_frame, name, scope);
+        AssertWritableVariable(target.Name);
+        if (target.Name.Equals("null", StringComparison.OrdinalIgnoreCase)) return;
+        if (!target.ReplacePrivate && target.Frame.OptimizedTypes.TryGetValue(target.Name, out var localType))
+            value = PowerShellWasmAstExecutor.ConvertOptimizedValue(localType, value, OutputFieldSeparator);
+        target.Frame.Constraints.Remove(target.Name);
+        target.Frame.PrivateNames.Remove(target.Name);
+        StoreVariable(target, value, forcePrivate: true);
     }
 
     internal object? AssignVariable(string name, object? value)
     {
-        AssertWritableVariable(name);
         if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase)) { SetVariable(name, value); return value; }
         return SetFrameVariable(_frame, name, value);
     }
 
-    public void ClearVariable(string name)
+    public void ClearVariable(string name, string? scope = null)
     {
         AssertWritableVariable(name);
-        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        if (scope is null && name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             SetEnvironmentVariable(name[4..], null);
             return;
         }
 
-        SetFrameVariable(_frame, name, null);
+        SetFrameVariable(_frame, name, null, scope);
     }
 
-    public void RemoveVariable(string name)
+    public void RemoveVariable(string name, string? scope = null)
     {
         AssertWritableVariable(name);
-        if (name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
+        if (name.Equals("null", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Cannot remove variable null because it is read-only or constant.");
+        if (scope is null && name.StartsWith("env:", StringComparison.OrdinalIgnoreCase))
         {
             SetEnvironmentVariable(name[4..], null);
             return;
         }
 
         name = UnaliasVariableName(name);
-        var frame = GetAssignmentFrame(_frame, name);
+        var frame = GetAssignmentFrame(GetScopeStart(_frame, scope ?? "local"), name);
         frame.Values.Remove(name);
         frame.Constraints.Remove(name);
+        frame.PrivateNames.Remove(name);
     }
 
     // Type-constrained assignments replace attributes only after successful conversion; ordinary writes reuse them.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/VariableOps.cs#L17-L120
     internal object? SetTypedVariable(string name, object? value, IReadOnlyList<string> typeNames)
     {
+        var target = ResolveVariableAssignment(_frame, name);
+        var frame = target.Frame;
+        name = target.Name;
         AssertWritableVariable(name);
-        name = UnaliasVariableName(name);
-        var frame = GetAssignmentFrame(_frame, name);
-        if (frame.OptimizedTypes.TryGetValue(name, out var localType))
+        if (!target.ReplacePrivate && frame.OptimizedTypes.TryGetValue(name, out var localType))
         {
             value = PowerShellWasmAstExecutor.ConvertOptimizedValue(localType, value, OutputFieldSeparator);
-            frame.Values[name] = value;
+            StoreVariable(target, value);
             return value;
         }
         var constraint = new VariableConstraint(typeNames, []);
         value = constraint.Convert(value, OutputFieldSeparator);
-        frame.Values[name] = value;
+        StoreVariable(target, value);
         frame.Constraints[name] = constraint;
         return value;
     }
@@ -199,20 +231,32 @@ public sealed class PowerShellWasmExecutionContext
     {
         foreach (var parameter in parameters)
         {
-            var name = UnaliasVariableName(parameter.Name);
-            GetAssignmentFrame(_frame, name).Constraints[name] = VariableConstraint.ForParameter(parameter);
+            // Root-scoped parameters were bound eagerly, before subsequent parameter defaults were evaluated.
+            if (IsRootScopedParameter(parameter.Name)) continue;
+            var target = ResolveVariableAssignment(_frame, parameter.Name);
+            target.Frame.Constraints[target.Name] = VariableConstraint.ForParameter(parameter);
         }
     }
 
+    internal static bool IsRootScopedParameter(string name) =>
+        name.StartsWith("global:", StringComparison.OrdinalIgnoreCase) || name.StartsWith("script:", StringComparison.OrdinalIgnoreCase);
+
+    internal static string GetParameterVariableName(string name) => ParseVariablePath(name).Name;
+
+    // ScriptParameterBinder replaces existing variable attributes; a newly created variable retains parameter attributes.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/scriptparameterbinder.cs#L101-L135
     internal void SetParameterVariable(ParameterDeclarationAst parameter, object? value, bool retainConstraint)
     {
-        AssertWritableVariable(parameter.Name);
-        var name = UnaliasVariableName(parameter.Name);
-        var frame = GetAssignmentFrame(_frame, name);
+        var target = ResolveVariableAssignment(_frame, parameter.Name);
+        var (frame, name) = (target.Frame, target.Name);
+        AssertWritableVariable(name);
+        if (name.Equals("null", StringComparison.OrdinalIgnoreCase)) return;
         var existed = frame.Values.ContainsKey(name);
-        if (frame.OptimizedTypes.TryGetValue(name, out var localType))
+        if (!target.ReplacePrivate && frame.OptimizedTypes.TryGetValue(name, out var localType))
             value = PowerShellWasmAstExecutor.ConvertOptimizedValue(localType, value, OutputFieldSeparator);
-        frame.Values[name] = value;
+        // Parameter binding replaces the variable's options too; only a private: parameter remains private.
+        frame.PrivateNames.Remove(name);
+        StoreVariable(target, value, forcePrivate: true);
         frame.Constraints.Remove(name);
         if (retainConstraint || !existed) frame.Constraints[name] = VariableConstraint.ForParameter(parameter);
     }
@@ -221,15 +265,39 @@ public sealed class PowerShellWasmExecutionContext
     {
         foreach (var parameterName in names)
         {
-            var name = UnaliasVariableName(parameterName);
-            GetAssignmentFrame(_frame, name).Constraints.Remove(name);
+            if (IsRootScopedParameter(parameterName)) continue;
+            var target = ResolveVariableAssignment(_frame, parameterName);
+            target.Frame.Constraints.Remove(target.Name);
         }
+    }
+
+    // Non-child callbacks back up the caller-local variable even when a parameter targets script/global scope.
+    // Restoring that same variable retains its changed value but clears parameter attributes; absent locals remove the target.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/CompiledScriptBlock.cs#L1242-L1256
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/CompiledScriptBlock.cs#L1324-L1342
+    internal IDisposable BackUpRootScopedCallbackParameter(string parameterName)
+    {
+        var target = ResolveVariableAssignment(_frame, parameterName);
+        var local = GetAssignmentFrame(_frame, target.Name);
+        var hadLocal = local.Values.ContainsKey(target.Name);
+        return new ActionScope(() =>
+        {
+            if (hadLocal) local.Constraints.Remove(target.Name);
+            else
+            {
+                target.Frame.Values.Remove(target.Name);
+                target.Frame.Constraints.Remove(target.Name);
+                target.Frame.PrivateNames.Remove(target.Name);
+            }
+        });
     }
 
     private static void AssertWritableVariable(string name)
     {
         // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/QuestionMarkVariable.cs#L17-L39
         if (name == "?") throw new InvalidOperationException("Cannot overwrite variable ? because it is read-only.");
+        if (name.Equals("true", StringComparison.OrdinalIgnoreCase) || name.Equals("false", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Cannot overwrite variable {name} because it is read-only or constant.");
     }
 
     internal void SetFunction(PowerShellWasmScriptFunction function) =>
@@ -736,7 +804,12 @@ public sealed class PowerShellWasmExecutionContext
     {
         var previous = _frame;
         _frame = new VariableFrame(previous, isOverlay);
-        foreach (var item in variables) _frame.Values[UnaliasVariableName(item.Key)] = item.Value;
+        foreach (var item in variables)
+        {
+            var path = ParseVariablePath(item.Key);
+            _frame.Values[path.Name] = item.Value;
+            if (path.Scope?.Equals("private", StringComparison.OrdinalIgnoreCase) == true) _frame.PrivateNames.Add(path.Name);
+        }
         if (optimizedTypes is not null)
             foreach (var item in optimizedTypes) _frame.OptimizedTypes[UnaliasVariableName(item.Key)] = item.Value;
         return new ActionScope(() => _frame = previous);
@@ -754,24 +827,91 @@ public sealed class PowerShellWasmExecutionContext
         return frame;
     }
 
+    private static IEnumerable<VariableFrame> EnumerateScopeFrames(VariableFrame start, bool includeParents)
+    {
+        for (var frame = start; frame is not null; frame = frame.Parent)
+        {
+            yield return frame;
+            if (!includeParents && !frame.IsOverlay) yield break;
+        }
+    }
+
+    private static bool IsVisibleVariable(VariableFrame owner, string name, VariableFrame caller) =>
+        !owner.PrivateNames.Contains(name) || ReferenceEquals(GetScopeFrame(owner), GetScopeFrame(caller));
+
+    private static VariableFrame GetScopeStart(VariableFrame start, string scope)
+    {
+        if (scope.Equals("local", StringComparison.OrdinalIgnoreCase) || scope.Equals("private", StringComparison.OrdinalIgnoreCase))
+            return start;
+        if (scope.Equals("global", StringComparison.OrdinalIgnoreCase) || scope.Equals("script", StringComparison.OrdinalIgnoreCase))
+        {
+            while (GetScopeFrame(start).Parent is { } parent) start = parent;
+            return start;
+        }
+        if (!int.TryParse(scope, NumberStyles.Integer, CultureInfo.InvariantCulture, out var depth) || depth < 0)
+            throw new InvalidOperationException($"Scope '{scope}' must be Global, Local, Script, Private, or a non-negative scope number.");
+        while (depth-- > 0)
+            start = GetScopeFrame(start).Parent ?? throw new InvalidOperationException($"Scope number '{scope}' exceeds the active scope depth.");
+        return start;
+    }
+
+    private static (string Name, string? Scope) ParseVariablePath(string name)
+    {
+        var separator = name.IndexOf(':');
+        if (separator < 0) return (UnaliasVariableName(name), null);
+        var scope = name[..separator];
+        if (scope.Equals("local", StringComparison.OrdinalIgnoreCase) || scope.Equals("private", StringComparison.OrdinalIgnoreCase) ||
+            scope.Equals("script", StringComparison.OrdinalIgnoreCase) || scope.Equals("global", StringComparison.OrdinalIgnoreCase))
+            return (UnaliasVariableName(name[(separator + 1)..]), scope);
+        throw new InvalidOperationException($"Variable namespace '{scope}:' is not available in this browser-safe runtime.");
+    }
+
+    private static VariableAssignment ResolveVariableAssignment(VariableFrame caller, string name, string? scope = null)
+    {
+        // An explicit cmdlet -Scope makes Name literal. A language qualifier can replace an inaccessible private slot.
+        var path = scope is null ? ParseVariablePath(name) : (Name: UnaliasVariableName(name), Scope: (string?)scope);
+        var start = path.Scope is null ? caller : GetScopeStart(caller, path.Scope);
+        var frame = GetAssignmentFrame(start, path.Name);
+        return new(frame, path.Name, path.Scope?.Equals("private", StringComparison.OrdinalIgnoreCase) == true,
+            scope is null && !IsVisibleVariable(frame, path.Name, caller));
+    }
+
+    private static void StoreVariable(VariableAssignment target, object? value, bool forcePrivate = false)
+    {
+        var (frame, name, makePrivate, replacePrivate) = target;
+        var isNew = replacePrivate || !frame.Values.ContainsKey(name);
+        if (replacePrivate)
+        {
+            frame.Constraints.Remove(name);
+            frame.PrivateNames.Remove(name);
+        }
+        frame.Values[name] = value;
+        if (makePrivate && (isNew || forcePrivate)) frame.PrivateNames.Add(name);
+    }
+
+    private sealed record VariableAssignment(VariableFrame Frame, string Name, bool MakePrivate, bool ReplacePrivate);
+
     // $_ and $PSItem are names for the same slot, including parameter frames and variable cmdlets.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/MutableTuple.cs#L80-L135
     private static string UnaliasVariableName(string name) =>
         name.Equals("PSItem", StringComparison.OrdinalIgnoreCase) ? "_" : name;
 
-    private object? SetFrameVariable(VariableFrame frame, string name, object? value)
+    private object? SetFrameVariable(VariableFrame frame, string name, object? value, string? scope = null, bool commandWrite = false)
     {
-        name = UnaliasVariableName(name);
-        frame = GetAssignmentFrame(frame, name);
-        if (frame.OptimizedTypes.TryGetValue(name, out var localType))
+        var target = ResolveVariableAssignment(frame, name, scope);
+        (frame, name) = (target.Frame, target.Name);
+        AssertWritableVariable(name);
+        if (name.Equals("null", StringComparison.OrdinalIgnoreCase)) return value;
+        if (!target.ReplacePrivate && frame.OptimizedTypes.TryGetValue(name, out var localType))
         {
             value = PowerShellWasmAstExecutor.ConvertOptimizedValue(localType, value, OutputFieldSeparator);
-            frame.Values[name] = value;
+            StoreVariable(target, value, commandWrite && scope is null);
             return value;
         }
         var originalValue = value;
-        if (frame.Constraints.TryGetValue(name, out var constraint)) value = constraint.Convert(value, OutputFieldSeparator);
-        frame.Values[name] = value;
+        if (!target.ReplacePrivate && frame.Constraints.TryGetValue(name, out var constraint))
+            value = constraint.Convert(value, OutputFieldSeparator);
+        StoreVariable(target, value, commandWrite && scope is null);
         return originalValue;
     }
 
@@ -845,6 +985,7 @@ public sealed class PowerShellWasmExecutionContext
         internal Dictionary<string, object?> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, VariableConstraint> Constraints { get; } = new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, string> OptimizedTypes { get; } = new(StringComparer.OrdinalIgnoreCase);
+        internal HashSet<string> PrivateNames { get; } = new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, PowerShellWasmScriptFunction> Functions { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 

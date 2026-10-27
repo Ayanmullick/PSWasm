@@ -34,7 +34,8 @@ public sealed class PowerShellWasmParser
     private static StringExpressionAst ParseStringToken(PowerShellWasmToken token)
     {
         var expression = new StringExpressionAst(token.Text, token.Kind == PowerShellWasmTokenKind.ExpandableStringLiteral)
-            { LiteralDollarOffsets = token.LiteralDollarOffsets, IsInCatch = token.IsInCatch, IsInFinally = token.IsInFinally };
+            { LiteralDollarOffsets = token.LiteralDollarOffsets, VariableBoundaryOffsets = token.VariableBoundaryOffsets,
+                IsInCatch = token.IsInCatch, IsInFinally = token.IsInFinally };
         if (!expression.IsExpandable || !token.IsInFinally) return expression;
 
         // Native semantic validation visits interpolation ASTs even in unreachable code. Keep late string evaluation,
@@ -128,8 +129,11 @@ public sealed class PowerShellWasmParser
         return statements;
     }
 
-    private static StatementAst ParseStatement(IReadOnlyList<PowerShellWasmToken> tokens)
+    private static StatementAst ParseStatement(IReadOnlyList<PowerShellWasmToken> tokens, bool requireCompleteExpressions = false)
     {
+        ExpressionAst ParseValue(IReadOnlyList<PowerShellWasmToken> valueTokens) => requireCompleteExpressions
+            ? new ExpressionParser(valueTokens).Parse(requireComplete: true) : ParseExpression(valueTokens);
+
         if (IsKeyword(tokens, 0, "try"))
         {
             return ParseTryStatement(tokens);
@@ -237,13 +241,13 @@ public sealed class PowerShellWasmParser
                 if (variableNames.Count == 1)
                 {
                     return IsStatementAssignmentValue(valueTokens)
-                        ? new StatementAssignmentAst(variableNames[0], ParseStatement(valueTokens))
-                        : new AssignmentStatementAst(variableNames[0], ParseExpression(valueTokens));
+                        ? new StatementAssignmentAst(variableNames[0], ParseStatement(valueTokens, requireCompleteExpressions))
+                        : new AssignmentStatementAst(variableNames[0], ParseValue(valueTokens));
                 }
 
                 return IsStatementAssignmentValue(valueTokens)
-                    ? new ParallelStatementAssignmentAst(variableNames, ParseStatement(valueTokens))
-                    : new ParallelAssignmentStatementAst(variableNames, ParseExpression(valueTokens));
+                    ? new ParallelStatementAssignmentAst(variableNames, ParseStatement(valueTokens, requireCompleteExpressions))
+                    : new ParallelAssignmentStatementAst(variableNames, ParseValue(valueTokens));
             }
 
             var target = ParseExpression(tokens.Take(equals).ToArray());
@@ -253,23 +257,24 @@ public sealed class PowerShellWasmParser
             }
 
             return IsStatementAssignmentValue(valueTokens)
-                ? new SettableStatementAssignmentAst(target, ParseStatement(valueTokens))
-                : new SettableAssignmentStatementAst(target, ParseExpression(valueTokens));
+                ? new SettableStatementAssignmentAst(target, ParseStatement(valueTokens, requireCompleteExpressions))
+                : new SettableAssignmentStatementAst(target, ParseValue(valueTokens));
         }
 
         var pipelineChain = SplitTopLevelPipelineChain(tokens);
         if (pipelineChain.Segments.Count > 1)
         {
-            var first = ParseStatement(pipelineChain.Segments[0]);
+            var first = ParseStatement(pipelineChain.Segments[0], requireCompleteExpressions);
             var clauses = pipelineChain.Operators.Select((op, index) =>
-                new PipelineChainClauseAst(op, ParseStatement(pipelineChain.Segments[index + 1]))).ToArray();
+                new PipelineChainClauseAst(op, ParseStatement(pipelineChain.Segments[index + 1], requireCompleteExpressions))).ToArray();
             return new PipelineChainStatementAst(first, clauses);
         }
 
         var pipelineSegments = SplitTopLevel(tokens, PowerShellWasmTokenKind.Pipe);
         if (pipelineSegments.Count > 1)
         {
-            return new PipelineStatementAst(pipelineSegments.Select(ParsePipelineElement).ToArray());
+            return new PipelineStatementAst(pipelineSegments.Select(segment => requireCompleteExpressions && !IsCommandSegment(segment)
+                ? (PipelineElementAst)new ExpressionPipelineElementAst(ParseValue(segment)) : ParsePipelineElement(segment)).ToArray());
         }
 
         if (IsCommandSegment(tokens))
@@ -277,7 +282,7 @@ public sealed class PowerShellWasmParser
             return new CommandStatementAst(ParseCommand(tokens));
         }
 
-        return new ExpressionStatementAst(ParseExpression(tokens));
+        return new ExpressionStatementAst(ParseValue(tokens));
     }
 
     private static IfStatementAst ParseIfStatement(IReadOnlyList<PowerShellWasmToken> tokens)
@@ -1885,9 +1890,11 @@ public sealed class PowerShellWasmParser
     private sealed class ExpressionParser(IReadOnlyList<PowerShellWasmToken> tokens)
     {
         private int _position;
+        private bool _requireComplete;
 
         public ExpressionAst Parse(bool requireComplete = false)
         {
+            _requireComplete = requireComplete;
             if (tokens.Count == 0)
             {
                 if (requireComplete)
@@ -1907,25 +1914,17 @@ public sealed class PowerShellWasmParser
             return expression;
         }
 
-        private ExpressionAst ParseCommaExpression()
+        private ExpressionAst ParseCommaExpression(bool allowAssignment = true)
         {
             var items = new List<ExpressionAst>();
-            var leadingComma = false;
-
-            if (Current.Kind == PowerShellWasmTokenKind.Comma)
-            {
-                leadingComma = true;
-                _position++;
-            }
-
-            items.Add(ParseAssignment());
+            items.Add(allowAssignment ? ParseAssignment() : ParseTernaryExpression());
             while (Current.Kind == PowerShellWasmTokenKind.Comma)
             {
                 _position++;
-                items.Add(ParseAssignment());
+                items.Add(allowAssignment ? ParseAssignment() : ParseTernaryExpression());
             }
 
-            return leadingComma || items.Count > 1 ? new ArrayExpressionAst(items) : items[0];
+            return items.Count > 1 ? new ArrayExpressionAst(items) : items[0];
         }
 
         private ExpressionAst ParseAssignment()
@@ -2011,6 +2010,12 @@ public sealed class PowerShellWasmParser
 
         private ExpressionAst ParseUnary()
         {
+            if (Current.Kind == PowerShellWasmTokenKind.Comma)
+            {
+                _position++;
+                return new ArrayExpressionAst([ParseUnary()]);
+            }
+
             if (TryParseCastExpression(out var cast))
             {
                 return cast;
@@ -2159,6 +2164,7 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.AtLParen => ParseArray(),
                 PowerShellWasmTokenKind.DollarLParen => ParseSubexpression(),
                 PowerShellWasmTokenKind.LBracket => ParseTypeLiteral(),
+                _ when _requireComplete => throw new InvalidOperationException($"Expected an expression, found '{token.Text}'."),
                 _ => new BareWordExpressionAst(token.Text)
             };
         }
@@ -2241,24 +2247,23 @@ public sealed class PowerShellWasmParser
         private IndexExpressionAst ParseIndex(ExpressionAst target)
         {
             Consume(PowerShellWasmTokenKind.LBracket);
-            var indexes = new List<ExpressionAst>();
-            while (Current.Kind is not PowerShellWasmTokenKind.RBracket and not PowerShellWasmTokenKind.EndOfInput)
+            var start = _position;
+            var depth = 0;
+            while (Current.Kind != PowerShellWasmTokenKind.EndOfInput)
             {
-                if (Current.Kind == PowerShellWasmTokenKind.Comma)
-                {
-                    _position++;
-                    continue;
-                }
-
-                indexes.Add(ParseAssignment());
-                if (Current.Kind == PowerShellWasmTokenKind.Comma)
-                {
-                    _position++;
-                }
+                if (depth == 0 && Current.Kind == PowerShellWasmTokenKind.RBracket) break;
+                UpdateDepth(Current, ref depth);
+                _position++;
             }
-
+            var indexTokens = RemoveTopLevelNewLines(tokens.Skip(start).Take(_position - start).ToArray());
             Consume(PowerShellWasmTokenKind.RBracket);
-            var index = indexes.Count == 1 ? indexes[0] : new ArrayExpressionAst(indexes);
+            if (indexTokens.Count == 0) throw new InvalidOperationException("Expected an expression inside index brackets.");
+            // Preserve direct comma-array indexes separately from parenthesized enumerable indexes and unary comma.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L6597-L6620
+            var parser = new ExpressionParser(indexTokens) { _requireComplete = true };
+            var index = parser.ParseCommaExpression(allowAssignment: false);
+            if (parser.Current.Kind != PowerShellWasmTokenKind.EndOfInput)
+                throw new InvalidOperationException($"Unexpected token '{parser.Current.Text}' in index expression.");
             return new IndexExpressionAst(target, index);
         }
 
@@ -2304,14 +2309,9 @@ public sealed class PowerShellWasmParser
         {
             var entries = new List<HashtableEntryAst>();
             var constantKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            while (Current.Kind == PowerShellWasmTokenKind.NewLine) _position++;
             while (Current.Kind is not PowerShellWasmTokenKind.RBrace and not PowerShellWasmTokenKind.EndOfInput)
             {
-                SkipExpressionSeparators();
-                if (Current.Kind is PowerShellWasmTokenKind.RBrace or PowerShellWasmTokenKind.EndOfInput)
-                {
-                    break;
-                }
-
                 var key = ReadHashtableKeyExpression();
                 // Native constant-key validation compares textual keys; parenthesized/dynamic keys validate at runtime.
                 // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/SemanticChecks.cs#L1112-L1137
@@ -2325,12 +2325,49 @@ public sealed class PowerShellWasmParser
                 if (constantKey is not null && !constantKeys.Add(constantKey))
                     throw new InvalidOperationException($"Duplicate key '{constantKey}' in hashtable literal.");
                 Consume(PowerShellWasmTokenKind.Equals);
-                entries.Add(new(key, ParseAssignment()));
-                SkipExpressionSeparators();
+                entries.Add(new(key, ReadHashtableValueExpression()));
+                while (Current.Kind is PowerShellWasmTokenKind.Semicolon or PowerShellWasmTokenKind.NewLine) _position++;
             }
 
             Consume(PowerShellWasmTokenKind.RBrace);
             return new HashtableExpressionAst(entries);
+        }
+
+        // A hash entry's RHS is one statement, including pipelines and control-flow output; commas belong to its value.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs#L7341-L7461
+        // Adapt the upstream grammar to PSWasm's expression-valued entries without its error-recovery machinery.
+        private ExpressionAst ReadHashtableValueExpression()
+        {
+            while (Current.Kind == PowerShellWasmTokenKind.NewLine) _position++;
+            var start = _position;
+            var depth = 0;
+            while (Current.Kind != PowerShellWasmTokenKind.EndOfInput)
+            {
+                if (depth == 0)
+                {
+                    if (Current.Kind is PowerShellWasmTokenKind.RBrace or PowerShellWasmTokenKind.Semicolon) break;
+                    if (Current.Kind == PowerShellWasmTokenKind.NewLine &&
+                        IsStatementBoundaryNewLine(tokens, _position) &&
+                        !IsTryContinuation(tokens, start, _position) && !IsIfContinuation(tokens, start, _position))
+                    {
+                        var next = NextSignificantToken(tokens, _position + 1);
+                        var doContinuation = IsKeyword(tokens, start, "do") && next is { Kind: PowerShellWasmTokenKind.Identifier } &&
+                            (next.Value.Text.Equals("while", StringComparison.OrdinalIgnoreCase) ||
+                                next.Value.Text.Equals("until", StringComparison.OrdinalIgnoreCase));
+                        if (!doContinuation) break;
+                    }
+                }
+                UpdateDepth(Current, ref depth);
+                _position++;
+            }
+
+            var valueTokens = RemoveTopLevelNewLines(tokens.Skip(start).Take(_position - start).ToArray());
+            if (valueTokens.Count == 0) throw new InvalidOperationException("Expected a statement after '=' in hashtable literal.");
+            var statement = ParseStatement(valueTokens, requireCompleteExpressions: true);
+            // The compiler requests assignment values in hash entries, just as it does for grouped assignments.
+            if (!IsCommandSegment(valueTokens) && FindAssignmentEquals(valueTokens) > 0)
+                return ParseParenthesizedExpressionValue(valueTokens);
+            return statement is ExpressionStatementAst expression ? expression.Expression : new StatementExpressionAst(statement);
         }
 
         private ExpressionAst ParseArray()
@@ -2375,6 +2412,8 @@ public sealed class PowerShellWasmParser
 
         private ExpressionAst ReadHashtableKeyExpression()
         {
+            if (Current.Kind == PowerShellWasmTokenKind.Comma)
+                throw new InvalidOperationException("Expected a key expression in hashtable literal.");
             var start = _position;
             var depth = 0;
 
@@ -2384,6 +2423,8 @@ public sealed class PowerShellWasmParser
                 {
                     break;
                 }
+                if (depth == 0 && Current.Kind is PowerShellWasmTokenKind.RBrace or PowerShellWasmTokenKind.Semicolon or PowerShellWasmTokenKind.NewLine)
+                    throw new InvalidOperationException("Expected '=' after hashtable key.");
 
                 UpdateDepth(Current, ref depth);
                 _position++;
@@ -2392,15 +2433,7 @@ public sealed class PowerShellWasmParser
             var keyTokens = RemoveTopLevelNewLines(tokens.Skip(start).Take(_position - start).ToArray());
             return keyTokens.Count == 1 && keyTokens[0].Kind == PowerShellWasmTokenKind.Identifier
                 ? new BareWordExpressionAst(keyTokens[0].Text)
-                : ParseExpression(keyTokens);
-        }
-
-        private void SkipExpressionSeparators()
-        {
-            while (Current.Kind is PowerShellWasmTokenKind.Comma or PowerShellWasmTokenKind.Semicolon or PowerShellWasmTokenKind.NewLine)
-            {
-                _position++;
-            }
+                : new ExpressionParser(keyTokens).Parse(requireComplete: true);
         }
 
         private void Consume(PowerShellWasmTokenKind kind)

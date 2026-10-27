@@ -5,6 +5,9 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("indexing and slice shape", IndexingVerification.VerifyAsync),
+    ("hashtable value statements and expressions", HashtableValueVerification.VerifyAsync),
+    ("qualified variables and named and numeric scopes", ScopedVariableVerification.VerifyAsync),
     ("typed variable constraints and assignment fidelity", TypedVariableVerification.VerifyAsync),
     ("pipeline callback binding and scope", CallbackVerification.VerifyAsync),
     ("return operand and control-flow fidelity", ReturnVerification.VerifyAsync),
@@ -296,16 +299,16 @@ static async ValueTask VerifyNullConditionalMemberAccessAsync()
 {
     var result = await ExecuteAsync("""
 $missingObject = $null
-$missingObject?.Name ?? 'missing'
-$missingObject?.Nested.Value ?? 'missing-deep'
+${missingObject}?.Name ?? 'missing'
+${missingObject}?.Nested.Value ?? 'missing-deep'
 $item = @{Name='ready'; Nested=@{Value=7}}
-$item?.Name
-$item?.Nested.Value
+${item}?.Name
+${item}?.Nested.Value
 $text = ' abc '
-$text?.Trim()
-$missingObject?.Trim() ?? 'no-call'
+${text}?.Trim()
+${missingObject}?.Trim() ?? 'no-call'
 $rows = @(@{Name='one'}, @{Name='two'})
-($rows?.Name) -join ','
+(${rows}?.Name) -join ','
 """);
 
     ExpectLines(result, [
@@ -719,7 +722,7 @@ $ComputedMap['#computed-tenant-id']
 $ComputedMap['#computed-client-id']
 $obj = [pscustomobject]@{Name='typed'; Value=42}
 $obj.Name
-$obj['Value']
+$obj.Value
 $psObject = [System.Management.Automation.PSObject]@{Kind='psobject'}
 $psObject.Kind
 $ordered = [ordered]@{First='one'; Second='two'}
@@ -776,7 +779,7 @@ $h['CountValue']
 
 $o = [pscustomobject]@{Name='one'; Value=1}
 $o.Name = 'two'
-$o['Value'] = 2
+$o.Value = 2
 $o.Name
 $o.Value
 
@@ -1378,7 +1381,7 @@ Get-Variable Count | Select-Object -ExpandProperty Value
 Clear-Variable BrowserName
 Get-Variable BrowserName | Format-List Name Value
 Remove-Variable Count
-Get-Variable Count
+Get-Variable Count -ErrorAction SilentlyContinue
 """);
 
     ExpectLines(result, [

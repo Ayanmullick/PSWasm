@@ -157,6 +157,7 @@ public sealed record NumberExpressionAst(object Value) : ExpressionAst;
 public sealed record StringExpressionAst(string Value, bool IsExpandable) : ExpressionAst
 {
     internal IReadOnlySet<int>? LiteralDollarOffsets { get; init; }
+    internal IReadOnlySet<int>? VariableBoundaryOffsets { get; init; }
     internal bool IsInCatch { get; init; }
     internal bool IsInFinally { get; init; }
 }
