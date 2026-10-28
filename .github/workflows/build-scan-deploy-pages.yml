@@ -1,4 +1,4 @@
-name: Deploy Pages
+name: Build, Scan, and Deploy Pages
 
 on:
   push:
@@ -15,7 +15,7 @@ on:
       - '*.sln'
       - '*.props'
       - '*.targets'
-      - '.github/workflows/deploy-pages.yml'
+      - '.github/workflows/build-scan-deploy-pages.yml'
   workflow_dispatch:
     inputs:
       hosted_version:
@@ -85,12 +85,45 @@ jobs:
         with:
           path: .WorkDir/build/publish/BrowserHost/wwwroot
 
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [csharp, javascript-typescript, actions]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        if: matrix.language == 'csharp'
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze code
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
   deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, codeql]
 
     steps:
       - name: Deploy to GitHub Pages
