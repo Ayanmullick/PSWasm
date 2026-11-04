@@ -55,6 +55,7 @@ internal static class PowerShellWasmCommandUtilities
             byte or sbyte or short or ushort or int or uint or long or ulong or float or double =>
                 Convert.ToDouble(value, CultureInfo.InvariantCulture) != 0,
             decimal decimalValue => decimalValue != 0,
+            System.Numerics.BigInteger bigInteger => !bigInteger.IsZero,
             string stringValue => stringValue.Length > 0,
             System.Collections.IList listValue => ToCollectionBoolean(listValue),
             _ => true
@@ -123,6 +124,12 @@ internal static class PowerShellWasmCommandUtilities
 
     public static int CompareValues(object? left, object? right)
     {
+        if (Language.PowerShellWasmAstExecutor.IsComparisonNumber(left) &&
+            Language.PowerShellWasmAstExecutor.IsComparisonNumber(right))
+        {
+            var comparison = Language.PowerShellWasmAstExecutor.CompareNumbers(left!, right!);
+            if (!double.IsNaN(comparison)) return Math.Sign(comparison);
+        }
         if (TryToNumber(left, out var leftNumber) && TryToNumber(right, out var rightNumber))
         {
             return leftNumber.CompareTo(rightNumber);
@@ -142,6 +149,9 @@ internal static class PowerShellWasmCommandUtilities
             case byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal:
                 number = Convert.ToDouble(value, CultureInfo.InvariantCulture);
                 return true;
+            case System.Numerics.BigInteger bigInteger:
+                number = (double)bigInteger;
+                return true;
             case string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed):
                 number = parsed;
                 return true;
@@ -151,8 +161,16 @@ internal static class PowerShellWasmCommandUtilities
         }
     }
 
+    // Language string conversion uses G15/G7; explicit .NET ToString retains its own formatting contract.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L3336-L3344
     public static string ToInvariantString(object? value) =>
-        Convert.ToString(PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value)), CultureInfo.InvariantCulture) ?? string.Empty;
+        PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value)) switch
+        {
+            double number => number.ToString("G15", CultureInfo.InvariantCulture),
+            float number => number.ToString("G7", CultureInfo.InvariantCulture),
+            System.Numerics.BigInteger number => number.ToString(CultureInfo.InvariantCulture),
+            var other => Convert.ToString(other, CultureInfo.InvariantCulture) ?? string.Empty
+        };
 
     public static string FormatValue(object? value) =>
         PowerShellWasmOutput.AsNull(PowerShellWasmPipelineValue.Unwrap(value)) switch

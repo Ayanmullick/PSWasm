@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Globalization;
 #if PSWASM_CRYPTO
@@ -7,6 +8,10 @@ using System.Text;
 #endif
 
 namespace PSWasm.Language;
+
+// Browser-safe equivalent of PowerShell's collection-filter selection modes.
+// https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L2598-L2625
+internal enum PowerShellWasmWhereMode { Default, First, Last, SkipUntil, Until, Split }
 
 // Browser-safe .NET member bridge.
 // dotnet/runtime source references:
@@ -40,6 +45,8 @@ internal static class PowerShellWasmDotNetBridge
     private const string EnumeratorType = "System.Collections.IEnumerator";
     private const string EnumerableType = "System.Collections.IEnumerable";
     private const string ObjectType = "System.Object";
+    private const string CustomObjectType = "System.Management.Automation.PSCustomObject";
+    private const string WhereModeType = "System.Management.Automation.WhereOperatorSelectionMode";
     private const string ArrayListType = "System.Collections.ArrayList";
     private const string GenericListTypePrefix = "System.Collections.Generic.List";
 #if PSWASM_CRYPTO
@@ -54,7 +61,32 @@ internal static class PowerShellWasmDotNetBridge
 
     private static IReadOnlyDictionary<string, string> CreateTypeAliases()
     {
+        // Core numeric accelerators resolve only to this bridge's explicit value-type allowlist.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/TypeResolver.cs#L732-L783
         var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (alias, fullName) in new[]
+        {
+            ("object", ObjectType), ("string", StringType), ("char", "System.Char"), ("bool", "System.Boolean"),
+            ("int", "System.Int32"), ("long", "System.Int64"), ("decimal", "System.Decimal"), ("byte", "System.Byte"),
+            ("sbyte", "System.SByte"), ("short", "System.Int16"), ("ushort", "System.UInt16"),
+            ("uint", "System.UInt32"), ("ulong", "System.UInt64"), ("float", "System.Single"),
+            ("bigint", "System.Numerics.BigInteger"),
+            ("pscustomobject", CustomObjectType)
+        })
+        {
+            aliases[alias] = fullName;
+            aliases[fullName] = fullName;
+        }
+        aliases["boolean"] = "System.Boolean";
+        aliases["int32"] = "System.Int32";
+        aliases["int64"] = "System.Int64";
+        aliases["int16"] = "System.Int16";
+        aliases["uint16"] = "System.UInt16";
+        aliases["uint32"] = "System.UInt32";
+        aliases["uint64"] = "System.UInt64";
+        aliases["single"] = "System.Single";
+        aliases["Numerics.BigInteger"] = "System.Numerics.BigInteger";
+        aliases[WhereModeType] = WhereModeType;
         aliases["Math"] = MathType;
         aliases["System.Math"] = MathType;
         aliases["double"] = DoubleType;
@@ -162,6 +194,12 @@ internal static class PowerShellWasmDotNetBridge
             return false;
         }
 
+        if (fullName == WhereModeType)
+        {
+            value = ConvertWhereMode(input);
+            return true;
+        }
+
         if (fullName is HashtableType or OrderedDictionaryType or DictionaryType)
         {
             if (input is null) return true;
@@ -229,6 +267,39 @@ internal static class PowerShellWasmDotNetBridge
             MathType => input is PowerShellWasmDotNetType type &&
                 type.FullName.Equals(MathType, StringComparison.OrdinalIgnoreCase),
             DoubleType => input is double,
+            ObjectType => PowerShellWasmOutput.AsNull(input) is not null,
+            StringType => input is string,
+            "System.Char" => input is char,
+            "System.Boolean" => input is bool,
+            "System.Int32" => input is int,
+            "System.Int64" => input is long,
+            "System.Decimal" => input is decimal,
+            "System.Byte" => input is byte,
+            "System.SByte" => input is sbyte,
+            "System.Int16" => input is short,
+            "System.UInt16" => input is ushort,
+            "System.UInt32" => input is uint,
+            "System.UInt64" => input is ulong,
+            "System.Single" => input is float,
+            "System.Numerics.BigInteger" => input is System.Numerics.BigInteger,
+            CustomObjectType => input is PowerShellWasmCustomObject,
+            WhereModeType => input is PowerShellWasmWhereMode,
+            "System.Object[]" => input is object[],
+            "System.String[]" => input is string[],
+            "System.Char[]" => input?.GetType() == typeof(char[]),
+            "System.Boolean[]" => input?.GetType() == typeof(bool[]),
+            "System.Int32[]" => input?.GetType() == typeof(int[]),
+            "System.Int64[]" => input?.GetType() == typeof(long[]),
+            "System.Double[]" => input?.GetType() == typeof(double[]),
+            "System.Byte[]" => input?.GetType() == typeof(byte[]),
+            "System.SByte[]" => input?.GetType() == typeof(sbyte[]),
+            "System.Int16[]" => input?.GetType() == typeof(short[]),
+            "System.UInt16[]" => input?.GetType() == typeof(ushort[]),
+            "System.UInt32[]" => input?.GetType() == typeof(uint[]),
+            "System.UInt64[]" => input?.GetType() == typeof(ulong[]),
+            "System.Single[]" => input?.GetType() == typeof(float[]),
+            "System.Decimal[]" => input?.GetType() == typeof(decimal[]),
+            "System.Numerics.BigInteger[]" => input?.GetType() == typeof(System.Numerics.BigInteger[]),
             DateTimeType => input is DateTime,
             DateTimeOffsetType => input is DateTimeOffset,
             TimeSpanType => input is TimeSpan,
@@ -250,6 +321,35 @@ internal static class PowerShellWasmDotNetBridge
         if (target is not PowerShellWasmDotNetType type)
         {
             return false;
+        }
+
+        if (type.FullName == WhereModeType && Enum.GetNames<PowerShellWasmWhereMode>()
+            .Any(name => name.Equals(memberName, StringComparison.OrdinalIgnoreCase)))
+        {
+            value = Enum.Parse<PowerShellWasmWhereMode>(memberName, ignoreCase: true);
+            return true;
+        }
+
+        // Explicit primitive bounds let numeric scripts reason about width without reflection or arbitrary member access.
+        if (IsMember(memberName, "MinValue", "MaxValue"))
+        {
+            var minimum = memberName.Equals("MinValue", StringComparison.OrdinalIgnoreCase);
+            value = type.FullName switch
+            {
+                "System.SByte" => minimum ? sbyte.MinValue : sbyte.MaxValue,
+                "System.Byte" => minimum ? byte.MinValue : byte.MaxValue,
+                "System.Int16" => minimum ? short.MinValue : short.MaxValue,
+                "System.UInt16" => minimum ? ushort.MinValue : ushort.MaxValue,
+                "System.Int32" => minimum ? int.MinValue : int.MaxValue,
+                "System.UInt32" => minimum ? uint.MinValue : uint.MaxValue,
+                "System.Int64" => minimum ? long.MinValue : long.MaxValue,
+                "System.UInt64" => minimum ? ulong.MinValue : ulong.MaxValue,
+                "System.Single" => minimum ? float.MinValue : float.MaxValue,
+                DoubleType => minimum ? double.MinValue : double.MaxValue,
+                "System.Decimal" => minimum ? decimal.MinValue : decimal.MaxValue,
+                _ => null
+            };
+            if (value is not null) return true;
         }
 
         if ((type.FullName is HashtableType or OrderedDictionaryType) && memberName.Equals("new", StringComparison.OrdinalIgnoreCase))
@@ -411,6 +511,13 @@ internal static class PowerShellWasmDotNetBridge
             return true;
         }
 
+        if (memberName.Equals("ToString", StringComparison.OrdinalIgnoreCase) &&
+            PowerShellWasmAstExecutor.IsComparisonNumber(target))
+        {
+            value = new PowerShellWasmDotNetMethod(ObjectType, memberName, target, IsStatic: false);
+            return true;
+        }
+
         if (target is DictionaryEntry entry)
         {
             if (IsMember(memberName, "Key", "Name")) value = entry.Key;
@@ -429,6 +536,16 @@ internal static class PowerShellWasmDotNetBridge
             memberName.Equals("GetEnumerator", StringComparison.OrdinalIgnoreCase))
         {
             value = new PowerShellWasmDotNetMethod(EnumerableType, memberName, target, IsStatic: false);
+            return true;
+        }
+
+        // Collection Object.ToString is a direct method, so it takes precedence over item-method enumeration.
+        // Scalar formatting overloads remain explicit and no reflected member discovery is exposed.
+        // https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Private.CoreLib/src/System/Object.cs#L37-L43
+        if (target is ICollection or IEnumerator && target is not PowerShellWasmCustomObject &&
+            memberName.Equals("ToString", StringComparison.OrdinalIgnoreCase))
+        {
+            value = new PowerShellWasmDotNetMethod(ObjectType, memberName, target, IsStatic: false);
             return true;
         }
 
@@ -456,7 +573,7 @@ internal static class PowerShellWasmDotNetBridge
         }
 #endif
 
-        if (target is string && IsMember(memberName, "ToLowerInvariant", "ToUpperInvariant", "ToString", "Trim", "Substring"))
+        if (target is string && IsMember(memberName, "ToLower", "ToUpper", "ToLowerInvariant", "ToUpperInvariant", "ToString", "Trim", "Substring"))
         {
             value = new PowerShellWasmDotNetMethod(StringType, memberName, target, IsStatic: false);
             return true;
@@ -519,6 +636,18 @@ internal static class PowerShellWasmDotNetBridge
         {
             RequireArgumentCount(method, arguments, 0);
             return new PowerShellWasmDotNetType(GetKnownRuntimeTypeName(method.Target!)!);
+        }
+
+        if (method.DeclaringType == ObjectType && method.Name.Equals("ToString", StringComparison.OrdinalIgnoreCase))
+        {
+            if (method.Target is IFormattable number && PowerShellWasmAstExecutor.IsComparisonNumber(method.Target))
+            {
+                if (arguments.Count > 1) throw new InvalidOperationException("Numeric ToString accepts an optional format string.");
+                var format = arguments.Count == 0 ? null : ToInvariantString(arguments[0]);
+                return number.ToString(format, CultureInfo.InvariantCulture);
+            }
+            RequireArgumentCount(method, arguments, 0);
+            return method.Target!.ToString();
         }
 
         if (method.DeclaringType == EnumerableType && method.Target is ICollection collection)
@@ -587,8 +716,12 @@ internal static class PowerShellWasmDotNetBridge
         if (method.DeclaringType.Equals(StringType, StringComparison.OrdinalIgnoreCase) &&
             method.Target is string text)
         {
+            // Parameterless casing follows the current culture; invariant variants remain explicit.
+            // https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs#L2294-L2322
             return method.Name.ToLowerInvariant() switch
             {
+                "tolower" => InvokeStringNoArgument(method, arguments, () => text.ToLower(CultureInfo.CurrentCulture)),
+                "toupper" => InvokeStringNoArgument(method, arguments, () => text.ToUpper(CultureInfo.CurrentCulture)),
                 "tolowerinvariant" => InvokeStringNoArgument(method, arguments, text.ToLowerInvariant),
                 "toupperinvariant" => InvokeStringNoArgument(method, arguments, text.ToUpperInvariant),
                 "tostring" => InvokeStringNoArgument(method, arguments, () => text),
@@ -652,20 +785,20 @@ internal static class PowerShellWasmDotNetBridge
     private static string? GetKnownRuntimeTypeName(object value) => value switch
     {
         string[] => "System.String[]",
-        bool[] => "System.Boolean[]",
-        char[] => "System.Char[]",
-        byte[] => "System.Byte[]",
-        sbyte[] => "System.SByte[]",
-        short[] => "System.Int16[]",
-        ushort[] => "System.UInt16[]",
-        int[] => "System.Int32[]",
-        uint[] => "System.UInt32[]",
-        long[] => "System.Int64[]",
-        ulong[] => "System.UInt64[]",
-        float[] => "System.Single[]",
-        double[] => "System.Double[]",
-        decimal[] => "System.Decimal[]",
-        System.Numerics.BigInteger[] => "System.Numerics.BigInteger[]",
+        bool[] when value.GetType() == typeof(bool[]) => "System.Boolean[]",
+        char[] when value.GetType() == typeof(char[]) => "System.Char[]",
+        byte[] when value.GetType() == typeof(byte[]) => "System.Byte[]",
+        sbyte[] when value.GetType() == typeof(sbyte[]) => "System.SByte[]",
+        short[] when value.GetType() == typeof(short[]) => "System.Int16[]",
+        ushort[] when value.GetType() == typeof(ushort[]) => "System.UInt16[]",
+        int[] when value.GetType() == typeof(int[]) => "System.Int32[]",
+        uint[] when value.GetType() == typeof(uint[]) => "System.UInt32[]",
+        long[] when value.GetType() == typeof(long[]) => "System.Int64[]",
+        ulong[] when value.GetType() == typeof(ulong[]) => "System.UInt64[]",
+        float[] when value.GetType() == typeof(float[]) => "System.Single[]",
+        double[] when value.GetType() == typeof(double[]) => "System.Double[]",
+        decimal[] when value.GetType() == typeof(decimal[]) => "System.Decimal[]",
+        System.Numerics.BigInteger[] when value.GetType() == typeof(System.Numerics.BigInteger[]) => "System.Numerics.BigInteger[]",
         DateTime[] => "System.DateTime[]",
         DateTimeOffset[] => "System.DateTimeOffset[]",
         TimeSpan[] => "System.TimeSpan[]",
@@ -693,6 +826,7 @@ internal static class PowerShellWasmDotNetBridge
         DateTimeOffset => DateTimeOffsetType,
         TimeSpan => TimeSpanType,
         TimeZoneInfo => TimeZoneInfoType,
+        PowerShellWasmWhereMode => WhereModeType,
         IEnumerator or ICollection => value.GetType().FullName,
         _ => null
     };
@@ -799,7 +933,87 @@ internal static class PowerShellWasmDotNetBridge
             return true;
         }
 
+        if (trimmed.EndsWith("[]", StringComparison.Ordinal) &&
+            TypeAliases.TryGetValue(trimmed[..^2].Trim(), out var elementType) && elementType is
+                ObjectType or StringType or "System.Char" or "System.Boolean" or "System.Int32" or "System.Int64" or DoubleType or "System.Byte"
+                or "System.SByte" or "System.Int16" or "System.UInt16" or "System.UInt32" or "System.UInt64" or "System.Single"
+                or "System.Decimal" or "System.Numerics.BigInteger")
+        {
+            fullName = elementType + "[]";
+            return true;
+        }
+
         return TypeAliases.TryGetValue(trimmed, out fullName!);
+    }
+
+    // Ordinary conversion targets produce Collection<T>; arrays and explicit generic lists are handled by the caller.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L2886-L2952
+    // Use explicit closed generic types and the runtime's existing converter, without reflection or desktop type loading.
+    internal static object CreateIntrinsicTypedCollection(string typeName, IEnumerable<object?> values, Func<object?, object?> convert)
+    {
+        if (!TryResolveTypeName(typeName, out var fullName))
+            throw new InvalidOperationException($"Collection element type [{typeName}] is not available in this browser-safe runtime.");
+        return fullName switch
+        {
+            ObjectType => Create<object?>(), StringType => Create<string?>(), "System.Char" => Create<char>(),
+            "System.Boolean" => Create<bool>(), "System.Int32" => Create<int>(), "System.Int64" => Create<long>(),
+            DoubleType => Create<double>(), "System.Decimal" => Create<decimal>(), "System.Byte" => Create<byte>(),
+            "System.SByte" => Create<sbyte>(), "System.Int16" => Create<short>(), "System.UInt16" => Create<ushort>(),
+            "System.UInt32" => Create<uint>(), "System.UInt64" => Create<ulong>(), "System.Single" => Create<float>(),
+            "System.Numerics.BigInteger" => Create<System.Numerics.BigInteger>(),
+            DateTimeType => Create<DateTime>(), DateTimeOffsetType => Create<DateTimeOffset>(), TimeSpanType => Create<TimeSpan>(),
+            CustomObjectType => Create<PowerShellWasmCustomObject?>(), WhereModeType => Create<PowerShellWasmWhereMode>(),
+            _ => throw new InvalidOperationException($"Collection element type [{typeName}] is not available in this browser-safe runtime.")
+        };
+
+        Collection<T> Create<T>()
+        {
+            var result = new Collection<T>();
+            foreach (var item in values) result.Add((T)convert(item)!);
+            return result;
+        }
+    }
+
+    // PowerShell enum conversion accepts defined numeric values, case-insensitive names, and unambiguous prefixes.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L3551-L3645
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/EnumMinimumDisambiguation.cs#L37-L98
+    internal static PowerShellWasmWhereMode ConvertWhereMode(object? value) =>
+        ConvertWhereMode(value, new HashSet<object>(ReferenceEqualityComparer.Instance));
+
+    private static PowerShellWasmWhereMode ConvertWhereMode(object? value, HashSet<object> active)
+    {
+        value = PowerShellWasmOutput.AsNull(value);
+        if (value is PowerShellWasmWhereMode mode) return mode;
+        if (value is string text)
+        {
+            if (Enum.TryParse<PowerShellWasmWhereMode>(text, ignoreCase: true, out var parsed) && Enum.IsDefined(parsed))
+                return parsed;
+            var names = Enum.GetNames<PowerShellWasmWhereMode>().Where(name => name.StartsWith(text, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (names.Length == 1) return Enum.Parse<PowerShellWasmWhereMode>(names[0]);
+        }
+        else if (value is IEnumerable values)
+        {
+            // Native enum-array conversion combines raw string names; nonstrings convert recursively first.
+            System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();
+            if (!active.Add(values)) throw new InvalidOperationException("A cyclic collection cannot be converted to a selection mode.");
+            try
+            {
+                var names = values.Cast<object?>().Select(item => item is string name ? name : ConvertWhereMode(item, active).ToString());
+                return ConvertWhereMode(string.Join(",", names), active);
+            }
+            finally { active.Remove(values); }
+        }
+        else if (value is byte or sbyte or short or ushort or int or uint or long or ulong)
+        {
+            var number = Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+            if (number is >= 0 and <= 5) return (PowerShellWasmWhereMode)(int)number;
+        }
+        else if (value is float or double or decimal)
+        {
+            var number = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+            if (number is >= 0 and <= 5 && number == Math.Truncate(number)) return (PowerShellWasmWhereMode)(int)number;
+        }
+        throw new InvalidOperationException($"Value '{value}' cannot be converted to WhereOperatorSelectionMode.");
     }
 
     private static bool TryNormalizeGenericListType(string typeName, out string fullName)
@@ -1172,7 +1386,9 @@ internal static class PowerShellWasmDotNetBridge
             return true;
         }
 
-        if (IsMember(memberName, "Add", "Clear", "Contains", "Insert", "Remove", "RemoveAt", "ToArray"))
+        if (IsMember(memberName, "Add", "Clear", "Contains", "Insert", "Remove", "RemoveAt") ||
+            (list is ArrayList or List<string> or List<object?> or List<int> or List<long> or List<double> or
+                List<decimal> or List<bool> or List<byte> or List<DateTime>) && memberName.Equals("ToArray", StringComparison.OrdinalIgnoreCase))
         {
             member = new PowerShellWasmDotNetMethod(
                 list is ArrayList ? ArrayListType : GenericListTypePrefix,
@@ -1392,14 +1608,27 @@ internal static class PowerShellWasmDotNetBridge
     private static object? ConvertListItemForExistingList(IList list, object? value) =>
         list switch
         {
-            List<string> => ToInvariantString(value),
-            List<int> => ToInt32(value),
-            List<long> => ToInt64(value),
-            List<double> => ToDouble(value),
-            List<decimal> => ToDecimal(value),
-            List<bool> => ToBoolean(value),
-            List<byte> => Convert.ToByte(value, CultureInfo.InvariantCulture),
-            List<DateTime> => ToDateTime(value),
+            List<string> or Collection<string> => ToInvariantString(value),
+            List<int> or Collection<int> => PowerShellWasmAstExecutor.ConvertOptimizedValue("int", value, " "),
+            List<long> or Collection<long> => PowerShellWasmAstExecutor.ConvertOptimizedValue("long", value, " "),
+            List<double> or Collection<double> => PowerShellWasmAstExecutor.ConvertOptimizedValue("double", value, " "),
+            List<decimal> or Collection<decimal> => PowerShellWasmAstExecutor.ConvertOptimizedValue("decimal", value, " "),
+            List<bool> or Collection<bool> => ToBoolean(value),
+            List<byte> or Collection<byte> => Convert.ToByte(value, CultureInfo.InvariantCulture),
+            Collection<sbyte> => PowerShellWasmAstExecutor.ConvertOptimizedValue("sbyte", value, " "),
+            Collection<short> => PowerShellWasmAstExecutor.ConvertOptimizedValue("short", value, " "),
+            Collection<ushort> => PowerShellWasmAstExecutor.ConvertOptimizedValue("ushort", value, " "),
+            Collection<uint> => PowerShellWasmAstExecutor.ConvertOptimizedValue("uint", value, " "),
+            Collection<ulong> => PowerShellWasmAstExecutor.ConvertOptimizedValue("ulong", value, " "),
+            Collection<float> => PowerShellWasmAstExecutor.ConvertOptimizedValue("float", value, " "),
+            Collection<System.Numerics.BigInteger> => PowerShellWasmAstExecutor.ConvertOptimizedValue("bigint", value, " "),
+            List<DateTime> or Collection<DateTime> => ToDateTime(value),
+            Collection<char> => PowerShellWasmAstExecutor.ConvertOptimizedValue("char", value, " "),
+            Collection<DateTimeOffset> => ToDateTimeOffset(value),
+            Collection<TimeSpan> => ToTimeSpan(value),
+            Collection<PowerShellWasmWhereMode> => ConvertWhereMode(value),
+            Collection<PowerShellWasmCustomObject> =>
+                PowerShellWasmAstExecutor.ConvertOptimizedValue(CustomObjectType, value, " "),
             _ => value
         };
 

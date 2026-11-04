@@ -36,16 +36,19 @@ public sealed class PowerShellWasmParser
         var expression = new StringExpressionAst(token.Text, token.Kind == PowerShellWasmTokenKind.ExpandableStringLiteral)
             { LiteralDollarOffsets = token.LiteralDollarOffsets, VariableBoundaryOffsets = token.VariableBoundaryOffsets,
                 IsInCatch = token.IsInCatch, IsInFinally = token.IsInFinally };
-        if (!expression.IsExpandable || !token.IsInFinally) return expression;
+        if (!expression.IsExpandable) return expression;
 
-        // Native semantic validation visits interpolation ASTs even in unreachable code. Keep late string evaluation,
-        // but reject a return that leaves finally now, before any part of the enclosing script executes.
+        // Native parsing and semantic validation visit interpolation ASTs even in unreachable code.
         for (var index = 0; index < token.Text.Length; index++)
         {
-            if (token.Text[index] != '$' || token.LiteralDollarOffsets?.Contains(index) == true ||
-                !TryReadExpandableSubexpression(token.Text, index, out var script, out var nextIndex)) continue;
-            _ = new PowerShellWasmParser().Parse(script, token.IsInCatch, insideFinally: true);
-            index = nextIndex - 1;
+            if (token.Text[index] != '$' || token.LiteralDollarOffsets?.Contains(index) == true) continue;
+            if (TryReadExpandableSubexpression(token.Text, index, out var script, out var nextIndex))
+            {
+                _ = new PowerShellWasmParser().Parse(script, token.IsInCatch, token.IsInFinally);
+                index = nextIndex - 1;
+            }
+            else if (PowerShellWasmTokenizer.TryReadVariableName(token.Text, index, out _, out var variableEnd,
+                inExpandableString: true, token.VariableBoundaryOffsets)) index = variableEnd - 1;
         }
         return expression;
     }
@@ -1022,14 +1025,37 @@ public sealed class PowerShellWasmParser
             throw new InvalidOperationException("Expected a command name.");
         }
 
+        // Argument scanning may split an embedded @(...)/@{...} into a literal @ and a new expression.
+        tokens = tokens.ToList();
         var parameters = new List<CommandParameterAst>();
         var arguments = new List<CommandArgumentAst>();
         var position = 1;
+        var commandName = GetCommandName(tokens[0]);
+        while (position < tokens.Count && Contiguous(tokens[position - 1], tokens[position]) &&
+            tokens[position].Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Parameter or
+                PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral or
+                PowerShellWasmTokenKind.Variable or PowerShellWasmTokenKind.Number or PowerShellWasmTokenKind.DollarLParen)
+        {
+            var fragment = tokens[position++];
+            if (fragment.Kind == PowerShellWasmTokenKind.DollarLParen)
+            {
+                var start = --position;
+                ReadArgumentGroup(tokens, ref position);
+                var end = tokens[position - 1].Offset + tokens[position - 1].Length;
+                commandName += fragment.SourceScript?[fragment.Offset..end] ??
+                    string.Concat(tokens.Skip(start).Take(position - start).Select(GetBareCommandTokenText));
+                continue;
+            }
+            commandName += fragment.Kind == PowerShellWasmTokenKind.Variable
+                ? fragment.SourceScript?[fragment.Offset..(fragment.Offset + fragment.Length)] ?? "$" + fragment.Text
+                : GetBareCommandTokenText(fragment);
+        }
 
         while (position < tokens.Count)
         {
             var sourceOrder = position;
-            if (tokens[position].Kind == PowerShellWasmTokenKind.Parameter)
+            if (tokens[position].Kind == PowerShellWasmTokenKind.Parameter && tokens[position].HasLeadingWhitespace &&
+                !HasQuotedSuffix(tokens, position))
             {
                 var name = tokens[position++].Text;
                 var inline = position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.Colon;
@@ -1067,7 +1093,7 @@ public sealed class PowerShellWasmParser
                 { SourceOrder = sourceOrder });
         }
 
-        return new CommandAst(GetCommandName(tokens[0]), parameters, arguments);
+        return new CommandAst(commandName, parameters, arguments);
     }
 
     private static bool TryReadOperatorParameter(
@@ -1076,7 +1102,7 @@ public sealed class PowerShellWasmParser
         out CommandParameterAst parameter)
     {
         parameter = null!;
-        if (!TryGetOperatorParameterName(tokens[position].Kind, out var parameterName))
+        if (HasQuotedSuffix(tokens, position) || !TryGetOperatorParameterName(tokens[position].Kind, out var parameterName))
         {
             return false;
         }
@@ -1097,7 +1123,11 @@ public sealed class PowerShellWasmParser
     }
 
     private static bool IsOperatorParameter(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
-        position < tokens.Count && TryGetOperatorParameterName(tokens[position].Kind, out _);
+        position < tokens.Count && !HasQuotedSuffix(tokens, position) && TryGetOperatorParameterName(tokens[position].Kind, out _);
+
+    private static bool HasQuotedSuffix(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
+        position + 1 < tokens.Count && Contiguous(tokens[position], tokens[position + 1]) &&
+        tokens[position + 1].Kind is PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral;
 
     private static bool TryGetOperatorParameterName(PowerShellWasmTokenKind kind, out string name)
     {
@@ -1139,99 +1169,152 @@ public sealed class PowerShellWasmParser
 
     private static IReadOnlyList<PowerShellWasmToken> ReadCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
     {
-        var start = position;
-        ReadSingleCommandArgument(tokens, ref position);
+        var result = new List<PowerShellWasmToken>(ReadSingleCommandArgument(tokens, ref position));
         while (position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.Comma)
         {
-            position++;
+            result.Add(tokens[position++]);
             if (position >= tokens.Count || tokens[position].Kind == PowerShellWasmTokenKind.Parameter)
             {
                 throw new InvalidOperationException("Expected a command argument after ','.");
             }
 
-            ReadSingleCommandArgument(tokens, ref position);
+            result.AddRange(ReadSingleCommandArgument(tokens, ref position));
         }
 
-        return tokens.Skip(start).Take(position - start).ToArray();
+        return result;
     }
 
     private static IReadOnlyList<PowerShellWasmToken> ReadSingleCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
     {
         var start = position;
+        if (tokens[position].Kind == PowerShellWasmTokenKind.Comma)
+            throw new InvalidOperationException("Expected a command argument before ','.");
+        if (tokens[position].Kind is PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral)
+        {
+            return [tokens[position++]];
+        }
         if (tokens[position].Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or
-            PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen or
-            PowerShellWasmTokenKind.DollarLParen or PowerShellWasmTokenKind.LBracket)
+            PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.DollarLParen)
         {
-            var depth = 0;
-            do
-            {
-                UpdateDepth(tokens[position], ref depth);
-                position++;
-            }
-            while (position < tokens.Count && depth > 0);
-
+            ReadArgumentGroup(tokens, ref position);
             return tokens.Skip(start).Take(position - start).ToArray();
         }
-
-        if (tokens[position].Kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus && position + 1 < tokens.Count)
+        var variable = tokens[position++].Kind == PowerShellWasmTokenKind.Variable;
+        var hasMember = false;
+        while (variable && position < tokens.Count && Contiguous(tokens[position - 1], tokens[position]))
         {
-            position += 2;
-            return tokens.Skip(start).Take(position - start).ToArray();
+            if (tokens[position].Kind == PowerShellWasmTokenKind.LBracket)
+            {
+                ReadArgumentGroup(tokens, ref position);
+                hasMember = true;
+            }
+            else if (tokens[position].Kind == PowerShellWasmTokenKind.QuestionDot ||
+                tokens[position].Kind == PowerShellWasmTokenKind.Identifier && tokens[position].Text.StartsWith('.'))
+            {
+                var computed = tokens[position].Kind == PowerShellWasmTokenKind.QuestionDot || tokens[position].Text == ".";
+                position++;
+                if (computed && position < tokens.Count)
+                {
+                    if (tokens[position].Kind == PowerShellWasmTokenKind.LParen) ReadArgumentGroup(tokens, ref position);
+                    else position++;
+                }
+                hasMember = true;
+                if (position < tokens.Count && tokens[position].Kind == PowerShellWasmTokenKind.LParen &&
+                    Contiguous(tokens[position - 1], tokens[position])) ReadArgumentGroup(tokens, ref position);
+            }
+            else break;
         }
-
-        if (tokens[position].Kind == PowerShellWasmTokenKind.Star)
+        if (hasMember) return tokens.Skip(start).Take(position - start).ToArray();
+        while (position < tokens.Count && Contiguous(tokens[position - 1], tokens[position]))
         {
-            position++;
-            while (position < tokens.Count && IsContiguousBareCommandToken(tokens[position - 1], tokens[position]))
+            var kind = tokens[position].Kind;
+            if (kind is PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.AtLBrace &&
+                tokens is List<PowerShellWasmToken> mutable)
             {
-                position++;
+                var original = tokens[position];
+                mutable[position] = original with { Kind = kind == PowerShellWasmTokenKind.AtLParen
+                    ? PowerShellWasmTokenKind.LParen : PowerShellWasmTokenKind.LBrace,
+                    Text = kind == PowerShellWasmTokenKind.AtLParen ? "(" : "{", Offset = original.Offset + 1, Length = 1 };
+                return tokens.Skip(start).Take(position - start).Append(original with
+                    { Kind = PowerShellWasmTokenKind.Identifier, Text = "@", Length = 1 }).ToArray();
             }
-
-            return tokens.Skip(start).Take(position - start).ToArray();
+            if (kind is PowerShellWasmTokenKind.Comma or PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or
+                PowerShellWasmTokenKind.RParen or PowerShellWasmTokenKind.RBrace or PowerShellWasmTokenKind.Semicolon or
+                PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.EndOfInput) break;
+            if (kind == PowerShellWasmTokenKind.DollarLParen) ReadArgumentGroup(tokens, ref position);
+            else position++;
         }
-
-        position++;
-        while (position < tokens.Count && tokens[position].Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.LBracket &&
-            !tokens[position].HasLeadingWhitespace)
-        {
-            if (tokens[position].Kind == PowerShellWasmTokenKind.Identifier && !tokens[position].Text.StartsWith(".", StringComparison.Ordinal))
-            {
-                break;
-            }
-
-            if (tokens[position].Kind == PowerShellWasmTokenKind.Identifier)
-            {
-                position++;
-                continue;
-            }
-
-            var depth = 0;
-            do
-            {
-                UpdateDepth(tokens[position], ref depth);
-                position++;
-            }
-            while (position < tokens.Count && depth > 0);
-        }
-
-        if (position < tokens.Count && tokens[position].Kind.IsBinaryOperator() && !IsOperatorParameter(tokens, position))
-        {
-            while (position < tokens.Count &&
-                tokens[position].Kind != PowerShellWasmTokenKind.Parameter &&
-                !IsSplatStart(tokens, position) &&
-                !IsOperatorParameter(tokens, position))
-            {
-                position++;
-            }
-        }
-
         return tokens.Skip(start).Take(position - start).ToArray();
     }
 
-    private static ExpressionAst ParseCommandArgumentExpression(IReadOnlyList<PowerShellWasmToken> tokens) =>
-        IsBareWildcardArgument(tokens)
-            ? new BareWordExpressionAst(string.Concat(tokens.Select(GetBareCommandTokenText)))
-            : ParseExpression(tokens);
+    private static bool Contiguous(PowerShellWasmToken left, PowerShellWasmToken right) =>
+        !right.HasLeadingWhitespace && right.Offset == left.Offset + left.Length;
+
+    private static void ReadArgumentGroup(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
+    {
+        var closing = tokens[position].Kind switch
+        {
+            PowerShellWasmTokenKind.LBrace or PowerShellWasmTokenKind.AtLBrace => PowerShellWasmTokenKind.RBrace,
+            PowerShellWasmTokenKind.LBracket => PowerShellWasmTokenKind.RBracket,
+            _ => PowerShellWasmTokenKind.RParen
+        };
+        var depth = 0;
+        do { UpdateDepth(tokens[position++], ref depth); }
+        while (position < tokens.Count && depth > 0);
+        if (depth != 0) throw new InvalidOperationException($"Expected token {closing} but found EndOfInput.");
+    }
+
+    // Argument mode combines generic text with variables and quoted/subexpression fragments, but initial
+    // quoted strings and expression forms end their argument. Arithmetic text is not an expression here.
+    // https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_parsing#argument-mode
+    private static ExpressionAst ParseCommandArgumentExpression(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var items = new List<ExpressionAst>();
+        var position = 0;
+        do
+        {
+            var part = ReadSingleCommandArgument(tokens, ref position);
+            items.Add(ParseSingleCommandArgument(part));
+            if (position == tokens.Count) break;
+            if (tokens[position++].Kind != PowerShellWasmTokenKind.Comma)
+                throw new InvalidOperationException("Unexpected token in command argument.");
+        } while (position < tokens.Count);
+        return items.Count == 1 ? items[0] : new ArrayExpressionAst(items);
+    }
+
+    private static ExpressionAst ParseSingleCommandArgument(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        // Argument mode retains an out-of-range numeric-looking argument as text; expression mode rejects it.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/tokenizer.cs#L3884-L3917
+        if (tokens.Count == 1 && tokens[0].Kind == PowerShellWasmTokenKind.Number)
+            return PowerShellWasmNumericLiteral.TryParse(tokens[0].Text, out var number)
+                ? new NumberExpressionAst(number) : new StringExpressionAst(tokens[0].Text, false);
+        if (tokens.Count == 1 && tokens[0].Kind is PowerShellWasmTokenKind.Variable or
+            PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral)
+            return ParseExpression(tokens);
+        if (tokens[0].Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.LBrace or
+            PowerShellWasmTokenKind.AtLParen or PowerShellWasmTokenKind.AtLBrace or PowerShellWasmTokenKind.DollarLParen ||
+            tokens[0].Kind == PowerShellWasmTokenKind.Variable && tokens.Count > 1 &&
+            (tokens[1].Kind is PowerShellWasmTokenKind.LBracket or PowerShellWasmTokenKind.QuestionDot ||
+                tokens[1].Kind == PowerShellWasmTokenKind.Identifier && tokens[1].Text.StartsWith('.')))
+            return ParseExpression(tokens);
+        var parts = new List<ExpressionAst>();
+        for (var position = 0; position < tokens.Count;)
+        {
+            var token = tokens[position++];
+            if (token.Kind is PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral)
+                parts.Add(ParseStringToken(token));
+            else if (token.Kind == PowerShellWasmTokenKind.Variable) parts.Add(ParseExpression([token]));
+            else if (token.Kind == PowerShellWasmTokenKind.DollarLParen)
+            {
+                var start = --position;
+                ReadArgumentGroup(tokens, ref position);
+                parts.Add(ParseExpression(tokens.Skip(start).Take(position - start).ToArray()));
+            }
+            else parts.Add(new StringExpressionAst(GetBareCommandTokenText(token), false));
+        }
+        return parts.Count == 1 ? parts[0] : new CommandStringExpressionAst(parts);
+    }
 
     private static ExpressionAst ParseParameterArgumentExpression(string parameterName, IReadOnlyList<PowerShellWasmToken> tokens) =>
         IsAppendVariableCommonParameter(parameterName, tokens)
@@ -1252,18 +1335,8 @@ public sealed class PowerShellWasmParser
             parameterName.Equals("WarningVariable", StringComparison.OrdinalIgnoreCase) ||
             parameterName.Equals("wv", StringComparison.OrdinalIgnoreCase));
 
-    private static bool IsBareWildcardArgument(IReadOnlyList<PowerShellWasmToken> tokens) =>
-        tokens.Count > 1 &&
-        tokens.Any(static token => token.Kind == PowerShellWasmTokenKind.Star) &&
-        tokens.All(static token => token.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Parameter or PowerShellWasmTokenKind.Star) &&
-        tokens.Zip(tokens.Skip(1)).All(static pair => IsContiguousBareCommandToken(pair.First, pair.Second));
-
     private static string GetBareCommandTokenText(PowerShellWasmToken token) =>
         token.Kind == PowerShellWasmTokenKind.Parameter ? "-" + token.Text : token.Text;
-
-    private static bool IsContiguousBareCommandToken(PowerShellWasmToken left, PowerShellWasmToken right) =>
-        !right.HasLeadingWhitespace && right.Offset == left.Offset + left.Length &&
-        right.Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Parameter or PowerShellWasmTokenKind.Star;
 
     private static ExpressionAst ParseExpression(IReadOnlyList<PowerShellWasmToken> tokens)
     {
@@ -1273,7 +1346,7 @@ public sealed class PowerShellWasmParser
         }
 
         var parser = new ExpressionParser(tokens);
-        return parser.Parse();
+        return parser.Parse(requireComplete: true);
     }
 
     private static bool TryParseSettableCompoundAssignmentExpression(
@@ -1586,7 +1659,7 @@ public sealed class PowerShellWasmParser
 
     private static bool IsSettableAssignmentTarget(ExpressionAst target) => target switch
     {
-        VariableExpressionAst or MemberAccessExpressionAst or ComputedMemberAccessExpressionAst or IndexExpressionAst => true,
+        VariableExpressionAst or MemberAccessExpressionAst or ComputedMemberAccessExpressionAst { NullConditional: false } or IndexExpressionAst => true,
         CastExpressionAst cast => IsSettableAssignmentTarget(cast.Operand),
         ParenthesizedExpressionAst parenthesized => IsSettableAssignmentTarget(parenthesized.Expression),
         _ => false
@@ -1650,6 +1723,7 @@ public sealed class PowerShellWasmParser
     private static bool IsKeyword(IReadOnlyList<PowerShellWasmToken> tokens, int position, string keyword) =>
         position < tokens.Count &&
         tokens[position].Kind == PowerShellWasmTokenKind.Identifier &&
+        !tokens[position].IsEscapedText &&
         tokens[position].Text.Equals(keyword, StringComparison.OrdinalIgnoreCase);
 
     private static PowerShellWasmTokenKind CurrentKind(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
@@ -2034,6 +2108,16 @@ public sealed class PowerShellWasmParser
                 return new IncrementExpressionAst(target, delta, IsPrefix: true);
             }
 
+            // An adjacent sign belongs to the literal before type inference and member access. Spaced +/- remain operators.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs#L7058-L7088
+            if (Current.Kind is PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus &&
+                Peek(1).Kind == PowerShellWasmTokenKind.Number && Contiguous(Current, Peek(1)))
+            {
+                var literal = ParseNumber(Current.Text + Peek(1).Text);
+                _position += 2;
+                return ParsePostfix(literal);
+            }
+
             if (Current.Kind.IsUnaryOperator())
             {
                 var op = MapUnaryOperator(Current.Kind);
@@ -2061,9 +2145,9 @@ public sealed class PowerShellWasmParser
             return true;
         }
 
-        private ExpressionAst ParsePostfix()
+        private ExpressionAst ParsePostfix(ExpressionAst? initialExpression = null)
         {
-            var expression = ParsePrimary();
+            var expression = initialExpression ?? ParsePrimary();
             while (true)
             {
                 if (Current.Kind == PowerShellWasmTokenKind.Identifier &&
@@ -2099,6 +2183,13 @@ public sealed class PowerShellWasmParser
                 if (Current.Kind == PowerShellWasmTokenKind.QuestionDot)
                 {
                     _position++;
+                    if (Current.Kind is PowerShellWasmTokenKind.Variable or PowerShellWasmTokenKind.StringLiteral or
+                        PowerShellWasmTokenKind.ExpandableStringLiteral or PowerShellWasmTokenKind.LParen)
+                    {
+                        expression = new ComputedMemberAccessExpressionAst(expression, ParseComputedMemberName())
+                            { NullConditional = true };
+                        continue;
+                    }
                     var memberPath = ReadMemberPath("?.");
                     expression = new NullConditionalMemberAccessExpressionAst(expression, memberPath[0]);
                     foreach (var memberName in memberPath.Skip(1))
@@ -2118,7 +2209,8 @@ public sealed class PowerShellWasmParser
                 }
 
                 if (Current.Kind == PowerShellWasmTokenKind.LParen &&
-                    expression is MemberAccessExpressionAst or NullConditionalMemberAccessExpressionAst or StaticMemberAccessExpressionAst)
+                    expression is MemberAccessExpressionAst or ComputedMemberAccessExpressionAst or
+                        NullConditionalMemberAccessExpressionAst or StaticMemberAccessExpressionAst)
                 {
                     expression = new MethodInvocationExpressionAst(expression, ParseArgumentList());
                     continue;
@@ -2519,9 +2611,7 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.Bnot;
 
         private static ExpressionAst ParseNumber(string text) =>
-            int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intValue)
-                ? new NumberExpressionAst(intValue)
-                : new NumberExpressionAst(double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture));
+            new NumberExpressionAst(PowerShellWasmNumericLiteral.Parse(text));
 
         private static VariableExpressionAst ParseVariable(string text)
         {

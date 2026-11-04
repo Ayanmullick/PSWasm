@@ -5,6 +5,10 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("numeric literals and numeric value semantics", NumericLiteralVerification.VerifyAsync),
+    ("quoted strings and command argument parsing", StringParsingVerification.VerifyAsync),
+    ("collection ForEach and Where intrinsics", CollectionIntrinsicVerification.VerifyAsync),
+    ("collection member and method enumeration", MemberEnumerationVerification.VerifyAsync),
     ("indexing and slice shape", IndexingVerification.VerifyAsync),
     ("hashtable value statements and expressions", HashtableValueVerification.VerifyAsync),
     ("qualified variables and named and numeric scopes", ScopedVariableVerification.VerifyAsync),
@@ -1542,8 +1546,8 @@ $rows.Name.ToUpperInvariant()
 "scalar-foreach=$('abc'.ForEach({ $_.Length }) -join ',')"
 $missingMembers = @($rows[0],$null,$rows[1]).Missing
 $missingMembers.Count
-$missingMembers[0] ?? 'missing-null'
-$missingMembers[1] ?? 'missing-null'
+@(@($rows[0],$null,$rows[1]).Missing).Count
+$null -eq $missingMembers
 'abcdef' | ForEach-Object Substring 1 3
 $rows | Select-Object @{Name='Label';Expression={$_.Name.ToUpperInvariant()}},@{N='Next';E={$_.Value + 1}} | ConvertTo-Json -Compress
 $rows | Select-Object @{Name='Copied';Expression='Name'} | ConvertTo-Json -Compress
@@ -1597,9 +1601,9 @@ $sum = 0
         "0",
         "foreach-many=1,10,2,20",
         "scalar-foreach=3",
-        "2",
-        "missing-null",
-        "missing-null",
+        "0",
+        "1",
+        "True",
         "bcd",
         "[{\"Label\":\"ONE\",\"Next\":2},{\"Label\":\"TWO\",\"Next\":3},{\"Label\":\"THREE\",\"Next\":4}]",
         "[{\"Copied\":\"one\"},{\"Copied\":\"two\"},{\"Copied\":\"three\"}]",
@@ -1732,7 +1736,7 @@ static async ValueTask VerifySortAndMeasureCommandsAsync()
         "three",
         "a",
         "b",
-        "{\"Count\":3,\"Property\":\"Value\",\"Sum\":6,\"Average\":2,\"Minimum\":1,\"Maximum\":3}"
+        "{\"Count\":3,\"Property\":\"Value\",\"Sum\":6.0,\"Average\":2.0,\"Minimum\":1.0,\"Maximum\":3.0}"
     ]);
 }
 

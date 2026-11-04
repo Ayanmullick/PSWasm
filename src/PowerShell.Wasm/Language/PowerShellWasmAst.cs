@@ -154,6 +154,8 @@ public sealed record BareWordExpressionAst(string Value) : ExpressionAst;
 
 public sealed record NumberExpressionAst(object Value) : ExpressionAst;
 
+public sealed record CommandStringExpressionAst(IReadOnlyList<ExpressionAst> Parts) : ExpressionAst;
+
 public sealed record StringExpressionAst(string Value, bool IsExpandable) : ExpressionAst
 {
     internal IReadOnlySet<int>? LiteralDollarOffsets { get; init; }
@@ -209,7 +211,10 @@ public sealed record CastExpressionAst(string TypeName, ExpressionAst Operand) :
 
 public sealed record MemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 
-public sealed record ComputedMemberAccessExpressionAst(ExpressionAst Target, ExpressionAst MemberName) : ExpressionAst;
+public sealed record ComputedMemberAccessExpressionAst(ExpressionAst Target, ExpressionAst MemberName) : ExpressionAst
+{
+    public bool NullConditional { get; init; }
+}
 
 public sealed record NullConditionalMemberAccessExpressionAst(ExpressionAst Target, string MemberName) : ExpressionAst;
 

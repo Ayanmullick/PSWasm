@@ -158,7 +158,9 @@ internal sealed class PowerShellWasmCommonParameters
         {
             null => true,
             bool boolValue => boolValue,
-            int intValue => intValue != 0,
+            byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal =>
+                Convert.ToDouble(value, CultureInfo.InvariantCulture) != 0,
+            System.Numerics.BigInteger number => !number.IsZero,
             string stringValue when bool.TryParse(stringValue, out var parsed) => parsed,
             string stringValue => stringValue.Length > 0,
             _ => true

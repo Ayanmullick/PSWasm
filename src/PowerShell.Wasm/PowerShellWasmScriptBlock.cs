@@ -2,7 +2,7 @@ using PSWasm.Language;
 
 namespace PSWasm;
 
-internal enum PowerShellWasmScriptBlockInvocation { Host, Pipeline, PipelineBeginEnd, Collection, CalculatedProperty }
+internal enum PowerShellWasmScriptBlockInvocation { Host, Pipeline, PipelineBeginEnd, Collection, CalculatedProperty, Delegate }
 
 public sealed class PowerShellWasmScriptBlock
 {
@@ -29,6 +29,10 @@ public sealed class PowerShellWasmScriptBlock
 
     internal IReadOnlyList<ParameterDeclarationAst> Parameters { get; }
     internal string? SourceText { get; }
+
+    // A script block's string form is its body source, without its surrounding braces.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/lang/scriptblock.cs
+    public override string ToString() => SourceText ?? string.Empty;
 
     internal ValueTask InvokeCommandAsync(PowerShellWasmCommandContext context, CancellationToken cancellationToken,
         bool dotSource = false) => _invokeCommand(context, dotSource, cancellationToken);

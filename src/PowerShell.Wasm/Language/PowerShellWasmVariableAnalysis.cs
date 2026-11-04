@@ -287,6 +287,7 @@ internal sealed class PowerShellWasmVariableAnalysis
             case ArraySubexpressionAst e: Script(e.Script); break;
             case SubexpressionAst e: Script(e.Script); break;
             case ArrayExpressionAst e: foreach (var item in e.Items) Expression(item); break;
+            case CommandStringExpressionAst e: foreach (var part in e.Parts) Expression(part); break;
             case HashtableExpressionAst e: foreach (var item in e.Entries) { Expression(item.Key); Expression(item.Value); } break;
             case TypedHashtableExpressionAst e: Expression(e.Hashtable); break;
             case CastExpressionAst e: Expression(e.Operand); break;

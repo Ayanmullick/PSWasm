@@ -190,6 +190,64 @@ $table.Keys | Sort-Object
 #endregion
   </script>
           </article>
+          <article class="example" id="numeric-literals">
+            <h3>Numeric literals and precision</h3>
+            <p class="example-note">Use familiar numeric notation and explicit types for unsigned values, decimal scale, and arbitrary-size integers.</p>
+            <script type="pwsh" id="numeric-literals-script">
+"Bases: hex=$(0x10); binary=$(0b1010)"
+"Scale: $(2kb); exponent=$(1e3); fraction=$(.5)"
+$NumericUnsigned = 4294967295u
+"Unsigned: $NumericUnsigned ($($NumericUnsigned.GetType().Name))"
+$NumericBig = 123456789012345678901234567890n + 1n
+"Exact: $NumericBig"
+[ordered]@{Decimal=1.20d; Integer=$NumericBig} | ConvertTo-Json -Compress
+  </script>
+          </article>
+          <article class="example" id="quote-arguments">
+            <h3>Strings and command arguments</h3>
+            <p class="example-note">Single quotes keep text literal. Double quotes expand values, and a bare prefix can join adjacent quoted text into one argument.</p>
+            <script type="pwsh" id="quote-arguments-script">
+$QuoteName = 'PSWasm'
+Write-Output pre"-$QuoteName"-post
+'It''s literal: $QuoteName'
+"Quoted: ""$QuoteName""; sum=$(1 + 2)"
+"Unicode: `u{41}"
+  </script>
+          </article>
+          <article class="example" id="collection-member-access">
+            <h3>Collection member access</h3>
+            <p class="example-note">Read properties through nested collections, combine array-valued properties, and call supported methods on each result.</p>
+            <script type="pwsh" id="collection-member-access-script">
+$FirstGroup = @(
+    [pscustomobject]@{Name='alpha'; Tags=@('one','two')}
+    [pscustomobject]@{Name='beta'; Tags=@('three')}
+)
+$SecondGroup = @([pscustomobject]@{Name='gamma'; Tags=@()})
+$MemberGroups = @($FirstGroup,$SecondGroup)
+"Groups: $($MemberGroups.Count)"
+"Names: $($MemberGroups.Name.ToUpperInvariant() -join ',')"
+"Tags: $($MemberGroups.Tags -join ',')"
+  </script>
+          </article>
+          <article class="example" id="collection-intrinsics">
+            <h3>Collection iteration and filtering</h3>
+            <p class="example-note">Read members, convert values, select the first match, or split matching and remaining items.</p>
+            <script type="pwsh" id="collection-intrinsics-script">
+$IntrinsicRows = @(
+    [pscustomobject]@{Name='alpha'; Score='2'}
+    [pscustomobject]@{Name='beta'; Score='5'}
+    [pscustomobject]@{Name='gamma'; Score='7'}
+)
+$IntrinsicNames = $IntrinsicRows.ForEach('Name')
+$IntrinsicScores = $IntrinsicRows.ForEach('Score').ForEach([int])
+$FirstScore = $IntrinsicScores.Where({ $_ -ge 5 }, 'First')
+$ScoreGroups = $IntrinsicScores.Where({ $_ -ge 5 }, 'Split')
+"Names: $($IntrinsicNames -join ',')"
+"First score >= 5: $($FirstScore -join ',')"
+"Split: matched=$($ScoreGroups[0] -join ','); other=$($ScoreGroups[1] -join ',')"
+"Converted type: $($IntrinsicScores[0].GetType().Name)"
+  </script>
+          </article>
           <article class="example" id="statement-values-and-slices">
             <h3>Statement values and collection slices</h3>
             <p class="example-note">Hashtable entries capture statement output. Slices keep their array shape, and strings expose character values.</p>

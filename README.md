@@ -67,6 +67,10 @@ The `AzAuth` flavor adds user-delegated Entra authentication and authenticated A
 
 The runtime includes PowerShell-style variables, arrays, hashtables, objects, operators, functions, control flow, splatting, pipelines, stream output, and a limited set of .NET helpers. Browser commands cover JSON/CSV/HTML conversion, DOM events and storage, HTTP requests, and optional Azure authentication.
 
+Single-quoted strings stay literal; double-quoted strings expand variables and subexpressions. See [strings and command arguments](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#expandable-strings) for quoting, escapes, and argument boundaries.
+
+Numeric literals include hexadecimal/binary notation, exponents, size multipliers, and typed suffixes. See [numeric literals](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#numeric-literals) for integer widths, decimal precision, and arbitrary-size integers.
+
 Use `[int]$Count = 1` to retain a variable's type across later assignments. See [typed variables](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#typed-variables) for conversion, arrays, scope, and assignment results.
 
 Use `$local:Name`, `$script:Name`, `$global:Name`, or `$private:Name` to select variable scope explicitly. See [variable scope](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#variable-scope) for visibility, session lifetime, and variable-command `-Scope` arguments.
@@ -76,6 +80,10 @@ Use `&` to invoke a script block or a registered command/function by name, or `.
 Use `[ordered]@{...}` when dictionary insertion order matters; ordinary hashtables have no guaranteed enumeration order. See [hashtables and ordered dictionaries](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#hashtables) for statement-valued entries, typed keys, indexing, and supported methods.
 
 Array and string indexing supports negative positions and slices. See [indexing and slices](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#indexing-and-slices) for result shape, missing values, and character results.
+
+Use `$Rows.Name` or `('one','two').ToUpperInvariant()` to access members across a collection. See [collection member access](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#collection-member-access) for nested collections, result shape, and supported methods.
+
+Use `.ForEach()` to transform items or access their members, and `.Where()` to filter, limit, or split a collection. See [collection iteration and filtering](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#collection-iteration-and-filtering) for overloads, modes, and result shape.
 
 Use `Select-Object -First` to stop a pipeline after the requested input, or add `-Wait` to consume the remaining input. See [object pipeline commands](https://github.com/Ayanmullick/PSWasm/wiki/Browser-Commands#object-pipeline-commands) for selection and completion behavior.
 

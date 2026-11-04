@@ -937,6 +937,11 @@ public sealed class PowerShellWasmExecutionContext
             null => string.Empty,
             PowerShellWasmPipelineValue pipelineValue => FormatOutput(pipelineValue.Value),
             PowerShellWasmStreamRecord stream => FormatOutput(stream.Value),
+            // Native default numeric display uses the same precision as language string conversion.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs#L309-L310
+            double number => number.ToString("G15", CultureInfo.InvariantCulture),
+            float number => number.ToString("G7", CultureInfo.InvariantCulture),
+            System.Numerics.BigInteger number => number.ToString(CultureInfo.InvariantCulture),
             System.Collections.Hashtable hashtable => FormatHashtable(hashtable),
             System.Collections.Specialized.OrderedDictionary ordered => FormatHashtable(ordered),
             System.Collections.DictionaryEntry entry => FormatHashtableRows([(Convert.ToString(entry.Key, CultureInfo.InvariantCulture) ?? string.Empty, FormatOutput(entry.Value))]),

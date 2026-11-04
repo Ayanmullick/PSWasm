@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Numerics;
 using System.Collections;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Runtime.ExceptionServices;
 using System.Text;
@@ -647,6 +649,7 @@ internal sealed class PowerShellWasmAstExecutor(
         HashtableEntryAst entry => ContainsCommand(entry.Key) || ContainsCommand(entry.Value),
         TypedHashtableExpressionAst table => ContainsCommand(table.Hashtable),
         ArrayExpressionAst array => array.Items.Any(ContainsCommand),
+        CommandStringExpressionAst text => text.Parts.Any(ContainsCommand),
         ArraySubexpressionAst array => ContainsCommand(array.Script),
         SubexpressionAst subexpression => ContainsCommand(subexpression.Script),
         ParenthesizedExpressionAst parenthesized => ContainsCommand(parenthesized.Expression),
@@ -1157,6 +1160,11 @@ internal sealed class PowerShellWasmAstExecutor(
                 return number.Value;
             case StringExpressionAst text:
                 return text.IsExpandable ? await ExpandStringAsync(text, cancellationToken) : text.Value;
+            case CommandStringExpressionAst text:
+                var argument = new StringBuilder();
+                foreach (var part in text.Parts)
+                    argument.Append(ToExpandableString(await EvaluateExpressionAsync(part, cancellationToken)));
+                return argument.ToString();
             case VariableExpressionAst variable:
                 return variable.IsEnvironment
                     ? executionContext.GetEnvironmentVariable(variable.Name) ?? string.Empty
@@ -1397,7 +1405,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 return new AssignmentTarget(
                     () => EvaluateMemberAccess(receiver, member.MemberName), value => { SetMemberValue(receiver, member.MemberName, value); return value; });
             }
-            case ComputedMemberAccessExpressionAst member:
+            case ComputedMemberAccessExpressionAst { NullConditional: false } member:
             {
                 var receiver = await EvaluateExpressionAsync(member.Target, cancellationToken);
                 var name = ToInvariantString(await EvaluateExpressionAsync(member.MemberName, cancellationToken));
@@ -1631,11 +1639,15 @@ internal sealed class PowerShellWasmAstExecutor(
             callbackLocals["input"] = invocation switch
             {
                 PowerShellWasmScriptBlockInvocation.Pipeline => new object?[] { input },
-                PowerShellWasmScriptBlockInvocation.PipelineBeginEnd => Array.Empty<object?>(),
+                PowerShellWasmScriptBlockInvocation.PipelineBeginEnd or PowerShellWasmScriptBlockInvocation.Delegate
+                    => Array.Empty<object?>(),
                 _ => executionContext.GetRawVariable("input")
             };
 
-            var childScope = invocation == PowerShellWasmScriptBlockInvocation.CalculatedProperty;
+            // List action delegates also use a fresh child scope, with the item passed as an argument and inherited $_.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/lang/scriptblock.cs#L757-L810
+            var childScope = invocation is PowerShellWasmScriptBlockInvocation.CalculatedProperty
+                or PowerShellWasmScriptBlockInvocation.Delegate;
             if (!childScope)
             {
                 foreach (var parameter in scriptBlock.Body.Parameters)
@@ -2004,7 +2016,7 @@ internal sealed class PowerShellWasmAstExecutor(
             value = PowerShellWasmOutput.AsNull(value);
             if (value is bool boolean) return boolean;
             if (type == "switch" && value is null) return false;
-            if (type == "bool" && value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal)
+            if (type == "bool" && IsNumericValue(value))
                 return ToBoolean(value);
             throw new InvalidOperationException($"Cannot convert this value to type [{typeName}].");
         }
@@ -2035,6 +2047,14 @@ internal sealed class PowerShellWasmAstExecutor(
         var alreadyAssignable = elementType switch
         {
             "byte" => value is byte[],
+            "sbyte" => value is sbyte[],
+            "short" => value is short[],
+            "ushort" => value is ushort[],
+            "uint" => value is uint[],
+            "ulong" => value is ulong[],
+            "float" => value is float[],
+            "decimal" => value is decimal[],
+            "bigint" => value is BigInteger[],
             "char" => value is char[],
             "string" => value is string[],
             "int" => value is int[],
@@ -2049,6 +2069,14 @@ internal sealed class PowerShellWasmAstExecutor(
         return elementType switch
         {
             "byte" => values.Select(item => Convert.ToByte(item, CultureInfo.InvariantCulture)).ToArray(),
+            "sbyte" => values.Cast<sbyte>().ToArray(),
+            "short" => values.Cast<short>().ToArray(),
+            "ushort" => values.Cast<ushort>().ToArray(),
+            "uint" => values.Cast<uint>().ToArray(),
+            "ulong" => values.Cast<ulong>().ToArray(),
+            "float" => values.Cast<float>().ToArray(),
+            "decimal" => values.Cast<decimal>().ToArray(),
+            "bigint" => values.Cast<BigInteger>().ToArray(),
             "char" => values.Cast<char>().ToArray(),
             "string" => values.Select(ToInvariantString).ToArray(),
             "int" => values.Select(item => Convert.ToInt32(item, CultureInfo.InvariantCulture)).ToArray(),
@@ -2068,13 +2096,8 @@ internal sealed class PowerShellWasmAstExecutor(
             "string" => ToInvariantString(value),
             "char" => ToCharacter(value),
             "bool" => ToBoolean(value),
-            "int" => Convert.ToInt32(ToCastNumber(value), CultureInfo.InvariantCulture),
-            "long" => Convert.ToInt64(ToCastNumber(value), CultureInfo.InvariantCulture),
-            "double" => ToCastNumber(value),
-            "decimal" => value is string text
-                ? decimal.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture)
-                : Convert.ToDecimal(ToCastNumber(value), CultureInfo.InvariantCulture),
-            "byte" => Convert.ToByte(ToCastNumber(value), CultureInfo.InvariantCulture),
+            "sbyte" or "byte" or "short" or "ushort" or "int" or "uint" or "long" or "ulong"
+                or "float" or "double" or "decimal" or "bigint" => ConvertNumericValue(typeName, value),
             "switch" => ToBoolean(value),
             _ => throw new InvalidOperationException($"Cast type '[{typeName}]' is not available in this browser-safe runtime.")
         };
@@ -2092,8 +2115,42 @@ internal sealed class PowerShellWasmAstExecutor(
         _ => throw new InvalidOperationException("The value cannot be converted to System.Char.")
     };
 
-    private static double ToCastNumber(object? value) =>
-        value is null ? 0 : ToNumber(value);
+    // Keep integral and decimal values exact; going through Double loses Int64/UInt64 precision.
+    // BigInteger conversions are explicit because it deliberately does not implement IConvertible.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/LanguagePrimitives.cs
+    private static object ConvertNumericValue(string typeName, object? value)
+    {
+        // Native tries the numeric scanner first; target-specific parsing is a fallback for grouped strings.
+        if (typeName == "decimal" && value is string text &&
+            !PowerShellWasmNumericLiteral.TryParse(text.Trim(), out _) &&
+            decimal.TryParse(text, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var grouped))
+            return grouped;
+        var number = ToArithmeticNumber(value);
+        if (typeName == "bigint") return ToBigInteger(number);
+        if (number is BigInteger big)
+            return typeName switch
+            {
+                "sbyte" => (object)(sbyte)big, "byte" => (byte)big, "short" => (short)big, "ushort" => (ushort)big,
+                "int" => (int)big, "uint" => (uint)big, "long" => (long)big, "ulong" => (ulong)big,
+                "float" => (float)big, "double" => (double)big, "decimal" => (decimal)big,
+                _ => throw new InvalidOperationException($"Unsupported numeric conversion [{typeName}].")
+            };
+        return typeName switch
+        {
+            "sbyte" => (object)Convert.ToSByte(number, CultureInfo.InvariantCulture),
+            "byte" => Convert.ToByte(number, CultureInfo.InvariantCulture),
+            "short" => Convert.ToInt16(number, CultureInfo.InvariantCulture),
+            "ushort" => Convert.ToUInt16(number, CultureInfo.InvariantCulture),
+            "int" => Convert.ToInt32(number, CultureInfo.InvariantCulture),
+            "uint" => Convert.ToUInt32(number, CultureInfo.InvariantCulture),
+            "long" => Convert.ToInt64(number, CultureInfo.InvariantCulture),
+            "ulong" => Convert.ToUInt64(number, CultureInfo.InvariantCulture),
+            "float" => Convert.ToSingle(number, CultureInfo.InvariantCulture),
+            "double" => Convert.ToDouble(number, CultureInfo.InvariantCulture),
+            "decimal" => Convert.ToDecimal(number, CultureInfo.InvariantCulture),
+            _ => throw new InvalidOperationException($"Unsupported numeric conversion [{typeName}].")
+        };
+    }
 
     internal static string NormalizeCastTypeName(string typeName)
     {
@@ -2112,6 +2169,14 @@ internal sealed class PowerShellWasmAstExecutor(
             var value when value.Equals("System.Management.Automation.SwitchParameter", StringComparison.OrdinalIgnoreCase) => "switch",
             var value when value.Equals("int32", StringComparison.OrdinalIgnoreCase) => "int",
             var value when value.Equals("int64", StringComparison.OrdinalIgnoreCase) => "long",
+            var value when value.Equals("int16", StringComparison.OrdinalIgnoreCase) => "short",
+            var value when value.Equals("uint16", StringComparison.OrdinalIgnoreCase) => "ushort",
+            var value when value.Equals("uint32", StringComparison.OrdinalIgnoreCase) => "uint",
+            var value when value.Equals("uint64", StringComparison.OrdinalIgnoreCase) => "ulong",
+            var value when value.Equals("single", StringComparison.OrdinalIgnoreCase) => "float",
+            var value when value.Equals("biginteger", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("numerics.biginteger", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("system.numerics.biginteger", StringComparison.OrdinalIgnoreCase) => "bigint",
             var value when value.Equals("System.String", StringComparison.OrdinalIgnoreCase) => "string",
             var value when value.Equals("System.Char", StringComparison.OrdinalIgnoreCase) => "char",
             var value when value.Equals("System.Boolean", StringComparison.OrdinalIgnoreCase) => "bool",
@@ -2120,6 +2185,12 @@ internal sealed class PowerShellWasmAstExecutor(
             var value when value.Equals("System.Double", StringComparison.OrdinalIgnoreCase) => "double",
             var value when value.Equals("System.Decimal", StringComparison.OrdinalIgnoreCase) => "decimal",
             var value when value.Equals("System.Byte", StringComparison.OrdinalIgnoreCase) => "byte",
+            var value when value.Equals("System.SByte", StringComparison.OrdinalIgnoreCase) => "sbyte",
+            var value when value.Equals("System.Int16", StringComparison.OrdinalIgnoreCase) => "short",
+            var value when value.Equals("System.UInt16", StringComparison.OrdinalIgnoreCase) => "ushort",
+            var value when value.Equals("System.UInt32", StringComparison.OrdinalIgnoreCase) => "uint",
+            var value when value.Equals("System.UInt64", StringComparison.OrdinalIgnoreCase) => "ulong",
+            var value when value.Equals("System.Single", StringComparison.OrdinalIgnoreCase) => "float",
             var value when value.Equals("System.Object", StringComparison.OrdinalIgnoreCase) => "object",
             _ => normalized.ToLowerInvariant()
         };
@@ -2140,6 +2211,8 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var target = await EvaluateExpressionAsync(member.Target, cancellationToken);
+        if (member.NullConditional && PowerShellWasmOutput.AsNull(target) is null) return null;
+        if (member.NullConditional) target = await EvaluateExpressionAsync(member.Target, cancellationToken);
         var memberName = ToInvariantString(await EvaluateExpressionAsync(member.MemberName, cancellationToken));
         return EvaluateMemberAccess(target, memberName);
     }
@@ -2149,7 +2222,10 @@ internal sealed class PowerShellWasmAstExecutor(
         CancellationToken cancellationToken)
     {
         var target = await EvaluateExpressionAsync(member.Target, cancellationToken);
-        return PowerShellWasmOutput.AsNull(target) is null ? null : EvaluateMemberAccess(target, member.MemberName);
+        // PowerShell's null gate and selected access branch evaluate the receiver separately.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L6628-L6633
+        return PowerShellWasmOutput.AsNull(target) is null ? null
+            : EvaluateMemberAccess(await EvaluateExpressionAsync(member.Target, cancellationToken), member.MemberName);
     }
 
     private static object? EvaluateMemberAccess(object? target, string memberName)
@@ -2171,7 +2247,7 @@ internal sealed class PowerShellWasmAstExecutor(
             return enumeratedValue;
         }
 
-        return null;
+        return IsSyntheticCountOrLength(memberName) ? 1 : null;
     }
 
     private static bool TryGetDirectMemberAccess(object target, string memberName, out object? value)
@@ -2218,25 +2294,51 @@ internal sealed class PowerShellWasmAstExecutor(
     private static bool TryGetEnumeratedMemberAccess(object target, string memberName, out object? value)
     {
         value = null;
-        if (target is string or byte[] or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
-            target is not (IEnumerable or IEnumerator))
-        {
-            return false;
-        }
-
+        if (!IsMemberEnumerable(target)) return false;
         var selected = new List<object?>();
-        foreach (var item in Enumerate(target))
-        {
-            if (item is null)
-            {
-                continue;
-            }
-
-            selected.Add(TryGetDirectMemberAccess(item, memberName, out var itemValue) ? itemValue : null);
-        }
-
-        value = ToCapturedExpressionValue(selected);
+        Collect(target, new HashSet<object>(ReferenceEqualityComparer.Instance));
+        // Unlike a void method invocation, property enumeration with no results is an actual null value.
+        value = selected.Count == 0 ? null : ToCapturedExpressionValue(selected);
         return true;
+
+        // Behavioral guidance: missing scalar members are omitted, adapted custom-object members yield null,
+        // and successful property results flatten once. Only a missing member recurses through its receiver.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L3180-L3227
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L5462-L5508
+        void Collect(object receiver, HashSet<object> active)
+        {
+            EnterMemberEnumeration(receiver, active);
+            try
+            {
+                foreach (var item in Enumerate(receiver))
+                {
+                    if (item is not null && TryGetDirectMemberAccess(item, memberName, out var itemValue))
+                        selected.AddRange(PowerShellWasmOutput.Enumerate(itemValue));
+                    else if (IsSyntheticCountOrLength(memberName))
+                        selected.Add(PowerShellWasmOutput.AsNull(item) is null ? 0 : 1);
+                    else if (item is PowerShellWasmCustomObject)
+                        selected.Add(null);
+                    else if (IsMemberEnumerable(item))
+                        Collect(item!, active);
+                }
+            }
+            finally { active.Remove(receiver); }
+        }
+    }
+
+    private static bool IsSyntheticCountOrLength(string memberName) =>
+        memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
+        memberName.Equals("Length", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMemberEnumerable(object? target) =>
+        target is IEnumerable or IEnumerator &&
+        target is not (string or IDictionary or IReadOnlyDictionary<string, object?>);
+
+    private static void EnterMemberEnumeration(object target, HashSet<object> active)
+    {
+        // Browser-safe guard: cyclic receivers must fail normally, while repeated noncyclic references still enumerate.
+        System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack();
+        if (!active.Add(target)) throw new InvalidOperationException("Cannot enumerate a member through a cyclic collection.");
     }
 
     private async ValueTask<object?> EvaluateStaticMemberAccessAsync(
@@ -2256,86 +2358,63 @@ internal sealed class PowerShellWasmAstExecutor(
         MethodInvocationExpressionAst invocation,
         CancellationToken cancellationToken)
     {
+        object? receiver;
+        string memberName;
         if (invocation.Target is NullConditionalMemberAccessExpressionAst nullConditionalMember)
         {
-            var nullConditionalTarget = await EvaluateExpressionAsync(nullConditionalMember.Target, cancellationToken);
-            if (PowerShellWasmOutput.AsNull(nullConditionalTarget) is null)
-            {
-                return null;
-            }
-
-            var nullConditionalArguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
-            if (IsIntrinsicCollectionMethod(nullConditionalMember.MemberName))
-            {
-                var intrinsicResult = await TryInvokeIntrinsicCollectionMethodAsync(
-                    nullConditionalTarget,
-                    nullConditionalMember.MemberName,
-                    nullConditionalArguments,
-                    cancellationToken);
-                if (intrinsicResult.Handled)
-                {
-                    return intrinsicResult.Value;
-                }
-            }
-
-            return InvokeMethodTarget(
-                GetMethodTarget(nullConditionalTarget, nullConditionalMember.MemberName),
-                nullConditionalArguments);
+            receiver = await EvaluateExpressionAsync(nullConditionalMember.Target, cancellationToken);
+            if (PowerShellWasmOutput.AsNull(receiver) is null) return null;
+            receiver = await EvaluateExpressionAsync(nullConditionalMember.Target, cancellationToken);
+            memberName = nullConditionalMember.MemberName;
         }
-
-        if (invocation.Target is MemberAccessExpressionAst member &&
-            IsIntrinsicCollectionMethod(member.MemberName))
+        else if (invocation.Target is MemberAccessExpressionAst member)
         {
-            var collectionTarget = await EvaluateExpressionAsync(member.Target, cancellationToken);
-            var intrinsicArguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
-            var intrinsicResult = await TryInvokeIntrinsicCollectionMethodAsync(
-                collectionTarget,
-                member.MemberName,
-                intrinsicArguments,
-                cancellationToken);
-            if (intrinsicResult.Handled)
-            {
-                return intrinsicResult.Value;
-            }
-        }
-
-        object? target;
-        if (invocation.Target is MemberAccessExpressionAst methodMember)
-        {
-            target = GetMethodTarget(await EvaluateExpressionAsync(methodMember.Target, cancellationToken), methodMember.MemberName);
+            receiver = await EvaluateExpressionAsync(member.Target, cancellationToken);
+            memberName = member.MemberName;
         }
         else if (invocation.Target is ComputedMemberAccessExpressionAst computedMember)
         {
-            var receiver = await EvaluateExpressionAsync(computedMember.Target, cancellationToken);
-            var name = ToInvariantString(await EvaluateExpressionAsync(computedMember.MemberName, cancellationToken));
-            target = GetMethodTarget(receiver, name);
+            receiver = await EvaluateExpressionAsync(computedMember.Target, cancellationToken);
+            if (computedMember.NullConditional && PowerShellWasmOutput.AsNull(receiver) is null) return null;
+            if (computedMember.NullConditional) receiver = await EvaluateExpressionAsync(computedMember.Target, cancellationToken);
+            memberName = ToInvariantString(await EvaluateExpressionAsync(computedMember.MemberName, cancellationToken));
         }
         else
         {
-            target = await EvaluateExpressionAsync(invocation.Target, cancellationToken);
+            var target = await EvaluateExpressionAsync(invocation.Target, cancellationToken);
+            return InvokeMethodTarget(target, await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken));
         }
-        var arguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
 
-        return InvokeMethodTarget(target, arguments);
+        // Arguments and computed names run once, including an unhandled intrinsic overload.
+        // Null-conditional receivers use PowerShell's separate gate and access evaluations above.
+        var arguments = await EvaluateMethodArgumentsAsync(invocation.Arguments, cancellationToken);
+        if (IsIntrinsicCollectionMethod(memberName))
+        {
+            var intrinsic = await TryInvokeIntrinsicCollectionMethodAsync(receiver, memberName, arguments, cancellationToken);
+            if (intrinsic.Handled) return intrinsic.Value;
+        }
+
+        return InvokeInstanceMethod(receiver, memberName, arguments);
     }
 
-    private static object? GetMethodTarget(object? receiver, string memberName)
+    private static object? InvokeInstanceMethod(object? receiver, string memberName, IReadOnlyList<object?> arguments)
     {
         receiver = PowerShellWasmOutput.AsNull(receiver);
-        return receiver is not null && PowerShellWasmDotNetBridge.TryGetInstanceMember(receiver, memberName, out var method)
-            ? method : EvaluateMemberAccess(receiver, memberName);
+        if (receiver is null) throw new InvalidOperationException("You cannot call a method on a null-valued expression.");
+        if (PowerShellWasmDotNetBridge.TryGetInstanceMember(receiver, memberName, out var method) &&
+            PowerShellWasmDotNetBridge.TryInvoke(method, arguments, out var value)) return value;
+        if (TryInvokeEnumeratedMethods(receiver, memberName, arguments, out value)) return value;
+        throw MissingInstanceMethod(memberName);
     }
+
+    private static InvalidOperationException MissingInstanceMethod(string name) =>
+        new($"Method '{name}' is not available on this value in the browser-safe runtime.");
 
     private static object? InvokeMethodTarget(object? target, IReadOnlyList<object?> arguments)
     {
         if (PowerShellWasmDotNetBridge.TryInvoke(target, arguments, out var value))
         {
             return value;
-        }
-
-        if (TryInvokeEnumeratedMethods(target, arguments, out var enumeratedValue))
-        {
-            return enumeratedValue;
         }
 
         throw new InvalidOperationException("Only allowlisted browser-safe .NET methods can be invoked.");
@@ -2364,66 +2443,253 @@ internal sealed class PowerShellWasmAstExecutor(
         IReadOnlyList<object?> arguments,
         CancellationToken cancellationToken)
     {
-        if (arguments.Count == 0 || arguments[0] is not PowerShellWasmScriptBlock scriptBlock)
-        {
-            return (false, null);
-        }
+        if (arguments.Count == 0)
+            throw new InvalidOperationException($"Method '{memberName}' requires an expression argument.");
 
         if (memberName.Equals("ForEach", StringComparison.OrdinalIgnoreCase))
         {
-            var output = new List<object?>();
-            foreach (var item in Enumerate(target))
-            {
-                output.AddRange(await scriptBlock.InvokeCallbackAsync(item, arguments.Skip(1).ToArray(), null,
-                    PowerShellWasmScriptBlockInvocation.Collection, cancellationToken));
-            }
-
-            return (true, output.ToArray());
+            // A real List<T>.ForEach(Action<T>) takes precedence over PowerShell's intrinsic fallback.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L6815-L6885
+            if (target is List<object?> or List<string> or List<int> or List<long> or List<double> or
+                List<decimal> or List<bool> or List<byte> or List<DateTime>)
+                return (true, await InvokeListForEachAsync(target, arguments, cancellationToken));
+            return (true, await InvokeIntrinsicForEachAsync(target, arguments, cancellationToken));
         }
 
-        if (memberName.Equals("Where", StringComparison.OrdinalIgnoreCase))
+        if (arguments.Count > 3)
+            throw new InvalidOperationException("Method 'Where' accepts an expression, selection mode, and count.");
+        var expression = PowerShellWasmOutput.AsNull(arguments[0]);
+        if (expression is not null and not PowerShellWasmScriptBlock)
+            throw new InvalidOperationException("The Where expression must be a script block.");
+        var mode = arguments.Count > 1 ? PowerShellWasmDotNetBridge.ConvertWhereMode(arguments[1])
+            : PowerShellWasmWhereMode.Default;
+        var count = arguments.Count > 2 ? (int)CastValue("int", arguments[2])! : 0;
+        if (count < 0) throw new InvalidOperationException("The Where count cannot be negative.");
+        return (true, await InvokeIntrinsicWhereAsync(target, (PowerShellWasmScriptBlock?)expression,
+            mode, count, cancellationToken));
+    }
+
+    private async ValueTask<object?> InvokeListForEachAsync(object target,
+        IReadOnlyList<object?> arguments, CancellationToken cancellationToken)
+    {
+        if (arguments.Count != 1 || arguments[0] is not PowerShellWasmScriptBlock action)
+            throw new InvalidOperationException("List.ForEach requires one script-block action.");
+        try
         {
-            var selected = new List<object?>();
+            // The list enumerator retains version checks, including a change made by the final callback.
+            // https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Private.CoreLib/src/System/Collections/Generic/List.cs#L638-L658
             foreach (var item in Enumerate(target))
             {
-                if (ToBoolean(ToCapturedExpressionValue(await scriptBlock.InvokeCallbackAsync(item, null, null,
-                    PowerShellWasmScriptBlockInvocation.Collection, cancellationToken))))
-                {
-                    selected.Add(item);
-                }
+                cancellationToken.ThrowIfCancellationRequested();
+                await action.InvokeCallbackAsync(PowerShellWasmOutput.NoOutput, [item], null,
+                    PowerShellWasmScriptBlockInvocation.Delegate, cancellationToken);
             }
+        }
+        catch (Exception error) when (error is not OperationCanceledException and not ControlFlowException)
+        {
+            throw new InvalidOperationException($"Exception calling List.ForEach: {error.Message}", error);
+        }
+        return PowerShellWasmOutput.NoOutput;
+    }
 
-            return (true, selected.ToArray());
+    // Behavioral guidance: EnumerableOps.ForEach returns a collection, keeps member results nested, and
+    // uses caller-scope callbacks. Only the existing browser-safe member/type allowlist is exposed here.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L2875-L3134
+    private async ValueTask<object?> InvokeIntrinsicForEachAsync(object? target,
+        IReadOnlyList<object?> arguments, CancellationToken cancellationToken)
+    {
+        var expression = PowerShellWasmOutput.AsNull(arguments[0]);
+        if (expression is null) throw new InvalidOperationException("The ForEach expression cannot be null.");
+        var remaining = arguments.Skip(1).ToArray();
+        if (expression is PowerShellWasmDotNetType type)
+        {
+            if (type.FullName.EndsWith("[]", StringComparison.Ordinal))
+                return CastValue(type.FullName, Enumerate(target).ToArray());
+            if (type.FullName.StartsWith("System.Collections.Generic.List[", StringComparison.OrdinalIgnoreCase))
+            {
+                var list = (IList)CastValue(type.FullName, Array.Empty<object?>())!;
+                foreach (var item in Enumerate(target))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    list.Add(CoerceListItemValue(list, item));
+                }
+                return list;
+            }
+            return PowerShellWasmDotNetBridge.CreateIntrinsicTypedCollection(type.FullName, Enumerate(target), item =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return CastValue(type.FullName, item);
+            });
         }
 
-        return (false, null);
+        var result = new Collection<object?>();
+        if (expression is PowerShellWasmScriptBlock scriptBlock)
+        {
+            foreach (var item in Enumerate(target))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (var output in await scriptBlock.InvokeCallbackAsync(item, remaining, null,
+                    PowerShellWasmScriptBlockInvocation.Collection, cancellationToken)) result.Add(output);
+            }
+            return result;
+        }
+
+        var name = ToInvariantString(expression);
+        var assignment = remaining.Length == 1 ? remaining[0] : remaining;
+        foreach (var rawItem in Enumerate(target))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var item = PowerShellWasmOutput.AsNull(rawItem);
+            if (item is Hashtable table)
+            {
+                if (remaining.Length == 0) result.Add(table[name]);
+                else table[name] = PowerShellWasmOutput.AsNull(assignment);
+                continue;
+            }
+            if (item is null)
+            {
+                if (remaining.Length != 0) throw MissingInstanceMethod(name);
+                result.Add(null);
+                continue;
+            }
+            if (name.Length == 0) throw new InvalidOperationException("A member name cannot be empty.");
+            object? member;
+            // Only Hashtable uses key lookup here; other dictionaries expose their actual CLR members.
+            var found = item is PowerShellWasmCustomObject
+                ? TryGetDirectMemberAccess(item, name, out member)
+                : PowerShellWasmDotNetBridge.TryGetInstanceMember(item, name, out member) ||
+                    TryGetCollectionProperty(item, name, out member);
+            if (!found)
+            {
+                if (remaining.Length != 0) throw MissingInstanceMethod(name);
+                result.Add(null);
+            }
+            else if (member is PowerShellWasmDotNetMethod)
+                result.Add(PowerShellWasmOutput.AsNull(InvokeMethodTarget(member, remaining)));
+            else if (remaining.Length == 0) result.Add(PowerShellWasmOutput.AsNull(member));
+            else if (item is PowerShellWasmCustomObject) SetMemberValue(item, name, assignment);
+            else throw new InvalidOperationException($"Member '{name}' cannot be assigned in this browser-safe runtime.");
+        }
+        return result;
+    }
+
+    // Where evaluates lazily: stopping modes leave an existing iterator at the last consumed item.
+    // Split stops invoking the predicate once its match quota is reached, then drains the remainder.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L2658-L2866
+    private async ValueTask<object?> InvokeIntrinsicWhereAsync(object? target, PowerShellWasmScriptBlock? predicate,
+        PowerShellWasmWhereMode mode, int count, CancellationToken cancellationToken)
+    {
+        if (predicate is null) return SelectWithoutPredicate(target, mode, count, cancellationToken);
+        if (mode is PowerShellWasmWhereMode.First or PowerShellWasmWhereMode.Last && count == 0) count = 1;
+        var selected = new Collection<object?>();
+        var rejected = new Collection<object?>();
+        var skipping = mode == PowerShellWasmWhereMode.SkipUntil;
+        foreach (var item in Enumerate(target))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (mode == PowerShellWasmWhereMode.Split && count != 0 && selected.Count == count)
+            {
+                rejected.Add(item);
+                continue;
+            }
+            var matches = mode == PowerShellWasmWhereMode.SkipUntil && !skipping ||
+                ToBoolean(ToCapturedExpressionValue(await predicate.InvokeCallbackAsync(item, null, null,
+                    PowerShellWasmScriptBlockInvocation.Collection, cancellationToken)));
+            if (mode == PowerShellWasmWhereMode.Until)
+            {
+                if (matches) break;
+                selected.Add(item);
+            }
+            else if (matches)
+            {
+                skipping = false;
+                selected.Add(item);
+                if (mode == PowerShellWasmWhereMode.Last && selected.Count > count) selected.RemoveAt(0);
+            }
+            else if (mode == PowerShellWasmWhereMode.Split) rejected.Add(item);
+
+            if (count != 0 && selected.Count == count &&
+                mode is not PowerShellWasmWhereMode.Last and not PowerShellWasmWhereMode.Split) break;
+        }
+        return mode == PowerShellWasmWhereMode.Split ? new object?[] { selected, rejected } : selected;
+    }
+
+    private static object? SelectWithoutPredicate(object? target, PowerShellWasmWhereMode mode, int count,
+        CancellationToken cancellationToken)
+    {
+        if (mode == PowerShellWasmWhereMode.Default)
+            throw new InvalidOperationException("Default Where selection requires a script block.");
+        if (count == 0) count = 1;
+        using var iterator = Enumerate(target).GetEnumerator();
+        bool MoveNext()
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return iterator.MoveNext();
+        }
+        if (mode == PowerShellWasmWhereMode.Last)
+        {
+            var tail = new Queue<object?>();
+            while (MoveNext())
+            {
+                if (tail.Count == count) tail.Dequeue();
+                tail.Enqueue(iterator.Current);
+            }
+            return tail.Count == 0 && count == 1 ? new object?[] { null } : tail.ToArray();
+        }
+        if (mode == PowerShellWasmWhereMode.SkipUntil)
+        {
+            for (var i = 0; i < count && MoveNext(); i++) { }
+            var rest = new List<object?>();
+            while (MoveNext()) rest.Add(iterator.Current);
+            return rest.ToArray();
+        }
+        var head = new object?[count];
+        for (var i = 0; i < count && MoveNext(); i++) head[i] = iterator.Current;
+        if (mode != PowerShellWasmWhereMode.Split) return head;
+        var remainder = new List<object?>();
+        while (MoveNext()) remainder.Add(iterator.Current);
+        return new object?[] { head, remainder.ToArray() };
     }
 
     private static bool TryInvokeEnumeratedMethods(
-        object? target,
+        object target,
+        string memberName,
         IReadOnlyList<object?> arguments,
         out object? value)
     {
         value = null;
-        if (target is string or byte[] or System.Collections.IDictionary or IReadOnlyDictionary<string, object?> ||
-            target is not (IEnumerable or IEnumerator))
-        {
-            return false;
-        }
-
+        if (!IsMemberEnumerable(target)) return false;
         var selected = new List<object?>();
-        foreach (var item in Enumerate(target))
-        {
-            if (!PowerShellWasmDotNetBridge.TryInvoke(item, arguments, out var itemValue))
-            {
-                return false;
-            }
-
-            selected.Add(itemValue);
-        }
-
+        var foundMethod = false;
+        Collect(target, new HashSet<object>(ReferenceEqualityComparer.Instance));
+        if (!foundMethod) throw MissingInstanceMethod(memberName);
         value = ToCapturedExpressionValue(selected);
         return true;
+
+        // Retain the receiver and method name rather than invoking previously enumerated property values.
+        // Earlier side effects survive failure, but return values are buffered until the complete traversal succeeds.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L3230-L3325
+        void Collect(object receiver, HashSet<object> active)
+        {
+            EnterMemberEnumeration(receiver, active);
+            try
+            {
+                foreach (var item in Enumerate(receiver))
+                {
+                    if (PowerShellWasmOutput.AsNull(item) is null)
+                        throw new InvalidOperationException("You cannot call a method on a null-valued expression.");
+                    if (PowerShellWasmDotNetBridge.TryGetInstanceMember(item!, memberName, out var method) &&
+                        PowerShellWasmDotNetBridge.TryInvoke(method, arguments, out var itemValue))
+                    {
+                        foundMethod = true;
+                        selected.AddRange(PowerShellWasmOutput.Enumerate(itemValue));
+                    }
+                    else if (IsMemberEnumerable(item)) Collect(item!, active);
+                    else throw MissingInstanceMethod(memberName);
+                }
+            }
+            finally { active.Remove(receiver); }
+        }
     }
 
     private async ValueTask<object?> EvaluateIndexAsync(IndexExpressionAst index, CancellationToken cancellationToken)
@@ -2474,7 +2740,7 @@ internal sealed class PowerShellWasmAstExecutor(
             if (!CanConvertIndex(item)) throw new InvalidOperationException("The index cannot be converted to System.Int32.");
             try
             {
-                var position = Convert.ToInt32(ToArithmeticNumber(item), CultureInfo.InvariantCulture);
+                var position = (int)ConvertNumericValue("int", item);
                 if (position < 0) position += length;
                 if (position >= 0 && position < length)
                     return target is string characters ? characters[position] : ((IList)target)[position];
@@ -2494,7 +2760,7 @@ internal sealed class PowerShellWasmAstExecutor(
     }
 
     private static bool CanConvertIndex(object? value) =>
-        value is null or bool or byte or char or int or long or double or decimal or string;
+        value is null or bool or char or string || IsNumericValue(value);
 
     private static bool TryGetDictionaryIndex(object? target, object? index, bool keyOnly, bool multipleIndexes, out object? value)
     {
@@ -2541,7 +2807,7 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmUnaryOperator.Plus => NumericArithmetic(0, value, PowerShellWasmBinaryOperator.Add),
             PowerShellWasmUnaryOperator.Minus => NumericArithmetic(0, value, PowerShellWasmBinaryOperator.Subtract),
             PowerShellWasmUnaryOperator.Not => !ToBoolean(value),
-            PowerShellWasmUnaryOperator.BitwiseNot => ~ToInt64(value),
+            PowerShellWasmUnaryOperator.BitwiseNot => BitwiseNot(value),
             PowerShellWasmUnaryOperator.Join => Join(value, string.Empty),
             PowerShellWasmUnaryOperator.Split => SplitString(ToInvariantString(value), @"\s+", ignoreCase: true),
             PowerShellWasmUnaryOperator.CaseSensitiveSplit => SplitString(ToInvariantString(value), @"\s+", ignoreCase: false),
@@ -2721,14 +2987,12 @@ internal sealed class PowerShellWasmAstExecutor(
             PowerShellWasmBinaryOperator.Range => Range(left, right),
             PowerShellWasmBinaryOperator.Format => Format(left, right),
             PowerShellWasmBinaryOperator.LogicalXor => ToBoolean(left) ^ ToBoolean(right),
-            PowerShellWasmBinaryOperator.BitwiseAnd => ToInt64(left) & ToInt64(right),
-            PowerShellWasmBinaryOperator.BitwiseOr => ToInt64(left) | ToInt64(right),
-            PowerShellWasmBinaryOperator.BitwiseXor => ToInt64(left) ^ ToInt64(right),
+            PowerShellWasmBinaryOperator.BitwiseAnd or PowerShellWasmBinaryOperator.BitwiseOr
+                or PowerShellWasmBinaryOperator.BitwiseXor => BitwiseBinary(left, right, op),
             PowerShellWasmBinaryOperator.Join => Join(left, right),
             PowerShellWasmBinaryOperator.Split => SplitString(ToInvariantString(left), ToInvariantString(right), ignoreCase: true),
             PowerShellWasmBinaryOperator.CaseSensitiveSplit => SplitString(ToInvariantString(left), ToInvariantString(right), ignoreCase: false),
-            PowerShellWasmBinaryOperator.ShiftLeft => ToInt64(left) << Convert.ToInt32(ToInt64(right), CultureInfo.InvariantCulture),
-            PowerShellWasmBinaryOperator.ShiftRight => ToInt64(left) >> Convert.ToInt32(ToInt64(right), CultureInfo.InvariantCulture),
+            PowerShellWasmBinaryOperator.ShiftLeft or PowerShellWasmBinaryOperator.ShiftRight => ShiftNumber(left, right, op),
             PowerShellWasmBinaryOperator.Equal => ValuesEqual(left, right, caseSensitive: false),
             PowerShellWasmBinaryOperator.NotEqual => !ValuesEqual(left, right, caseSensitive: false),
             PowerShellWasmBinaryOperator.GreaterThan => CompareValues(left, right, caseSensitive: false) > 0,
@@ -2822,15 +3086,29 @@ internal sealed class PowerShellWasmAstExecutor(
             "double" => value is double,
             "decimal" => value is decimal,
             "byte" => value is byte,
+            "sbyte" => value is sbyte,
+            "short" => value is short,
+            "ushort" => value is ushort,
+            "uint" => value is uint,
+            "ulong" => value is ulong,
+            "float" => value is float,
+            "bigint" => value is BigInteger,
             "object[]" => value is object?[],
-            "string[]" => value is string[],
-            "char[]" => value is char[],
-            "bool[]" => value is bool[],
-            "switch[]" => value is bool[],
-            "int[]" => value is int[],
-            "long[]" => value is long[],
-            "double[]" => value is double[],
-            "byte[]" => value is byte[],
+            "string[]" => value.GetType() == typeof(string[]),
+            "char[]" => value.GetType() == typeof(char[]),
+            "bool[]" or "switch[]" => value.GetType() == typeof(bool[]),
+            "int[]" => value.GetType() == typeof(int[]),
+            "long[]" => value.GetType() == typeof(long[]),
+            "double[]" => value.GetType() == typeof(double[]),
+            "byte[]" => value.GetType() == typeof(byte[]),
+            "sbyte[]" => value.GetType() == typeof(sbyte[]),
+            "short[]" => value.GetType() == typeof(short[]),
+            "ushort[]" => value.GetType() == typeof(ushort[]),
+            "uint[]" => value.GetType() == typeof(uint[]),
+            "ulong[]" => value.GetType() == typeof(ulong[]),
+            "float[]" => value.GetType() == typeof(float[]),
+            "decimal[]" => value.GetType() == typeof(decimal[]),
+            "bigint[]" => value.GetType() == typeof(BigInteger[]),
             _ => throw new InvalidOperationException($"Type operator target '[{typeName}]' is not available in this browser-safe runtime.")
         };
     }
@@ -2900,7 +3178,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
         if (left is string || IsOperatorCollection(left))
         {
-            var count = Convert.ToInt32(ToArithmeticNumber(right), CultureInfo.InvariantCulture);
+            var count = (int)ConvertNumericValue("int", right);
             if (count < 0)
             {
                 throw new InvalidOperationException("A repetition count cannot be negative.");
@@ -2925,12 +3203,20 @@ internal sealed class PowerShellWasmAstExecutor(
             return left switch
             {
                 string[] values => RepeatArray(values, count),
-                int[] values => RepeatArray(values, count),
-                long[] values => RepeatArray(values, count),
-                double[] values => RepeatArray(values, count),
-                decimal[] values => RepeatArray(values, count),
-                byte[] values => RepeatArray(values, count),
-                bool[] values => RepeatArray(values, count),
+                int[] values when values.GetType() == typeof(int[]) => RepeatArray(values, count),
+                long[] values when values.GetType() == typeof(long[]) => RepeatArray(values, count),
+                double[] values when values.GetType() == typeof(double[]) => RepeatArray(values, count),
+                decimal[] values when values.GetType() == typeof(decimal[]) => RepeatArray(values, count),
+                byte[] values when values.GetType() == typeof(byte[]) => RepeatArray(values, count),
+                sbyte[] values when values.GetType() == typeof(sbyte[]) => RepeatArray(values, count),
+                short[] values when values.GetType() == typeof(short[]) => RepeatArray(values, count),
+                ushort[] values when values.GetType() == typeof(ushort[]) => RepeatArray(values, count),
+                uint[] values when values.GetType() == typeof(uint[]) => RepeatArray(values, count),
+                ulong[] values when values.GetType() == typeof(ulong[]) => RepeatArray(values, count),
+                float[] values when values.GetType() == typeof(float[]) => RepeatArray(values, count),
+                BigInteger[] values when values.GetType() == typeof(BigInteger[]) => RepeatArray(values, count),
+                bool[] values when values.GetType() == typeof(bool[]) => RepeatArray(values, count),
+                char[] values when values.GetType() == typeof(char[]) => RepeatArray(values, count),
                 DateTime[] values => RepeatArray(values, count),
                 _ => RepeatArray(EnumerateOperatorOperand(left).ToArray(), count)
             };
@@ -2973,9 +3259,10 @@ internal sealed class PowerShellWasmAstExecutor(
         value = PowerShellWasmOutput.AsNull(value);
         if (value is null) return 0;
         if (value is bool boolean) return boolean ? 1 : 0;
-        if (value is byte octet) return (int)octet;
+        if (value is sbyte or byte or short or ushort) return Convert.ToInt32(value, CultureInfo.InvariantCulture);
         if (value is char character) return (int)character;
-        if (value is int or long or double or decimal) return value;
+        if (value is float single) return (double)single;
+        if (value is int or uint or long or ulong or double or decimal or BigInteger) return value;
         if (value is string text)
         {
             return ParseArithmeticNumber(text);
@@ -2988,6 +3275,7 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         var token = text.Trim();
         if (token.Length == 0) return 0;
+        if (PowerShellWasmNumericLiteral.TryParse(token, out var literal)) return literal;
 
         var multiplier = 1L;
         var units = new[] { "kb", "mb", "gb", "tb", "pb" };
@@ -3074,17 +3362,32 @@ internal sealed class PowerShellWasmAstExecutor(
         }
     }
 
-    // Behavioral guidance: PSBinaryOperationBinder selects decimal, double, or signed integer arithmetic.
+    // Behavioral guidance: numeric rank, signed/unsigned fallback, and explicit BigInteger overloads.
     // https://github.com/PowerShell/PowerShell/blob/v7.6.1/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L2149-L2238
     // Browser-safe subset: built-in numeric values only, without user-defined overloads or reflection.
     private static object NumericArithmetic(object? left, object? right, PowerShellWasmBinaryOperator op)
     {
         var lhs = ToArithmeticNumber(left);
         var rhs = ToArithmeticNumber(right);
+        // Decimal's left-side overload takes precedence over BigInteger; other numeric left operands use BigInteger.
+        if (lhs is BigInteger || rhs is BigInteger && lhs is not decimal)
+        {
+            var a = ToBigInteger(lhs);
+            var b = ToBigInteger(rhs);
+            return op switch
+            {
+                PowerShellWasmBinaryOperator.Add => a + b,
+                PowerShellWasmBinaryOperator.Subtract => a - b,
+                PowerShellWasmBinaryOperator.Multiply => a * b,
+                PowerShellWasmBinaryOperator.Divide => a / b,
+                PowerShellWasmBinaryOperator.Remainder => a % b,
+                _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
+            };
+        }
         if (lhs is decimal || rhs is decimal)
         {
-            var a = Convert.ToDecimal(lhs, CultureInfo.InvariantCulture);
-            var b = Convert.ToDecimal(rhs, CultureInfo.InvariantCulture);
+            var a = ToNumericDecimal(lhs);
+            var b = ToNumericDecimal(rhs);
             return op switch
             {
                 PowerShellWasmBinaryOperator.Add => a + b,
@@ -3098,53 +3401,60 @@ internal sealed class PowerShellWasmAstExecutor(
 
         if (lhs is not double && rhs is not double)
         {
+            // UInt64 with a negative signed operand requires Decimal; UInt32 with one requires Int64.
+            if ((lhs is ulong || rhs is ulong) && (IsNegativeSigned(lhs) || IsNegativeSigned(rhs)))
+                return NumericArithmetic(ToNumericDecimal(lhs), ToNumericDecimal(rhs), op);
+            var kind = lhs is ulong || rhs is ulong ? "ulong"
+                : lhs is long || rhs is long ? "long"
+                : lhs is uint || rhs is uint ? IsNegativeSigned(lhs) || IsNegativeSigned(rhs) ? "long" : "uint"
+                : "int";
+            var a = ToBigInteger(lhs);
+            var b = ToBigInteger(rhs);
+            if (op == PowerShellWasmBinaryOperator.Divide && a % b != BigInteger.Zero)
+                return ToNumericDouble(lhs) / ToNumericDouble(rhs);
+            var exact = op switch
+            {
+                PowerShellWasmBinaryOperator.Add => a + b,
+                PowerShellWasmBinaryOperator.Subtract => a - b,
+                PowerShellWasmBinaryOperator.Multiply => a * b,
+                PowerShellWasmBinaryOperator.Divide => a / b,
+                PowerShellWasmBinaryOperator.Remainder => a % b,
+                _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
+            };
             try
             {
-                if (lhs is long || rhs is long)
+                return kind switch
                 {
-                    var a = Convert.ToInt64(lhs, CultureInfo.InvariantCulture);
-                    var b = Convert.ToInt64(rhs, CultureInfo.InvariantCulture);
-                    return op switch
-                    {
-                        PowerShellWasmBinaryOperator.Add => checked(a + b),
-                        PowerShellWasmBinaryOperator.Subtract => checked(a - b),
-                        PowerShellWasmBinaryOperator.Multiply => checked(a * b),
-                        PowerShellWasmBinaryOperator.Divide => a % b == 0 ? (object)(a / b) : (double)a / b,
-                        PowerShellWasmBinaryOperator.Remainder => b == -1 ? 0L : a % b,
-                        _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
-                    };
-                }
-
-                var x = (int)lhs;
-                var y = (int)rhs;
-                return op switch
-                {
-                    PowerShellWasmBinaryOperator.Add => checked(x + y),
-                    PowerShellWasmBinaryOperator.Subtract => checked(x - y),
-                    PowerShellWasmBinaryOperator.Multiply => checked(x * y),
-                    PowerShellWasmBinaryOperator.Divide => x % y == 0 ? (object)(x / y) : (double)x / y,
-                    PowerShellWasmBinaryOperator.Remainder => y == -1 ? 0 : x % y,
-                    _ => throw new InvalidOperationException($"Operator '{op}' is not numeric arithmetic.")
+                    "ulong" => (object)(ulong)exact, "long" => (long)exact,
+                    "uint" => (uint)exact, _ => (int)exact
                 };
             }
             catch (OverflowException)
             {
-                // PowerShell promotes overflowing integer arithmetic to double.
-                // LongOps computes an exact decimal sum/difference or BigInteger product before conversion.
-                // https://github.com/PowerShell/PowerShell/blob/master/src/System.Management.Automation/engine/runtime/Operations/NumericOps.cs#L196-L230
-                if (lhs is long || rhs is long)
+                // NumericOps uses floating arithmetic for 32-bit overflow. Long/ULong add/sub use Decimal,
+                // while their multiplication uses BigInteger; its Double conversion has different rounding.
+                // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/NumericOps.cs
+                if (kind is "int" or "uint")
                 {
-                    var a = Convert.ToInt64(lhs, CultureInfo.InvariantCulture);
-                    var b = Convert.ToInt64(rhs, CultureInfo.InvariantCulture);
-                    if (op == PowerShellWasmBinaryOperator.Add) return (double)((decimal)a + b);
-                    if (op == PowerShellWasmBinaryOperator.Subtract) return (double)((decimal)a - b);
-                    if (op == PowerShellWasmBinaryOperator.Multiply) return (double)((System.Numerics.BigInteger)a * b);
+                    var x = ToNumericDouble(lhs);
+                    var y = ToNumericDouble(rhs);
+                    return op switch
+                    {
+                        PowerShellWasmBinaryOperator.Add => x + y,
+                        PowerShellWasmBinaryOperator.Subtract => x - y,
+                        PowerShellWasmBinaryOperator.Multiply => x * y,
+                        PowerShellWasmBinaryOperator.Divide => x / y,
+                        _ => x % y
+                    };
                 }
+                if (op is PowerShellWasmBinaryOperator.Add or PowerShellWasmBinaryOperator.Subtract)
+                    return (double)(decimal)exact;
+                return (double)exact;
             }
         }
 
-        var first = Convert.ToDouble(lhs, CultureInfo.InvariantCulture);
-        var second = Convert.ToDouble(rhs, CultureInfo.InvariantCulture);
+        var first = ToNumericDouble(lhs);
+        var second = ToNumericDouble(rhs);
         return op switch
         {
             PowerShellWasmBinaryOperator.Add => first + second,
@@ -3156,10 +3466,104 @@ internal sealed class PowerShellWasmAstExecutor(
         };
     }
 
+    private static bool IsNegativeSigned(object value) => value is int integer && integer < 0 || value is long wide && wide < 0;
+
+    private static bool IsNumericValue(object? value) =>
+        value is sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal or BigInteger;
+
+    private static BigInteger ToBigInteger(object value) => value switch
+    {
+        BigInteger big => big,
+        decimal number => new BigInteger(number),
+        double number => new BigInteger(number),
+        float number => new BigInteger(number),
+        ulong number => new BigInteger(number),
+        _ => new BigInteger(Convert.ToInt64(value, CultureInfo.InvariantCulture))
+    };
+
+    private static double ToNumericDouble(object value) =>
+        value is BigInteger big ? (double)big : Convert.ToDouble(value, CultureInfo.InvariantCulture);
+
+    private static decimal ToNumericDecimal(object value) =>
+        value is BigInteger big ? (decimal)big : Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+
+    private static object ToBitwiseInteger(object? value)
+    {
+        var number = ToArithmeticNumber(value);
+        if (number is not (double or decimal)) return number;
+        if (number is decimal money)
+        {
+            var rounded = Math.Round(money);
+            if (rounded is >= int.MinValue and <= int.MaxValue) return (int)rounded;
+            if (rounded is >= long.MinValue and <= long.MaxValue) return (long)rounded;
+            return checked((ulong)rounded);
+        }
+        var floating = Math.Round((double)number);
+        return floating is >= int.MinValue and <= int.MaxValue ? (object)(int)floating
+            : Convert.ToInt64(floating, CultureInfo.InvariantCulture);
+    }
+
+    private static object BitwiseNot(object? value) => ToBitwiseInteger(value) switch
+    {
+        BigInteger big => (object)~big, ulong wide => ~wide, long wide => ~wide, uint unsigned => ~unsigned,
+        int number => ~number, _ => throw new InvalidOperationException("The value cannot be used for a bitwise operation.")
+    };
+
+    private static object ShiftNumber(object? left, object? right, PowerShellWasmBinaryOperator op)
+    {
+        var value = ToBitwiseInteger(left);
+        var shift = (int)ConvertNumericValue("int", right);
+        var shiftLeft = op == PowerShellWasmBinaryOperator.ShiftLeft;
+        return value switch
+        {
+            BigInteger big => (object)(shiftLeft ? big << shift : big >> shift),
+            ulong wide => shiftLeft ? wide << shift : wide >> shift,
+            long wide => shiftLeft ? wide << shift : wide >> shift,
+            uint unsigned => shiftLeft ? unsigned << shift : unsigned >> shift,
+            int number => shiftLeft ? number << shift : number >> shift,
+            _ => throw new InvalidOperationException("The value cannot be shifted.")
+        };
+    }
+
+    private static object BitwiseBinary(object? left, object? right, PowerShellWasmBinaryOperator op)
+    {
+        var lhs = ToArithmeticNumber(left);
+        var rhs = ToArithmeticNumber(right);
+        var big = lhs is BigInteger || rhs is BigInteger;
+        var real = lhs is double or decimal || rhs is double or decimal;
+        if (big && real) throw new InvalidOperationException("BigInteger bitwise operands must be integral.");
+        string kind;
+        if (real)
+        {
+            var signed = ToNumericDouble(lhs) < 0 || ToNumericDouble(rhs) < 0;
+            kind = signed ? "long" : "ulong";
+            lhs = ConvertNumericValue(kind, lhs);
+            rhs = ConvertNumericValue(kind, rhs);
+        }
+        else kind = big ? "bigint" : lhs is ulong || rhs is ulong ? "ulong"
+            : lhs is long || rhs is long ? "long" : lhs is uint || rhs is uint ? "uint" : "int";
+        var a = ToBigInteger(lhs);
+        var b = ToBigInteger(rhs);
+        var result = op switch
+        {
+            PowerShellWasmBinaryOperator.BitwiseAnd => a & b,
+            PowerShellWasmBinaryOperator.BitwiseOr => a | b,
+            PowerShellWasmBinaryOperator.BitwiseXor => a ^ b,
+            _ => throw new InvalidOperationException($"Operator '{op}' is not bitwise.")
+        };
+        return kind switch
+        {
+            "bigint" => (object)result, "ulong" => (ulong)(result & ulong.MaxValue), "long" => (long)result,
+            "uint" => (uint)(result & uint.MaxValue), _ => (int)result
+        };
+    }
+
     private static object?[] Range(object? left, object? right)
     {
-        var start = Convert.ToInt32(ToNumber(left), CultureInfo.InvariantCulture);
-        var end = Convert.ToInt32(ToNumber(right), CultureInfo.InvariantCulture);
+        if (left is BigInteger || right is BigInteger)
+            throw new InvalidOperationException("BigInteger values cannot be range endpoints.");
+        var start = (int)ConvertNumericValue("int", left);
+        var end = (int)ConvertNumericValue("int", right);
         var count = Math.Abs(end - start) + 1;
         var step = start <= end ? 1 : -1;
         var result = new object?[count];
@@ -3263,29 +3667,30 @@ internal sealed class PowerShellWasmAstExecutor(
         throw new InvalidOperationException("These values cannot be ordered in this browser-safe runtime.");
     }
 
-    private static bool IsComparisonNumber(object? value) => value is byte or int or long or double or decimal;
+    internal static bool IsComparisonNumber(object? value) => IsNumericValue(value);
 
-    private static double CompareNumbers(object left, object right)
+    internal static double CompareNumbers(object left, object right)
     {
+        // BigInteger comparison converts its right operand, so reversing decimal/floating operands can change the result.
+        if (left is BigInteger big) return big.CompareTo(ToBigInteger(right));
         if (left is decimal || right is decimal)
         {
-            return Convert.ToDecimal(left, CultureInfo.InvariantCulture).CompareTo(
-                Convert.ToDecimal(right, CultureInfo.InvariantCulture));
+            return ToNumericDecimal(left).CompareTo(ToNumericDecimal(right));
         }
 
-        if (left is double || right is double)
+        if (left is float or double || right is float or double)
         {
-            var first = Convert.ToDouble(left, CultureInfo.InvariantCulture);
-            var second = Convert.ToDouble(right, CultureInfo.InvariantCulture);
+            var first = ToNumericDouble(left);
+            var second = ToNumericDouble(right);
             return double.IsNaN(first) || double.IsNaN(second) ? double.NaN : first.CompareTo(second);
         }
 
-        return Convert.ToInt64(left, CultureInfo.InvariantCulture).CompareTo(Convert.ToInt64(right, CultureInfo.InvariantCulture));
+        return ToBigInteger(left).CompareTo(ToBigInteger(right));
     }
 
     private static bool ToComparisonBoolean(object? value)
     {
-        if (IsComparisonNumber(value)) return Convert.ToDouble(value, CultureInfo.InvariantCulture) != 0;
+        if (IsComparisonNumber(value)) return ToBoolean(value);
         if (IsOperatorCollection(value))
         {
             var items = EnumerateOperatorOperand(value).ToArray();
@@ -3416,32 +3821,31 @@ internal sealed class PowerShellWasmAstExecutor(
     private static bool TryGetCollectionProperty(object? target, string memberName, out object? value)
     {
         value = null;
-        // Enumerators have no Count property: member access enumerates their current entries instead.
-        if (target is IEnumerator) return false;
+        // Only real collection properties belong here. Synthetic scalar Count/Length must not hide enumeration.
+        if (target is Array array)
+        {
+            if (IsSyntheticCountOrLength(memberName)) value = array.Length;
+            else if (memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase)) value = array.LongLength;
+            else if (memberName.Equals("Rank", StringComparison.OrdinalIgnoreCase)) value = array.Rank;
+            else return false;
+            return true;
+        }
+        if (target is PowerShellWasmCustomObject) return false;
+        if (target is ICollection collection && memberName.Equals("Count", StringComparison.OrdinalIgnoreCase))
+        {
+            value = collection.Count;
+            return true;
+        }
         if (target is IDictionary dictionary)
         {
-            if (target is Hashtable or OrderedDictionary)
-            {
-                if (memberName.Equals("Length", StringComparison.OrdinalIgnoreCase)) { value = 1; return true; }
-                if (memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase)) return true;
-            }
-            if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
-                memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ||
-                memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase))
-            {
-                value = dictionary.Count;
-                return true;
-            }
-
             if (memberName.Equals("Keys", StringComparison.OrdinalIgnoreCase))
             {
-                value = dictionary.Keys.Cast<object?>().ToArray();
+                value = dictionary.Keys;
                 return true;
             }
-
             if (memberName.Equals("Values", StringComparison.OrdinalIgnoreCase))
             {
-                value = dictionary.Values.Cast<object?>().ToArray();
+                value = dictionary.Values;
                 return true;
             }
         }
@@ -3449,26 +3853,6 @@ internal sealed class PowerShellWasmAstExecutor(
         if (memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) && target is string text)
         {
             value = text.Length;
-            return true;
-        }
-
-        if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) && target is string)
-        {
-            value = 1;
-            return true;
-        }
-
-        if (memberName.Equals("Count", StringComparison.OrdinalIgnoreCase) ||
-            memberName.Equals("Length", StringComparison.OrdinalIgnoreCase) ||
-            memberName.Equals("LongLength", StringComparison.OrdinalIgnoreCase))
-        {
-            value = ToIndexableValues(target).Length;
-            return true;
-        }
-
-        if (memberName.Equals("Rank", StringComparison.OrdinalIgnoreCase))
-        {
-            value = target is System.Collections.IEnumerable and not string ? 1 : 0;
             return true;
         }
 
@@ -3543,7 +3927,7 @@ internal sealed class PowerShellWasmAstExecutor(
         if (target is System.Collections.IList list)
         {
             if (!CanConvertIndex(index)) throw new InvalidOperationException("The index cannot be converted to System.Int32.");
-            var itemIndex = Convert.ToInt32(ToArithmeticNumber(index), CultureInfo.InvariantCulture);
+            var itemIndex = (int)ConvertNumericValue("int", index);
             if (itemIndex < 0)
             {
                 itemIndex = list.Count + itemIndex;
@@ -3568,15 +3952,25 @@ internal sealed class PowerShellWasmAstExecutor(
     {
         var elementType = list switch
         {
-            string[] or List<string> => "string",
-            char[] or List<char> => "char",
-            int[] or List<int> => "int",
-            long[] or List<long> => "long",
-            double[] or List<double> => "double",
-            decimal[] or List<decimal> => "decimal",
-            bool[] or List<bool> => "bool",
-            byte[] or List<byte> => "byte",
-            DateTime[] or List<DateTime> => "datetime",
+            string[] or List<string> or Collection<string> => "string",
+            char[] or List<char> or Collection<char> when list is not Array || list.GetType() == typeof(char[]) => "char",
+            int[] or List<int> or Collection<int> when list is not Array || list.GetType() == typeof(int[]) => "int",
+            long[] or List<long> or Collection<long> when list is not Array || list.GetType() == typeof(long[]) => "long",
+            double[] or List<double> or Collection<double> when list is not Array || list.GetType() == typeof(double[]) => "double",
+            decimal[] or List<decimal> or Collection<decimal> when list is not Array || list.GetType() == typeof(decimal[]) => "decimal",
+            bool[] or List<bool> or Collection<bool> when list is not Array || list.GetType() == typeof(bool[]) => "bool",
+            byte[] or List<byte> or Collection<byte> when list is not Array || list.GetType() == typeof(byte[]) => "byte",
+            sbyte[] or Collection<sbyte> when list is not Array || list.GetType() == typeof(sbyte[]) => "sbyte",
+            short[] or Collection<short> when list is not Array || list.GetType() == typeof(short[]) => "short",
+            ushort[] or Collection<ushort> when list is not Array || list.GetType() == typeof(ushort[]) => "ushort",
+            uint[] or Collection<uint> when list is not Array || list.GetType() == typeof(uint[]) => "uint",
+            ulong[] or Collection<ulong> when list is not Array || list.GetType() == typeof(ulong[]) => "ulong",
+            float[] or Collection<float> when list is not Array || list.GetType() == typeof(float[]) => "float",
+            BigInteger[] or Collection<BigInteger> when list is not Array || list.GetType() == typeof(BigInteger[]) => "bigint",
+            DateTime[] or List<DateTime> or Collection<DateTime> => "datetime",
+            Collection<DateTimeOffset> => "datetimeoffset",
+            Collection<TimeSpan> => "timespan",
+            Collection<PowerShellWasmWhereMode> => "System.Management.Automation.WhereOperatorSelectionMode",
             _ => null
         };
 
@@ -3680,32 +4074,14 @@ internal sealed class PowerShellWasmAstExecutor(
         => PowerShellWasmTokenizer.TryReadVariableName(value, start, out name, out nextIndex,
             inExpandableString: true, variableBoundaryOffsets: boundaries);
 
-    // Native string conversion consumes a plain enumerator with $OFS, without recursively expanding its elements.
+    // Native string conversion joins collections or consumes an iterator with $OFS, without recursively expanding elements.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshObject.cs#L1093-L1127
     private string ToExpandableString(object? value) =>
-        value is IEnumerator iterator
-            ? string.Join(executionContext.OutputFieldSeparator, Enumerate(iterator).Select(ToInvariantString))
-            : value is object?[] array
-            ? string.Join(executionContext.OutputFieldSeparator, array.Select(ToInvariantString))
+        value is PowerShellWasmCustomObject custom ? FormatThrowMessage(custom)
+            : IsOperatorCollection(value)
+            ? string.Join(executionContext.OutputFieldSeparator,
+                Enumerate(value).Select(item => item is PowerShellWasmCustomObject ? string.Empty : ToInvariantString(item)))
             : ToInvariantString(value);
-
-    private static double ToNumber(object? value) =>
-        PowerShellWasmOutput.AsNull(value) switch
-        {
-            null => 0,
-            byte byteValue => byteValue,
-            char character => character,
-            bool boolValue => boolValue ? 1 : 0,
-            int intValue => intValue,
-            long longValue => longValue,
-            double doubleValue => doubleValue,
-            decimal decimalValue => (double)decimalValue,
-            string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
-            _ => throw new InvalidOperationException($"Value '{value}' is not numeric.")
-        };
-
-    private static long ToInt64(object? value) =>
-        Convert.ToInt64(ToNumber(value), CultureInfo.InvariantCulture);
 
     private static bool ToBoolean(object? value) =>
         PowerShellWasmOutput.AsNull(value) switch
@@ -3713,10 +4089,17 @@ internal sealed class PowerShellWasmAstExecutor(
             null => false,
             bool boolValue => boolValue,
             byte byteValue => byteValue != 0,
+            sbyte signedByte => signedByte != 0,
+            short small => small != 0,
+            ushort small => small != 0,
             int intValue => intValue != 0,
+            uint unsigned => unsigned != 0,
             long longValue => longValue != 0,
+            ulong unsigned => unsigned != 0,
+            float single => single != 0,
             double doubleValue => doubleValue != 0,
             decimal decimalValue => decimalValue != 0,
+            BigInteger big => !big.IsZero,
             string stringValue => stringValue.Length > 0,
             char character => character != '\0',
             System.Collections.IList list => ToCollectionBoolean(list),
@@ -3731,8 +4114,12 @@ internal sealed class PowerShellWasmAstExecutor(
             _ => true
         };
 
-    private static string ToInvariantString(object? value) =>
-        Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+    private static string ToInvariantString(object? value) => value switch
+    {
+        double number => number.ToString("G15", CultureInfo.InvariantCulture),
+        float number => number.ToString("G7", CultureInfo.InvariantCulture),
+        _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
+    };
 
     // A value-producing multiple assignment emits its assigned slots, with a remainder array in the final slot.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L3524-L3531
@@ -3773,7 +4160,7 @@ internal sealed class PowerShellWasmAstExecutor(
         value = PowerShellWasmOutput.AsNull(value);
         // Behavioral guidance: PSUnaryOperationBinder permits numeric values/null, not numeric strings or bools.
         // https://github.com/PowerShell/PowerShell/blob/v7.6.1/src/System.Management.Automation/engine/runtime/Binding/Binders.cs#L3338-L3367
-        if (value is not (null or byte or int or long or double or decimal))
+        if (value is not null && (!IsNumericValue(value) || value is BigInteger))
         {
             throw new InvalidOperationException("The increment and decrement operators require a numeric value.");
         }

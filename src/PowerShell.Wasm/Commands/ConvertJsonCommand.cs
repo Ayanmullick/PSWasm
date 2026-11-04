@@ -144,11 +144,27 @@ internal static class PowerShellWasmJson
             case bool boolValue:
                 writer.WriteBooleanValue(boolValue);
                 return;
-            case byte or sbyte or short or ushort or int or uint or long or ulong:
+            case byte or sbyte or short or ushort or int or uint or long:
                 writer.WriteNumberValue(Convert.ToInt64(value, CultureInfo.InvariantCulture));
                 return;
-            case float or double or decimal:
-                writer.WriteNumberValue(Convert.ToDouble(value, CultureInfo.InvariantCulture));
+            // Preserve numeric primitives, decimal precision, and arbitrary-size integers as JSON numbers.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/Microsoft.PowerShell.Commands.Utility/commands/utility/WebCmdlet/JsonObject.cs#L558-L583
+            case ulong unsignedValue:
+                writer.WriteNumberValue(unsignedValue);
+                return;
+            case System.Numerics.BigInteger bigInteger:
+                writer.WriteRawValue(bigInteger.ToString(CultureInfo.InvariantCulture));
+                return;
+            case decimal decimalValue:
+                WriteFloatingNumber(writer, decimalValue.ToString(CultureInfo.InvariantCulture));
+                return;
+            case float singleValue:
+                if (float.IsFinite(singleValue)) WriteFloatingNumber(writer, singleValue.ToString("R", CultureInfo.InvariantCulture));
+                else writer.WriteStringValue(singleValue.ToString(CultureInfo.InvariantCulture));
+                return;
+            case double doubleValue:
+                if (double.IsFinite(doubleValue)) WriteFloatingNumber(writer, doubleValue.ToString("R", CultureInfo.InvariantCulture));
+                else writer.WriteStringValue(doubleValue.ToString(CultureInfo.InvariantCulture));
                 return;
             case DateTime dateTime:
                 writer.WriteStringValue(dateTime.ToString("O", CultureInfo.InvariantCulture));
@@ -173,6 +189,9 @@ internal static class PowerShellWasmJson
                 return;
         }
     }
+
+    private static void WriteFloatingNumber(Utf8JsonWriter writer, string text) =>
+        writer.WriteRawValue(text.Contains('.') || text.Contains('E') || text.Contains('e') ? text : text + ".0");
 
     private static void WriteDictionary(
         Utf8JsonWriter writer,
