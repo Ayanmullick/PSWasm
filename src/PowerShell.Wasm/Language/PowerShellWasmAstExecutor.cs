@@ -460,7 +460,7 @@ internal sealed class PowerShellWasmAstExecutor(
         }
         catch (Exception error)
         {
-            if (statement.CatchBlocks.Count == 0)
+            if (statement.CatchClauses.Count == 0)
             {
                 pending = error;
             }
@@ -468,9 +468,13 @@ internal sealed class PowerShellWasmAstExecutor(
             {
                 try
                 {
-                    using (executionContext.WithCaughtException(error))
+                    string? selectedType = null;
+                    var handler = statement.CatchClauses.Count == 1 && statement.CatchClauses[0].TypeNames.Count == 0
+                        ? 0 : PowerShellWasmExceptionTypes.FindHandler(error, statement.CatchClauses, out selectedType);
+                    if (handler < 0) pending = error;
+                    else using (executionContext.WithCaughtException(error, selectedType))
                     {
-                        await ExecuteScriptAsync(statement.CatchBlocks[0], cancellationToken);
+                        await ExecuteScriptAsync(statement.CatchClauses[handler].Body, cancellationToken);
                     }
                 }
                 catch (OperationCanceledException)
@@ -629,7 +633,7 @@ internal sealed class PowerShellWasmAstExecutor(
         SettableStatementAssignmentAst assignment => ContainsCommand(assignment.Target) || ContainsCommand(assignment.Statement),
         ParallelStatementAssignmentAst assignment => ContainsCommand(assignment.Statement),
         SettableIncrementStatementAst increment => ContainsCommand(increment.Target),
-        TryStatementAst statement => ContainsCommand(statement.TryBlock) || statement.CatchBlocks.Any(ContainsCommand) || ContainsCommand(statement.FinallyBlock),
+        TryStatementAst statement => ContainsCommand(statement.TryBlock) || statement.CatchClauses.Any(clause => ContainsCommand(clause.Body)) || ContainsCommand(statement.FinallyBlock),
         IfStatementAst statement => statement.Clauses.Any(ContainsCommand) || ContainsCommand(statement.ElseBlock),
         IfClauseAst clause => ContainsCommand(clause.Condition) || ContainsCommand(clause.Body),
         ForEachStatementAst statement => ContainsCommand(statement.Collection) || ContainsCommand(statement.Body),
@@ -917,7 +921,8 @@ internal sealed class PowerShellWasmAstExecutor(
 
         if (command is null)
         {
-            throw new InvalidOperationException($"Command '{commandName}' is not registered in this browser runtime.");
+            throw PowerShellWasmExceptionTypes.Create(PowerShellWasmExceptionTypes.CommandNotFound,
+                $"Command '{commandName}' is not registered in this browser runtime.");
         }
 
         var context = new PowerShellWasmCommandContext(executionContext, parameters, arguments, []);
@@ -1973,6 +1978,17 @@ internal sealed class PowerShellWasmAstExecutor(
     }
 
     private static object? CastValue(string typeName, object? value)
+    {
+        try { return CastValueCore(typeName, value); }
+        catch (Exception error) when (error is not OperationCanceledException && PowerShellWasmExceptionTypes.TryResolve(typeName, out _))
+        {
+            // A language cast presents PSInvalidCastException to typed catch, not its conversion implementation failure.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ExtendedTypeSystemException.cs#L565-L605
+            throw PowerShellWasmExceptionTypes.CastFailure(error);
+        }
+    }
+
+    private static object? CastValueCore(string typeName, object? value)
     {
         if (typeName.Trim().Equals("void", StringComparison.OrdinalIgnoreCase) ||
             typeName.Trim().Equals("System.Void", StringComparison.OrdinalIgnoreCase))

@@ -918,20 +918,29 @@ public sealed class PowerShellWasmParser
     {
         var position = 1;
         var tryBlock = ReadScriptBlock(tokens, ref position, "try");
-        var catchBlocks = new List<ScriptAst>();
+        var catches = new List<CatchClauseAst>();
         ScriptAst? finallyBlock = null;
 
         while (position < tokens.Count)
         {
-            if (IsKeyword(tokens, position, "catch"))
+            if (IsCatchClauseStart(tokens, position))
             {
                 position++;
-                while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.LBrace)
+                var types = new List<string>();
+                if (CurrentKind(tokens, position) == PowerShellWasmTokenKind.LBracket)
                 {
-                    position++;
+                    do
+                    {
+                        if (!TryReadCatchType(tokens, ref position, out var typeName))
+                            throw new InvalidOperationException("Expected a type literal in the catch clause.");
+                        types.Add(typeName);
+                        if (CurrentKind(tokens, position) != PowerShellWasmTokenKind.Comma) break;
+                        position++;
+                    } while (true);
                 }
 
-                catchBlocks.Add(ReadScriptBlock(tokens, ref position, "catch", isCatchBody: true));
+                ValidateCatchTypes(catches, types);
+                catches.Add(new CatchClauseAst(types, ReadScriptBlock(tokens, ref position, "catch", isCatchBody: true)));
                 continue;
             }
 
@@ -945,12 +954,111 @@ public sealed class PowerShellWasmParser
             throw new InvalidOperationException($"Unexpected token '{tokens[position].Text}' in try statement.");
         }
 
-        if (catchBlocks.Count == 0 && finallyBlock is null)
+        if (catches.Count == 0 && finallyBlock is null)
         {
             throw new InvalidOperationException("A try statement requires at least one catch or finally block.");
         }
 
-        return new TryStatementAst(tryBlock, catchBlocks, finallyBlock);
+        return new TryStatementAst(tryBlock, catches.Select(clause => clause.Body).ToArray(), finallyBlock)
+            { CatchTypeNames = catches.Select(clause => clause.TypeNames).ToArray() };
+    }
+
+    // PowerShell's catch grammar requires comma-separated type literals, not arbitrary header expressions.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs#L5494-L5669
+    private static bool TryReadCatchType(IReadOnlyList<PowerShellWasmToken> tokens, ref int position, out string typeName)
+    {
+        typeName = string.Empty;
+        if (!TryReadBracketAnnotation(tokens, position, out _, out var after)) return false;
+        var content = tokens.Skip(position + 1).Take(after - position - 2)
+            .SkipWhile(token => token.Kind == PowerShellWasmTokenKind.NewLine).ToArray();
+        if (!IsCatchTypeSyntax(content)) return false;
+        typeName = string.Concat(content.Select(token => token.Text));
+        position = after;
+        return true;
+    }
+
+    private static bool IsCatchTypeSyntax(IReadOnlyList<PowerShellWasmToken> tokens)
+    {
+        var cursor = 0;
+        bool ReadType(bool allowAssembly)
+        {
+            while (CurrentKind(tokens, cursor) == PowerShellWasmTokenKind.NewLine) cursor++;
+            if (CurrentKind(tokens, cursor) != PowerShellWasmTokenKind.Identifier ||
+                tokens[cursor].Text.Length == 0 || !(char.IsLetter(tokens[cursor].Text[0]) || tokens[cursor].Text[0] == '_'))
+                return false;
+            var start = cursor;
+            while (cursor < tokens.Count && tokens[cursor].Kind is PowerShellWasmTokenKind.Identifier or
+                PowerShellWasmTokenKind.Number or PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.DotDot)
+            {
+                if (cursor > start && tokens[cursor].HasLeadingWhitespace) break;
+                if (tokens[cursor].Text.Any(ch => !(char.IsLetterOrDigit(ch) || ch is '_' or '.' or '+' or '`'))) return false;
+                cursor++;
+            }
+
+            var hasSuffix = false;
+            while (CurrentKind(tokens, cursor) == PowerShellWasmTokenKind.LBracket)
+            {
+                cursor++;
+                while (CurrentKind(tokens, cursor) == PowerShellWasmTokenKind.NewLine) cursor++;
+                if (CurrentKind(tokens, cursor) is PowerShellWasmTokenKind.RBracket or PowerShellWasmTokenKind.Comma)
+                {
+                    while (CurrentKind(tokens, cursor) == PowerShellWasmTokenKind.Comma) cursor++;
+                }
+                else
+                {
+                    if (hasSuffix) return false;
+                    if (!ReadType(allowAssembly: false)) return false;
+                    while (CurrentKind(tokens, cursor) == PowerShellWasmTokenKind.Comma)
+                    {
+                        cursor++;
+                        if (!ReadType(allowAssembly: false)) return false;
+                    }
+                }
+                if (CurrentKind(tokens, cursor) != PowerShellWasmTokenKind.RBracket) return false;
+                cursor++;
+                hasSuffix = true;
+            }
+
+            if (allowAssembly && CurrentKind(tokens, cursor) == PowerShellWasmTokenKind.Comma)
+            {
+                // Assembly-qualified names are syntactically legal but still restricted by the runtime allowlist.
+                cursor++;
+                if (CurrentKind(tokens, cursor) is not (PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Number or
+                    PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.Minus or PowerShellWasmTokenKind.Comma)) return false;
+                var assemblyStart = cursor;
+                while (cursor < tokens.Count)
+                {
+                    if (tokens[cursor].Kind is not (PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Number or
+                        PowerShellWasmTokenKind.Comma or PowerShellWasmTokenKind.Equals or PowerShellWasmTokenKind.Minus or
+                        PowerShellWasmTokenKind.Plus or PowerShellWasmTokenKind.DotDot)) return false;
+                    if (cursor > assemblyStart && tokens[cursor].HasLeadingWhitespace &&
+                        tokens[cursor - 1].Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Number &&
+                        tokens[cursor].Kind is PowerShellWasmTokenKind.Identifier or PowerShellWasmTokenKind.Number) return false;
+                    cursor++;
+                }
+            }
+            return true;
+        }
+        return ReadType(allowAssembly: true) && cursor == tokens.Count;
+    }
+
+    // Semantic checks compare different clauses; repeated or overlapping filters within one clause are valid.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/SemanticChecks.cs#L529-L582
+    private static void ValidateCatchTypes(IReadOnlyList<CatchClauseAst> previous, IReadOnlyList<string> types)
+    {
+        foreach (var clause in previous)
+        {
+            if (clause.TypeNames.Count == 0)
+                throw new InvalidOperationException("A catch-all clause must be the last catch clause.");
+            foreach (var earlier in clause.TypeNames)
+            {
+                if (!PowerShellWasmExceptionTypes.TryResolve(earlier, out var baseType)) continue;
+                foreach (var current in types)
+                    if (PowerShellWasmExceptionTypes.TryResolve(current, out var derivedType) &&
+                        PowerShellWasmExceptionTypes.IsAssignableFrom(baseType, derivedType))
+                        throw new InvalidOperationException($"Exception type [{current}] is already handled by a previous catch block.");
+            }
+        }
     }
 
     private static ScriptAst ReadScriptBlock(
@@ -1745,6 +1853,8 @@ public sealed class PowerShellWasmParser
     private static IReadOnlyList<PowerShellWasmToken> ReadStatementTokens(IReadOnlyList<PowerShellWasmToken> tokens, ref int position)
     {
         var start = position;
+        var tryStart = FindTryStatementStart(tokens, start);
+        if (tryStart >= 0) return ReadTryStatementTokens(tokens, ref position, tryStart);
         var depth = 0;
         var leadingParamBlock = IsKeyword(tokens, start, "param") &&
             CurrentKind(tokens, start + 1) == PowerShellWasmTokenKind.LParen;
@@ -1788,6 +1898,68 @@ public sealed class PowerShellWasmParser
             }
         }
 
+        return RemoveTopLevelNewLines(tokens.Skip(start).Take(position - start).ToArray());
+    }
+
+    private static bool IsCatchClauseStart(IReadOnlyList<PowerShellWasmToken> tokens, int position) =>
+        IsKeyword(tokens, position, "catch") &&
+        !(CurrentKind(tokens, position + 1) == PowerShellWasmTokenKind.LBracket &&
+            Contiguous(tokens[position], tokens[position + 1]));
+
+    private static int FindTryStatementStart(IReadOnlyList<PowerShellWasmToken> tokens, int start)
+    {
+        if (IsKeyword(tokens, start, "try")) return start;
+        var depth = 0;
+        for (var i = start; i < tokens.Count; i++)
+        {
+            if (depth == 0 && tokens[i].Kind is PowerShellWasmTokenKind.NewLine or PowerShellWasmTokenKind.Semicolon or
+                PowerShellWasmTokenKind.EndOfInput or PowerShellWasmTokenKind.Pipe) break;
+            if (depth == 0 && tokens[i].Kind == PowerShellWasmTokenKind.Equals)
+            {
+                var next = i + 1;
+                while (CurrentKind(tokens, next) == PowerShellWasmTokenKind.NewLine) next++;
+                if (!IsKeyword(tokens, next, "try")) return -1;
+                // Equals inside a command argument (for example, label=try) is not statement assignment.
+                try
+                {
+                    var target = new ExpressionParser(tokens.Skip(start).Take(i - start).ToArray()).Parse(requireComplete: true);
+                    return IsSimpleAssignmentTarget(target) ? next : -1;
+                }
+                catch (InvalidOperationException) { return -1; }
+            }
+            UpdateDepth(tokens[i], ref depth);
+        }
+        return -1;
+    }
+
+    // A completed try/catch/finally is a statement boundary even without a semicolon.
+    // Newlines may separate a clause keyword, its filters, and its body; semicolons may not.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs#L5494-L5669
+    private static IReadOnlyList<PowerShellWasmToken> ReadTryStatementTokens(
+        IReadOnlyList<PowerShellWasmToken> tokens, ref int position, int tryStart)
+    {
+        var start = position;
+        position = tryStart;
+        var depth = 0;
+        var inFinally = false;
+        while (position < tokens.Count && tokens[position].Kind != PowerShellWasmTokenKind.EndOfInput)
+        {
+            var token = tokens[position];
+            if (depth == 0 && token.Kind == PowerShellWasmTokenKind.Semicolon) break;
+            if (depth == 0 && IsKeyword(tokens, position, "finally")) inFinally = true;
+            UpdateDepth(token, ref depth);
+            position++;
+            if (depth != 0 || token.Kind != PowerShellWasmTokenKind.RBrace) continue;
+
+            var next = position;
+            while (CurrentKind(tokens, next) == PowerShellWasmTokenKind.NewLine) next++;
+            if (!inFinally && (IsCatchClauseStart(tokens, next) || IsKeyword(tokens, next, "finally")))
+            {
+                position = next;
+                continue;
+            }
+            break;
+        }
         return RemoveTopLevelNewLines(tokens.Skip(start).Take(position - start).ToArray());
     }
 

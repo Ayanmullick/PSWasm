@@ -262,6 +262,12 @@ internal static class PowerShellWasmDotNetBridge
             return false;
         }
 
+        if (PowerShellWasmExceptionTypes.TryGetDescriptorType(input, out var exceptionType))
+        {
+            matches = PowerShellWasmExceptionTypes.IsAssignableFrom(fullName, exceptionType);
+            return true;
+        }
+
         matches = fullName switch
         {
             MathType => input is PowerShellWasmDotNetType type &&
@@ -622,7 +628,13 @@ internal static class PowerShellWasmDotNetBridge
             return false;
         }
 
-        value = Invoke(method, arguments);
+        try { value = Invoke(method, arguments); }
+        catch (Exception error) when (error is ArgumentException or ArithmeticException or FormatException or InvalidCastException)
+        {
+            // PowerShell's method wrapper participates in catch selection alongside the direct BCL inner exception.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L2151-L2200
+            throw PowerShellWasmExceptionTypes.MethodFailure(error);
+        }
         return true;
     }
 
@@ -659,9 +671,17 @@ internal static class PowerShellWasmDotNetBridge
         if (method.DeclaringType == EnumeratorType && method.Target is IEnumerator enumerator)
         {
             RequireArgumentCount(method, arguments, 0);
-            if (method.Name.Equals("MoveNext", StringComparison.OrdinalIgnoreCase)) return enumerator.MoveNext();
-            enumerator.Reset();
-            return PowerShellWasmOutput.NoOutput;
+            try
+            {
+                if (method.Name.Equals("MoveNext", StringComparison.OrdinalIgnoreCase)) return enumerator.MoveNext();
+                enumerator.Reset();
+                return PowerShellWasmOutput.NoOutput;
+            }
+            catch (Exception error) when (error is InvalidOperationException or NotSupportedException)
+            {
+                // A collection-version failure is an actual CLR member error, not the runtime's synthetic InvalidOperation carrier.
+                throw PowerShellWasmExceptionTypes.MethodFailure(error, fromClrMember: true);
+            }
         }
 
         if (method.DeclaringType == DictionaryType && method.Target is IDictionary rawDictionary &&
@@ -782,7 +802,8 @@ internal static class PowerShellWasmDotNetBridge
     }
 
     // Only descriptors for runtime values and collection interfaces are exposed, never reflected Type instances or member discovery.
-    private static string? GetKnownRuntimeTypeName(object value) => value switch
+    private static string? GetKnownRuntimeTypeName(object value) =>
+        PowerShellWasmExceptionTypes.TryGetDescriptorType(value, out var exceptionType) ? exceptionType : value switch
     {
         string[] => "System.String[]",
         bool[] when value.GetType() == typeof(bool[]) => "System.Boolean[]",
@@ -924,7 +945,7 @@ internal static class PowerShellWasmDotNetBridge
         }
     }
 
-    private static bool TryResolveTypeName(string typeName, out string fullName)
+    internal static bool TryResolveTypeName(string typeName, out string fullName)
     {
         fullName = string.Empty;
         var trimmed = typeName.Trim();
@@ -943,7 +964,7 @@ internal static class PowerShellWasmDotNetBridge
             return true;
         }
 
-        return TypeAliases.TryGetValue(trimmed, out fullName!);
+        return TypeAliases.TryGetValue(trimmed, out fullName!) || PowerShellWasmExceptionTypes.TryResolveExceptionName(trimmed, out fullName);
     }
 
     // Ordinary conversion targets produce Collection<T>; arrays and explicit generic lists are handled by the caller.

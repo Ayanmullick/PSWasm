@@ -57,7 +57,15 @@ public sealed record PipelineChainClauseAst(PipelineChainOperator Operator, Stat
 public sealed record TryStatementAst(
     ScriptAst TryBlock,
     IReadOnlyList<ScriptAst> CatchBlocks,
-    ScriptAst? FinallyBlock) : StatementAst;
+    ScriptAst? FinallyBlock) : StatementAst
+{
+    // Keep original constructor, deconstruction, and record updates authoritative for catch bodies.
+    public IReadOnlyList<IReadOnlyList<string>> CatchTypeNames { get; init; } = [];
+    public IReadOnlyList<CatchClauseAst> CatchClauses => CatchBlocks.Select((body, index) =>
+        new CatchClauseAst(index < CatchTypeNames.Count ? CatchTypeNames[index] : [], body)).ToArray();
+}
+
+public sealed record CatchClauseAst(IReadOnlyList<string> TypeNames, ScriptAst Body) : PowerShellWasmAst;
 
 public sealed record IfStatementAst(
     IReadOnlyList<IfClauseAst> Clauses,

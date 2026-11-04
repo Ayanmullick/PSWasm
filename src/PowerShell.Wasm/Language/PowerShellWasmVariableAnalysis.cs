@@ -196,14 +196,14 @@ internal sealed class PowerShellWasmVariableAnalysis
         var before = _current; var body = new Block(); var after = new Block();
         var final = statement.FinallyBlock is null ? after : new Block();
         before.Connect(body); _current = body; Script(statement.TryBlock); _current.Connect(final);
-        foreach (var catchBlock in statement.CatchBlocks)
+        foreach (var clause in statement.CatchClauses)
         {
             var start = new Block(); before.Connect(start); _current = start;
-            Script(catchBlock); _current.Connect(final);
+            Script(clause.Body); _current.Connect(final);
         }
         if (statement.FinallyBlock is not null)
         {
-            if (statement.CatchBlocks.Count == 0) before.Connect(final);
+            if (statement.CatchClauses.Count == 0) before.Connect(final);
             _current = final; Script(statement.FinallyBlock); _current.Connect(after);
         }
         _current = after;

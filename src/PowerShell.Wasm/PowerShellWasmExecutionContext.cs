@@ -23,6 +23,7 @@ public sealed class PowerShellWasmExecutionContext
     private PipelineStatus? _pipelineStatus;
     private Exception? _currentException;
     private readonly ConditionalWeakTable<object, ErrorIdentity> _errorExceptions = new();
+    private readonly ConditionalWeakTable<Exception, Dictionary<string, Dictionary<string, object?>>> _caughtDescriptors = new();
 
     public PowerShellWasmExecutionContext(IDictionary<string, string>? environment = null, IPowerShellWasmDomHost? domHost = null)
     {
@@ -339,13 +340,35 @@ public sealed class PowerShellWasmExecutionContext
 
     // Catch saves/restores the current exception independently of pipeline activation and $_.
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L5255-L5294
-    internal IDisposable WithCaughtException(Exception error)
+    internal IDisposable WithCaughtException(Exception error, string? selectedType = null)
     {
         var previous = _currentException;
         _currentException = error;
         var original = RecordException(error);
         var record = new Dictionary<string, object?>(original, StringComparer.OrdinalIgnoreCase);
         var identity = _errorExceptions.GetValue(original, _ => new(error, error, IsException: false));
+        if (selectedType is not null && PowerShellWasmExceptionTypes.ReplacesCatchDescriptor(error) &&
+            selectedType != PowerShellWasmExceptionTypes.DisplayType(error))
+        {
+            // Native typed catches can expose the inner exception while $Error retains its wrapper.
+            // Bare rethrow uses _currentException; explicit throw of this record uses the selected inner identity.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ErrorPackage.cs#L1391-L1407
+            var descriptors = _caughtDescriptors.GetOrCreateValue(error);
+            if (!descriptors.TryGetValue(selectedType, out var descriptor))
+            {
+                descriptor = new(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Message"] = error.InnerException?.Message ?? error.Message, ["TypeName"] = selectedType.Split('.').Last()
+                };
+                descriptors.Add(selectedType, descriptor);
+                PowerShellWasmExceptionTypes.RegisterDescriptor(descriptor, selectedType);
+                _errorExceptions.Add(descriptor, new(error, descriptor, IsException: true,
+                    ThrowId: Convert.ToString(descriptor["Message"], CultureInfo.InvariantCulture), SelectedType: selectedType,
+                    Descriptor: descriptor, Message: error.InnerException?.Message ?? error.Message));
+            }
+            record["Exception"] = descriptor;
+            identity = _errorExceptions.GetValue(descriptor, _ => throw new InvalidOperationException("Missing exception identity."));
+        }
         _errorExceptions.Add(record, identity with { Error = error, IsException = false });
         var variables = WithPipelineItem(record);
         return new ActionScope(() => { variables.Dispose(); _currentException = previous; });
@@ -358,18 +381,26 @@ public sealed class PowerShellWasmExecutionContext
         error = null!;
         if (!_errorExceptions.TryGetValue(value, out var identity)) return false;
         error = identity.Error;
-        if (identity.IsException)
+        if (identity.IsException || value is Dictionary<string, object?>)
         {
             // Throwing an exception constructs a new record/id; throwing an ErrorRecord preserves its id.
             // Both retain the same exception identity, including head-only history deduplication.
-            var original = (Dictionary<string, object?>)error.Data[ErrorRecordDataKey]!;
-            error = new InvalidOperationException(error.Message);
-            var record = new Dictionary<string, object?>(original, StringComparer.OrdinalIgnoreCase)
+            var original = !identity.IsException && value is Dictionary<string, object?> caughtRecord
+                ? caughtRecord : (Dictionary<string, object?>)error.Data[ErrorRecordDataKey]!;
+            error = new InvalidOperationException(identity.Message ?? error.Message);
+            var record = new Dictionary<string, object?>(original, StringComparer.OrdinalIgnoreCase);
+            if (identity.IsException) record["FullyQualifiedErrorId"] = identity.ThrowId;
+            if (identity.Descriptor is not null) record["Exception"] = identity.Descriptor;
+            if (identity.SelectedType is { } selectedType)
             {
-                ["FullyQualifiedErrorId"] = identity.ThrowId
-            };
+                PowerShellWasmExceptionTypes.ClassifyExplicitThrow(error, selectedType);
+            }
+            else if (PowerShellWasmExceptionTypes.TryGetDescriptorType(identity.Descriptor, out var exceptionType) &&
+                (!identity.IsException || !PowerShellWasmExceptionTypes.IsAssignableFrom(PowerShellWasmExceptionTypes.Runtime, exceptionType)))
+                PowerShellWasmExceptionTypes.ClassifyExplicitThrow(error, exceptionType);
+            else PowerShellWasmExceptionTypes.CopyClassification(identity.Error, error);
             error.Data[ErrorRecordDataKey] = record;
-            _errorExceptions.Add(record, identity with { Error = error, IsException = false });
+            _errorExceptions.Add(record, identity with { Error = error, IsException = false, SelectedType = null });
         }
         return true;
     }
@@ -378,7 +409,7 @@ public sealed class PowerShellWasmExecutionContext
     // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/runtime/Operations/MiscOps.cs#L2079-L2120
     internal Exception CreateThrowException(string message)
     {
-        var error = new InvalidOperationException(message);
+        var error = PowerShellWasmExceptionTypes.Create(PowerShellWasmExceptionTypes.Runtime, message);
         CreateErrorRecord(error, "RuntimeException", message, "RuntimeException");
         return error;
     }
@@ -476,6 +507,8 @@ public sealed class PowerShellWasmExecutionContext
                 // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/MshCommandRuntime.cs#L2892-L2918
                 var error = CreateStoppingPreferenceException(preference, preferenceName, value);
                 error.Data[ErrorRecordDataKey] = errorRecord;
+                if (_errorExceptions.TryGetValue(errorRecord, out var original))
+                    PowerShellWasmExceptionTypes.ClassifyPreferenceStop(error, original.Error);
                 throw error;
             }
         }
@@ -494,8 +527,10 @@ public sealed class PowerShellWasmExecutionContext
     private static InvalidOperationException CreateStoppingPreferenceException(string preference, string? preferenceName, object? value)
     {
         var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
-        return new InvalidOperationException(
+        var error = new InvalidOperationException(
             $"The running command stopped because the preference variable \"{preferenceName}\" is set to {preference}: {message}");
+        PowerShellWasmExceptionTypes.ClassifyPreferenceStop(error);
+        return error;
     }
 
     // $? belongs to the execution context, not to a function's variable frame.
@@ -516,7 +551,8 @@ public sealed class PowerShellWasmExecutionContext
     internal Dictionary<string, object?> RecordException(Exception error)
     {
         var record = error.Data[ErrorRecordDataKey] as Dictionary<string, object?> ??
-            CreateErrorRecord(error, error.GetType().Name, error.GetType().FullName ?? error.GetType().Name);
+            CreateErrorRecord(error, PowerShellWasmExceptionTypes.DisplayType(error).Split('.').Last(),
+                error.GetType().FullName ?? error.GetType().Name);
         // Only the latest error is deduplicated. An older error rethrown after another error returns to the head.
         // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ExecutionContext.cs#L833-L857
         if (_errors.Count > 0 && _errors[0] is Dictionary<string, object?> head &&
@@ -699,7 +735,8 @@ public sealed class PowerShellWasmExecutionContext
     {
         MarkPipelineFailed();
         var message = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
-        var record = CreateErrorRecord(new InvalidOperationException(message), "Error", "PSWasm.WriteError", message);
+        var error = PowerShellWasmExceptionTypes.Create(PowerShellWasmExceptionTypes.WriteError, message);
+        var record = CreateErrorRecord(error, "WriteErrorException", "PSWasm.WriteError", message);
         PushErrorRecord(record, null);
         return record;
     }
@@ -721,6 +758,7 @@ public sealed class PowerShellWasmExecutionContext
         {
             ["Message"] = error.Message, ["TypeName"] = exception
         };
+        PowerShellWasmExceptionTypes.RegisterDescriptor(descriptor, PowerShellWasmExceptionTypes.DisplayType(error));
         var record = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
             ["Message"] = error.Message,
@@ -729,12 +767,14 @@ public sealed class PowerShellWasmExecutionContext
         };
         error.Data[ErrorRecordDataKey] = record;
         // Identity is private metadata: user-created lookalike dictionaries cannot impersonate exceptions.
-        _errorExceptions.Add(record, new(error, error, IsException: false));
-        _errorExceptions.Add(descriptor, new(error, error, IsException: true, exceptionThrowId ?? error.Message));
+        _errorExceptions.Add(record, new(error, error, IsException: false, Descriptor: descriptor, Message: error.Message));
+        _errorExceptions.Add(descriptor, new(error, error, IsException: true, exceptionThrowId ?? error.Message,
+            Descriptor: descriptor, Message: error.Message));
         return record;
     }
 
-    private sealed record ErrorIdentity(Exception Error, object ExceptionIdentity, bool IsException, string? ThrowId = null);
+    private sealed record ErrorIdentity(Exception Error, object ExceptionIdentity, bool IsException, string? ThrowId = null,
+        string? SelectedType = null, object? Descriptor = null, string? Message = null);
 
     private static Dictionary<string, object?> CreateDomSessionRecord(int id, string name, string target) =>
         new(StringComparer.OrdinalIgnoreCase)

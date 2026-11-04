@@ -91,7 +91,7 @@ Use `$_` or `$PSItem` for the current item in pipeline callbacks; `param($Item)`
 
 Use `$?`, `&&`, and `||` to inspect execution status and recover from failures. See [execution status and error handling](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#execution-status) for command boundaries, retained errors, and the supported subset.
 
-Use `try` / `catch` / `finally` and `throw` to handle or rethrow errors. See [error handling](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#error-handling) for throw operands, original-error preservation, and browser-safe error descriptors.
+Use typed `catch` clauses to select handlers, `finally` for cleanup, and `throw` to raise or rethrow errors. See [error handling](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#error-handling) for supported exception types, handler selection, and browser-safe error descriptors.
 
 PSWasm does not provide the full desktop/server PowerShell host. Providers, native processes, profiles, remoting, jobs, unrestricted filesystem access, module autoloading, and arbitrary .NET reflection are outside its browser-safe scope.
 

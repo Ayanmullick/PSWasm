@@ -568,6 +568,22 @@ function First-Matches($Items) {
 First-Matches @(1,2,3,4)
   </script>
           </article>
+          <article class="example" id="typed-catch">
+            <h3>Typed catch handlers</h3>
+            <p class="example-note">Handle a specific exception before a general fallback. Cleanup runs after the selected handler.</p>
+            <script type="pwsh" id="typed-catch-script">
+try {
+    1 / 0
+} catch [System.DivideByZeroException] {
+    "Handled: $($_.Exception.GetType().Name)"
+    "Arithmetic: $($_.Exception -is [System.ArithmeticException])"
+} catch [System.Exception] {
+    'General error handler'
+} finally {
+    'Typed catch cleanup ran'
+}
+  </script>
+          </article>
           <article class="example">
             <h3>Try, catch, rethrow, and finally</h3>
             <script type="pwsh">

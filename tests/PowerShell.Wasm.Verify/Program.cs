@@ -5,6 +5,7 @@ using PSWasm;
 
 var tests = new (string Name, Func<ValueTask> Run)[]
 {
+    ("typed catch dispatch and try statement grammar", TypedCatchVerification.VerifyAsync),
     ("numeric literals and numeric value semantics", NumericLiteralVerification.VerifyAsync),
     ("quoted strings and command argument parsing", StringParsingVerification.VerifyAsync),
     ("collection ForEach and Where intrinsics", CollectionIntrinsicVerification.VerifyAsync),
