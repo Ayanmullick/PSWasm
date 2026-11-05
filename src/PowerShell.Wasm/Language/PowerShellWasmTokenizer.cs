@@ -10,7 +10,9 @@ namespace PSWasm.Language;
 // Browser note: this tokenizer intentionally avoids desktop host/runtime dependencies.
 public static class PowerShellWasmTokenizer
 {
-    public static IReadOnlyList<PowerShellWasmToken> Tokenize(string script)
+    public static IReadOnlyList<PowerShellWasmToken> Tokenize(string script) => Tokenize(script, simpleMemberContext: false);
+
+    internal static IReadOnlyList<PowerShellWasmToken> Tokenize(string script, bool simpleMemberContext)
     {
         var tokens = new List<PowerShellWasmToken>();
         var leadingWhitespace = false;
@@ -612,6 +614,7 @@ public static class PowerShellWasmTokenizer
                     value.Append(escaped);
                     continue;
                 }
+                if (simpleMemberContext && dotted && current == '<' && position + 1 < script.Length && script[position + 1] == '#') break;
                 if (!(dotted ? IsDottedMemberCharacter(current) : IsBareWordCharacter(current))) break;
                 value.Append(current);
                 position++;

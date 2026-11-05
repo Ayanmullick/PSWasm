@@ -75,11 +75,15 @@ Use `[int]$Count = 1` to retain a variable's type across later assignments. See 
 
 Use `$local:Name`, `$script:Name`, `$global:Name`, or `$private:Name` to select variable scope explicitly. See [variable scope](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#variable-scope) for visibility, session lifetime, and variable-command `-Scope` arguments.
 
+Functions also support `local:`, `script:`, `global:`, and `private:` declarations and calls. See [function scope](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#function-scope) for visibility and shared-session behavior.
+
 Use `&` to invoke a script block or a registered command/function by name, or `.` to run a script block/function in the current scope. `return` accepts expressions, commands, and pipelines. See [binding, scope, and return behavior](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#control-flow-and-functions) for the browser-safe subset.
+
+Function parameters support multiline types and attributes, aliases, defaults, and ordered type constraints. See [parameter declarations](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#parameter-declarations) for binding and syntax rules.
 
 Use `[ordered]@{...}` when dictionary insertion order matters; ordinary hashtables have no guaranteed enumeration order. See [hashtables and ordered dictionaries](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#hashtables) for statement-valued entries, typed keys, indexing, and supported methods.
 
-Array and string indexing supports negative positions and slices. See [indexing and slices](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#indexing-and-slices) for result shape, missing values, and character results.
+Array and string indexing supports negative positions and slices. See [indexing and slices](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#indexing-and-slices) for result shape, missing values, and character results. Use `${item}?.Name` or `${items}?[0]` for [null-conditional access](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#operators), parenthesized when passed to commands.
 
 Use `$Rows.Name` or `('one','two').ToUpperInvariant()` to access members across a collection. See [collection member access](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#collection-member-access) for nested collections, result shape, and supported methods.
 

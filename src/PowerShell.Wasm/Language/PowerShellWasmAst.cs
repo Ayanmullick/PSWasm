@@ -113,7 +113,12 @@ public sealed record ParameterDeclarationAst(
     string? TypeName,
     ExpressionAst? DefaultValue,
     IReadOnlyList<string> Aliases,
-    IReadOnlyList<string> ValidateSet) : PowerShellWasmAst;
+    IReadOnlyList<string> ValidateSet) : PowerShellWasmAst
+{
+    // Keep the original constructor/deconstruction and primary TypeName authoritative for AST consumers.
+    public IReadOnlyList<string> AdditionalTypeNames { get; init; } = [];
+    internal IEnumerable<string> GetTypeNames() => TypeName is null ? AdditionalTypeNames : AdditionalTypeNames.Prepend(TypeName);
+}
 
 public sealed record MetadataAttributeStatementAst(string Name) : StatementAst;
 
@@ -230,7 +235,10 @@ public sealed record StaticMemberAccessExpressionAst(ExpressionAst Target, strin
 
 public sealed record MethodInvocationExpressionAst(ExpressionAst Target, IReadOnlyList<ExpressionAst> Arguments) : ExpressionAst;
 
-public sealed record IndexExpressionAst(ExpressionAst Target, ExpressionAst Index) : ExpressionAst;
+public sealed record IndexExpressionAst(ExpressionAst Target, ExpressionAst Index) : ExpressionAst
+{
+    public bool NullConditional { get; init; }
+}
 
 public sealed record UnaryExpressionAst(PowerShellWasmUnaryOperator Operator, ExpressionAst Operand) : ExpressionAst;
 

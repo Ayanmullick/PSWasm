@@ -301,22 +301,53 @@ public sealed class PowerShellWasmExecutionContext
             throw new InvalidOperationException($"Cannot overwrite variable {name} because it is read-only or constant.");
     }
 
-    internal void SetFunction(PowerShellWasmScriptFunction function) =>
-        GetScopeFrame(_frame).Functions[function.Name] = function;
+    // FunctionLookupPath recognizes one scope prefix; other colon-containing names remain literal.
+    // Declarations replace the function's private option, unlike ordinary assignment to an existing variable.
+    // Browser sessions share one script/global root and do not expose provider or module function tables.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/SessionStateFunctionAPIs.cs#L498-L548
+    internal void SetFunction(PowerShellWasmScriptFunction function)
+    {
+        var path = ParseFunctionPath(function.Name);
+        if (path.Name.Length == 0) throw new InvalidOperationException("A scoped function declaration requires a name.");
+        var frame = GetScopeFrame(path.Scope is null ? _frame : GetScopeStart(_frame, path.Scope));
+        frame.Functions[path.Name] = function with { Name = path.Name };
+        if (path.Scope?.Equals("private", StringComparison.OrdinalIgnoreCase) == true) frame.PrivateFunctionNames.Add(path.Name);
+        else frame.PrivateFunctionNames.Remove(path.Name);
+    }
 
+    // Explicit qualifiers select one scope; unqualified lookup skips private ancestors and continues searching.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ScopedItemSearcher.cs#L204-L223
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ScopedItemSearcher.cs#L383-L418
     internal bool TryGetFunction(string name, out PowerShellWasmScriptFunction function)
     {
-        for (var frame = _frame; frame is not null; frame = frame.Parent)
-            if (frame.Functions.TryGetValue(name, out function!)) return true;
+        var path = ParseFunctionPath(name);
+        var start = path.Scope is null ? _frame : GetScopeStart(_frame, path.Scope);
+        foreach (var frame in EnumerateScopeFrames(start, includeParents: path.Scope is null))
+            if (IsVisibleFunction(frame, path.Name, _frame) && frame.Functions.TryGetValue(path.Name, out function!)) return true;
         function = null!;
         return false;
     }
 
+    // Native discovery enumerates private ancestor functions even though invocation cannot resolve them.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/SessionStateFunctionAPIs.cs#L37-L62
     internal IEnumerable<string> GetFunctionNames()
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var frame = _frame; frame is not null; frame = frame.Parent) names.UnionWith(frame.Functions.Keys);
         return names;
+    }
+
+    private static bool IsVisibleFunction(VariableFrame owner, string name, VariableFrame caller) =>
+        !owner.PrivateFunctionNames.Contains(name) || ReferenceEquals(GetScopeFrame(owner), GetScopeFrame(caller));
+
+    private static (string Name, string? Scope) ParseFunctionPath(string name)
+    {
+        var separator = name.IndexOf(':');
+        if (separator < 0) return (name, null);
+        var scope = name[..separator];
+        return scope.Equals("local", StringComparison.OrdinalIgnoreCase) || scope.Equals("private", StringComparison.OrdinalIgnoreCase) ||
+            scope.Equals("script", StringComparison.OrdinalIgnoreCase) || scope.Equals("global", StringComparison.OrdinalIgnoreCase)
+            ? (name[(separator + 1)..], scope) : (name, null);
     }
 
     internal IDisposable WithScriptScope(IReadOnlyDictionary<string, object?> variables,
@@ -1032,12 +1063,13 @@ public sealed class PowerShellWasmExecutionContext
         internal Dictionary<string, string> OptimizedTypes { get; } = new(StringComparer.OrdinalIgnoreCase);
         internal HashSet<string> PrivateNames { get; } = new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, PowerShellWasmScriptFunction> Functions { get; } = new(StringComparer.OrdinalIgnoreCase);
+        internal HashSet<string> PrivateFunctionNames { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     internal sealed record VariableConstraint(IReadOnlyList<string> TypeNames, IReadOnlyList<string> ValidValues)
     {
         internal static VariableConstraint ForParameter(ParameterDeclarationAst parameter) =>
-            new(parameter.TypeName is null ? [] : [parameter.TypeName], parameter.ValidateSet);
+            new(parameter.GetTypeNames().ToArray(), parameter.ValidateSet);
 
         internal object? Convert(object? value, string separator)
         {

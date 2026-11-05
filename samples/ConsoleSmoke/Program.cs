@@ -77,7 +77,7 @@ while ($i -lt 3) {
 for ($j = 0; $j -lt 3; $j = $j + 1) {
     $j
 }
-switch ('browser') {
+switch -Wildcard ('browser') {
     'server' { 'server path' }
     'brow*' { 'browser path' }
     default { 'fallback path' }

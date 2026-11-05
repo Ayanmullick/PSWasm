@@ -37,7 +37,7 @@ internal sealed class PowerShellWasmVariableAnalysis
         foreach (var parameter in parameters ?? body.Parameters)
         {
             analysis.Write(parameter.Name, parameter.TypeName);
-            if (parameter.ValidateSet.Count > 0) analysis.MarkDynamic(parameter.Name);
+            if (parameter.ValidateSet.Count > 0 || parameter.AdditionalTypeNames.Count > 0) analysis.MarkDynamic(parameter.Name);
         }
         analysis.Script(body);
         return analysis.Finish();

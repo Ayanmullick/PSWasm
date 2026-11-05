@@ -1417,7 +1417,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 return new AssignmentTarget(
                     () => EvaluateMemberAccess(receiver, name), value => { SetMemberValue(receiver, name, value); return value; });
             }
-            case IndexExpressionAst index:
+            case IndexExpressionAst { NullConditional: false } index:
             {
                 var receiver = await EvaluateExpressionAsync(index.Target, cancellationToken);
                 var key = await EvaluateExpressionAsync(index.Index, cancellationToken);
@@ -1791,7 +1791,7 @@ internal sealed class PowerShellWasmAstExecutor(
 
         foreach (var parameter in parameters)
         {
-            var value = ConvertParameterValue(parameter, null, hasValue: false);
+            var value = ConvertSingleParameterValue(parameter, null, hasValue: false);
             parameterValues[parameter.Name] = value;
             if (!PowerShellWasmExecutionContext.IsRootScopedParameter(parameter.Name)) locals[parameter.Name] = value;
         }
@@ -1811,6 +1811,7 @@ internal sealed class PowerShellWasmAstExecutor(
             object? value;
             var wasBound = false;
             var hasValue = false;
+            var isPositional = false;
             if (TryGetNamedParameterValue(namedParameters, parameter, out var namedValue))
             {
                 value = namedValue;
@@ -1821,6 +1822,7 @@ internal sealed class PowerShellWasmAstExecutor(
             {
                 wasBound = true;
                 hasValue = true;
+                isPositional = true;
             }
             else if (!IsSwitchParameter(parameter) && bindInputToFirstParameter && !inputBound)
             {
@@ -1834,7 +1836,7 @@ internal sealed class PowerShellWasmAstExecutor(
                 continue;
             }
 
-            value = ConvertParameterValue(parameter, value, hasValue);
+            value = ConvertParameterValue(parameter, value, hasValue, isPositional);
             ValidateParameterValue(parameter, value);
             // Successful dot-sourced bindings survive a later parameter conversion/validation failure.
             // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/scriptparameterbinder.cs#L101-L135
@@ -1855,6 +1857,10 @@ internal sealed class PowerShellWasmAstExecutor(
                 value = ConvertParameterValue(parameter, value, hasValue: true);
                 ValidateParameterValue(parameter, value);
                 parameterValues[parameter.Name] = value;
+            }
+            else if (parameter.AdditionalTypeNames.Count > 0)
+            {
+                parameterValues[parameter.Name] = ConvertParameterValue(parameter, null, hasValue: false);
             }
             BindParameter(parameter, parameterValues[parameter.Name]);
         }
@@ -1906,7 +1912,66 @@ internal sealed class PowerShellWasmAstExecutor(
         return false;
     }
 
-    private object? ConvertParameterValue(ParameterDeclarationAst parameter, object? value, bool hasValue)
+    // Adapt PowerShell's ordered argument converters using only allowlisted browser-safe types. Positional binding
+    // first accepts an already-assignable value without coercion; named/default binding applies every converter.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ParameterBinderBase.cs#L385-L400
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L1812-L1865
+    private object? ConvertParameterValue(ParameterDeclarationAst parameter, object? value, bool hasValue, bool isPositional = false)
+    {
+        if (parameter.AdditionalTypeNames.Count == 0)
+            return ConvertSingleParameterValue(parameter, value, hasValue);
+        if (!hasValue)
+        {
+            value = ConvertSingleParameterValue(parameter, null, hasValue: false);
+            // Native missing reference defaults are not marked IsSet and do not run argument transformations.
+            if (value is null) return null;
+        }
+        if (isPositional && parameter.TypeName is not null &&
+            TryBindParameterWithoutCoercion(parameter.TypeName, ref value, out var uncoerced)) return uncoerced;
+        foreach (var typeName in parameter.GetTypeNames().Reverse())
+            value = ConvertConstrainedValue(typeName, value, executionContext.OutputFieldSeparator);
+        return value;
+    }
+
+    // The positional no-coercion pass can wrap a scalar or pack an array when its elements already have the target type.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/ParameterBinderBase.cs#L824-L899
+    private static bool TryBindParameterWithoutCoercion(string typeName, ref object? value, out object? result)
+    {
+        result = value;
+        // Reference types other than string accept null on the native no-coercion pass.
+        // Derive that from the existing allowlisted cast defaults, never arbitrary CLR type inspection.
+        if (PowerShellWasmOutput.AsNull(value) is null) return ParameterTypeAcceptsNull(typeName);
+        if (TypeMatches(value, typeName)) return true;
+        var type = NormalizeCastTypeName(typeName);
+        if (!type.EndsWith("[]", StringComparison.Ordinal)) return false;
+        var elementType = type[..^2];
+        var items = Enumerate(value).ToArray();
+        // A failed trial must not consume an enumerator before the subsequent coercion pass sees its values.
+        if (value is IEnumerator) value = items;
+        var allowsNullElement = ParameterTypeAcceptsNull(elementType, arrayElement: true);
+        if (!items.All(item => PowerShellWasmOutput.AsNull(item) is null
+            ? allowsNullElement : TypeMatches(item, elementType))) return false;
+        result = CastArrayValue(elementType, items);
+        // Collection packing accepts null reference elements without applying scalar string-null conversion.
+        if (result is Array array && allowsNullElement)
+            for (var i = 0; i < items.Length; i++)
+                if (PowerShellWasmOutput.AsNull(items[i]) is null) array.SetValue(null, i);
+        return true;
+    }
+
+    private static bool ParameterTypeAcceptsNull(string typeName, bool arrayElement = false)
+    {
+        var type = NormalizeCastTypeName(typeName);
+        if (type == "string") return arrayElement;
+        if (type is "scriptblock" or "system.management.automation.scriptblock") return true;
+        try { return CastValue(typeName, null) is null; }
+        catch (Exception error) when (error is InvalidOperationException or InvalidCastException or ArgumentException or FormatException)
+        {
+            return false;
+        }
+    }
+
+    private object? ConvertSingleParameterValue(ParameterDeclarationAst parameter, object? value, bool hasValue)
     {
         if (string.IsNullOrWhiteSpace(parameter.TypeName))
         {
@@ -2711,6 +2776,11 @@ internal sealed class PowerShellWasmAstExecutor(
     private async ValueTask<object?> EvaluateIndexAsync(IndexExpressionAst index, CancellationToken cancellationToken)
     {
         var target = await EvaluateExpressionAsync(index.Target, cancellationToken);
+        // Native uses separate null-gate and access evaluations, so a nonnull receiver runs twice.
+        // A null or no-output receiver produces actual null and skips the index expression entirely.
+        // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Compiler.cs#L6597-L6633
+        if (index.NullConditional && PowerShellWasmOutput.AsNull(target) is null) return null;
+        if (index.NullConditional) target = await EvaluateExpressionAsync(index.Target, cancellationToken);
         var indexValue = await EvaluateExpressionAsync(index.Index, cancellationToken);
         return EvaluateIndex(target, indexValue, HasObjectIndexConstraint(index.Index),
             index.Index is ArrayExpressionAst { Items.Count: > 1 });
@@ -3716,11 +3786,8 @@ internal sealed class PowerShellWasmAstExecutor(
         return ToBoolean(value);
     }
 
-    private static bool WildcardMatch(object? left, object? right, bool caseSensitive)
-    {
-        var pattern = "^" + Regex.Escape(ToInvariantString(right)).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
-        return Regex.IsMatch(ToInvariantString(left), pattern, RegexOptionsFor(caseSensitive));
-    }
+    private static bool WildcardMatch(object? left, object? right, bool caseSensitive) =>
+        PowerShellWasmWildcardPattern.IsMatch(ToInvariantString(left), ToInvariantString(right), caseSensitive);
 
     private static bool RegexIsMatch(object? left, object? right, bool caseSensitive) =>
         Regex.IsMatch(ToInvariantString(left), ToInvariantString(right), RegexOptionsFor(caseSensitive));
