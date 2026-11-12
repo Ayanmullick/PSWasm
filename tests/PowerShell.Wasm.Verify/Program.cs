@@ -38,6 +38,7 @@ var tests = new (string Name, Func<ValueTask> Run)[]
     ("ternary operator", VerifyTernaryOperatorAsync),
     ("null conditional member access", VerifyNullConditionalMemberAccessAsync),
     ("null-conditional access grammar and evaluation", NullConditionalAccessVerification.VerifyAsync),
+    ("member-name comments and lexical context", MemberCommentVerification.VerifyAsync),
     ("regular expressions", VerifyRegularExpressionsAsync),
     ("array basics", VerifyArrayBasicsAsync),
     ("hashtable basics", VerifyHashtableBasicsAsync),

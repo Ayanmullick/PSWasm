@@ -105,4 +105,5 @@ public readonly record struct PowerShellWasmToken(
     internal bool IsInCatch { get; init; }
     internal bool IsInFinally { get; init; }
     internal string? SourceScript { get; init; }
+    internal bool HasDeferredMemberComment { get; init; }
 }

@@ -83,7 +83,7 @@ Function parameters support multiline types and attributes, aliases, defaults, a
 
 Use `[ordered]@{...}` when dictionary insertion order matters; ordinary hashtables have no guaranteed enumeration order. See [hashtables and ordered dictionaries](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#hashtables) for statement-valued entries, typed keys, indexing, and supported methods.
 
-Array and string indexing supports negative positions and slices. See [indexing and slices](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#indexing-and-slices) for result shape, missing values, and character results. Use `${item}?.Name` or `${items}?[0]` for [null-conditional access](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#operators), parenthesized when passed to commands.
+Array and string indexing supports negative positions and slices. See [indexing and slices](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#indexing-and-slices) for result shape, missing values, and character results. Use `${item}?.Name` or `${items}?[0]` for [null-conditional access](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#operators), parenthesized when passed to commands. Inline block comments after member names are supported; see [comments and line continuation](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#authoring-syntax) for placement rules.
 
 Use `$Rows.Name` or `('one','two').ToUpperInvariant()` to access members across a collection. See [collection member access](https://github.com/Ayanmullick/PSWasm/wiki/Language-Support#collection-member-access) for nested collections, result shape, and supported methods.
 

@@ -12,7 +12,8 @@ public static class PowerShellWasmTokenizer
 {
     public static IReadOnlyList<PowerShellWasmToken> Tokenize(string script) => Tokenize(script, simpleMemberContext: false);
 
-    internal static IReadOnlyList<PowerShellWasmToken> Tokenize(string script, bool simpleMemberContext)
+    internal static IReadOnlyList<PowerShellWasmToken> Tokenize(string script, bool simpleMemberContext,
+        IReadOnlySet<int>? genericMemberCommentOffsets = null)
     {
         var tokens = new List<PowerShellWasmToken>();
         var leadingWhitespace = false;
@@ -593,6 +594,12 @@ public static class PowerShellWasmTokenizer
             var value = new StringBuilder();
             var dotted = numericPrefixEnd is null && script[position] == '.';
             var escapedText = false;
+            var deferredMemberComment = false;
+            // The parser decides whether a dotted word is a member or a generic command argument. Preserve an
+            // ambiguous comment's complete source until that decision, so its whitespace/quotes/braces cannot
+            // prematurely terminate a statement or a string. Public tokenization keeps the ordinary generic rules.
+            var deferMemberComment = genericMemberCommentOffsets is not null &&
+                !genericMemberCommentOffsets.Contains(tokenStart);
             HashSet<int>? literalDollarOffsets = null;
             HashSet<int>? variableBoundaryOffsets = null;
             if (numericPrefixEnd is int end)
@@ -615,6 +622,15 @@ public static class PowerShellWasmTokenizer
                     continue;
                 }
                 if (simpleMemberContext && dotted && current == '<' && position + 1 < script.Length && script[position + 1] == '#') break;
+                if (deferMemberComment && current == '<' && position + 1 < script.Length && script[position + 1] == '#')
+                {
+                    var close = script.IndexOf("#>", position + 2, StringComparison.Ordinal);
+                    var commentEnd = close < 0 ? script.Length : close + 2;
+                    value.Append(script.AsSpan(position, commentEnd - position));
+                    position = commentEnd;
+                    deferredMemberComment = true;
+                    continue;
+                }
                 if (!(dotted ? IsDottedMemberCharacter(current) : IsBareWordCharacter(current))) break;
                 value.Append(current);
                 position++;
@@ -626,7 +642,8 @@ public static class PowerShellWasmTokenizer
             }
 
             tokens.Add(new(PowerShellWasmTokenKind.Identifier, value.ToString(), tokenStart, position - tokenStart, leadingWhitespace)
-                { LiteralDollarOffsets = literalDollarOffsets, VariableBoundaryOffsets = variableBoundaryOffsets, IsEscapedText = escapedText });
+                { LiteralDollarOffsets = literalDollarOffsets, VariableBoundaryOffsets = variableBoundaryOffsets,
+                    IsEscapedText = escapedText, HasDeferredMemberComment = deferredMemberComment });
             leadingWhitespace = false;
         }
     }

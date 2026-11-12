@@ -13,11 +13,40 @@ public sealed class PowerShellWasmParser
 
     internal ScriptAst Parse(string script, bool insideCatch, bool insideFinally = false)
     {
-        IReadOnlyList<PowerShellWasmToken> tokens = PowerShellWasmTokenizer.Tokenize(script)
-            .Select(token => token with { SourceScript = script }).ToArray();
-        if (insideCatch) tokens = MarkInsideCatch(tokens);
-        if (insideFinally) tokens = MarkInsideFinally(tokens, true);
-        return ParseScript(tokens);
+        var genericMemberCommentOffsets = new HashSet<int>();
+        while (true)
+        {
+            IReadOnlyList<PowerShellWasmToken> tokens = PowerShellWasmTokenizer.Tokenize(script,
+                simpleMemberContext: false, genericMemberCommentOffsets)
+                .Select(token => token with { SourceScript = script }).ToArray();
+            if (insideCatch) tokens = MarkInsideCatch(tokens);
+            if (insideFinally) tokens = MarkInsideFinally(tokens, true);
+            try { return ParseScript(tokens); }
+            catch (GenericMemberCommentException retry) when (genericMemberCommentOffsets.Add(retry.Offset))
+            {
+                // Re-scan with generic argument rules only after the parser established that context. Each
+                // retry resolves a new source position; malformed member comments remain ordinary parse errors.
+            }
+        }
+    }
+
+    // Native MemberNameRule selects simple-name scanning, whereas argument mode retains generic text.
+    // Keep this decision in the parser rather than changing the public tokenizer's context-free contract.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs#L2161-L2189
+    private sealed class GenericMemberCommentException(int offset) : Exception
+    {
+        public int Offset { get; } = offset;
+    }
+
+    private static void RequireGenericCommentToken(PowerShellWasmToken token)
+    {
+        if (token.HasDeferredMemberComment) throw new GenericMemberCommentException(token.Offset);
+    }
+
+    private static BareWordExpressionAst ParseBareWordToken(PowerShellWasmToken token)
+    {
+        RequireGenericCommentToken(token);
+        return new BareWordExpressionAst(token.Text);
     }
 
     // A bare throw is a rethrow only when lexically within a catch, including nested function/scriptblock definitions.
@@ -606,6 +635,7 @@ public sealed class PowerShellWasmParser
             throw new InvalidOperationException("Expected a function name after function.");
         }
 
+        RequireGenericCommentToken(tokens[position]);
         var name = tokens[position++].Text;
         var parameters = CurrentKind(tokens, position) == PowerShellWasmTokenKind.LParen
             ? ReadFunctionParameters(tokens, ref position)
@@ -861,7 +891,7 @@ public sealed class PowerShellWasmParser
         {
             if (tokens[position].Kind == PowerShellWasmTokenKind.RBracket && depth == 0)
             {
-                var typeName = string.Concat(tokens.Skip(start).Take(position - start).Select(static token => token.Text));
+                var typeName = ReadTypeAnnotationText(tokens, start, position - start);
                 position++;
                 if (string.IsNullOrWhiteSpace(typeName))
                 {
@@ -1029,7 +1059,7 @@ public sealed class PowerShellWasmParser
     {
         typeName = string.Empty;
         if (!TryReadBracketAnnotation(tokens, position, out _, out var after)) return false;
-        var content = tokens.Skip(position + 1).Take(after - position - 2)
+        var content = NormalizeTypeAnnotationTokens(tokens, position + 1, after - position - 2)
             .SkipWhile(token => token.Kind == PowerShellWasmTokenKind.NewLine).ToArray();
         if (!IsCatchTypeSyntax(content)) return false;
         typeName = string.Concat(content.Select(token => token.Text));
@@ -1250,6 +1280,7 @@ public sealed class PowerShellWasmParser
 
             if (IsSplatStart(tokens, position))
             {
+                RequireGenericCommentToken(tokens[position + 1]);
                 var name = tokens[position + 1].Text;
                 arguments.Add(new CommandArgumentAst(new VariableExpressionAst(name, false), IsSplat: true)
                     { SourceOrder = sourceOrder });
@@ -1564,8 +1595,11 @@ public sealed class PowerShellWasmParser
             parameterName.Equals("WarningVariable", StringComparison.OrdinalIgnoreCase) ||
             parameterName.Equals("wv", StringComparison.OrdinalIgnoreCase));
 
-    private static string GetBareCommandTokenText(PowerShellWasmToken token) =>
-        token.Kind == PowerShellWasmTokenKind.Parameter ? "-" + token.Text : token.Text;
+    private static string GetBareCommandTokenText(PowerShellWasmToken token)
+    {
+        RequireGenericCommentToken(token);
+        return token.Kind == PowerShellWasmTokenKind.Parameter ? "-" + token.Text : token.Text;
+    }
 
     private static ExpressionAst ParseExpression(IReadOnlyList<PowerShellWasmToken> tokens)
     {
@@ -1682,8 +1716,11 @@ public sealed class PowerShellWasmParser
         token.Kind == PowerShellWasmTokenKind.Question ||
         token.Kind == PowerShellWasmTokenKind.Remainder;
 
-    private static string GetCommandName(PowerShellWasmToken token) =>
-        token.Kind == PowerShellWasmTokenKind.Remainder ? "%" : token.Text;
+    private static string GetCommandName(PowerShellWasmToken token)
+    {
+        RequireGenericCommentToken(token);
+        return token.Kind == PowerShellWasmTokenKind.Remainder ? "%" : token.Text;
+    }
 
     private static bool IsStatementExpressionValue(IReadOnlyList<PowerShellWasmToken> tokens) =>
         tokens.Count > 0 &&
@@ -2290,7 +2327,7 @@ public sealed class PowerShellWasmParser
         {
             if (tokens[position].Kind == PowerShellWasmTokenKind.RBracket && depth == 0)
             {
-                annotation = string.Concat(tokens.Skip(start).Take(position - start).Select(static token => token.Text));
+                annotation = ReadTypeAnnotationText(tokens, start, position - start);
                 afterPosition = position + 1;
                 return !string.IsNullOrWhiteSpace(annotation);
             }
@@ -2300,6 +2337,70 @@ public sealed class PowerShellWasmParser
         }
 
         return false;
+    }
+
+    // Behavioral guidance: TypeNameRule finishes a type-name token before comments, then accepts its bracket
+    // suffixes; a comment cannot join two name fragments. Attribute names share that lexical boundary.
+    // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs
+    private static string ReadTypeAnnotationText(IReadOnlyList<PowerShellWasmToken> tokens, int start, int count) =>
+        string.Concat(NormalizeTypeAnnotationTokens(tokens, start, count).Select(static token => token.Text));
+
+    private static IReadOnlyList<PowerShellWasmToken> NormalizeTypeAnnotationTokens(
+        IReadOnlyList<PowerShellWasmToken> tokens, int start, int count)
+    {
+        var result = tokens.Skip(start).Take(count).ToArray();
+        var hasComment = result.Any(static token => token.HasDeferredMemberComment);
+        var hasAttributeArguments = false;
+        var attributeArgumentsComplete = false;
+        var argumentDepth = 0;
+        for (var index = 0; index < result.Length; index++)
+        {
+            var token = result[index];
+            if (hasComment && attributeArgumentsComplete && token.Kind != PowerShellWasmTokenKind.NewLine)
+                throw new InvalidOperationException("Expected ']' after the attribute arguments.");
+            if (token.HasDeferredMemberComment)
+            {
+                // Attribute arguments retain their existing generic-token behavior; quoted argument tokens
+                // never carry this flag. Do not silently reinterpret comment-shaped argument text as a name.
+                if (argumentDepth > 0) RequireGenericCommentToken(token);
+                var commentStart = token.Text.IndexOf("<#", StringComparison.Ordinal);
+                while (commentStart >= 0 && token.VariableBoundaryOffsets?.Contains(commentStart) == true)
+                    commentStart = token.Text.IndexOf("<#", commentStart + 2, StringComparison.Ordinal);
+                if (commentStart < 0) throw new InvalidOperationException("Expected a type name before the comment.");
+                var commentPosition = commentStart;
+                while (commentPosition < token.Text.Length)
+                {
+                    if (!token.Text.AsSpan(commentPosition).StartsWith("<#", StringComparison.Ordinal))
+                        throw new InvalidOperationException("Unexpected text after a comment in a type name.");
+                    var close = token.Text.IndexOf("#>", commentPosition + 2, StringComparison.Ordinal);
+                    if (close < 0) throw new InvalidOperationException("Missing closing '#>' in block comment.");
+                    commentPosition = close + 2;
+                }
+                result[index] = token with { Text = token.Text[..commentStart], HasDeferredMemberComment = false };
+                var next = index + 1;
+                while (next < result.Length && result[next].Kind == PowerShellWasmTokenKind.NewLine) next++;
+                if (next < result.Length && result[next].Kind is not (PowerShellWasmTokenKind.LBracket or
+                    PowerShellWasmTokenKind.RBracket or PowerShellWasmTokenKind.Comma or PowerShellWasmTokenKind.LParen))
+                    throw new InvalidOperationException("Unexpected text after a comment in a type name.");
+            }
+            if (token.Kind is PowerShellWasmTokenKind.LParen or PowerShellWasmTokenKind.AtLParen or
+                PowerShellWasmTokenKind.DollarLParen)
+            {
+                hasAttributeArguments = true;
+                argumentDepth++;
+            }
+            else if (token.Kind == PowerShellWasmTokenKind.RParen)
+            {
+                argumentDepth--;
+                if (argumentDepth == 0) attributeArgumentsComplete = true;
+            }
+        }
+        if (hasComment && !hasAttributeArguments)
+        {
+            if (!IsCatchTypeSyntax(result))
+                throw new InvalidOperationException("Expected a type name with valid array or generic type suffixes.");
+        }
+        return result;
     }
 
     private static void UpdateDepth(PowerShellWasmToken token, ref int depth)
@@ -2480,9 +2581,22 @@ public sealed class PowerShellWasmParser
             _position = afterTypePosition;
             if (typeName.Equals("ordered", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("The ordered attribute is valid only on a hashtable literal.");
-            cast = new CastExpressionAst(typeName, ParseUnary());
+            var operand = ParseUnary();
+            // Attribute-expression syntax permits a variable (possibly with other type constraints), but
+            // not a value, parenthesized operand, or member/index expression. Reject before script execution.
+            // https://github.com/PowerShell/PowerShell/blob/411d5fee10110d9881a909804f9d4eb1a06052ea/src/System.Management.Automation/engine/parser/Parser.cs
+            if (typeName.Contains('(') && !IsAttributedVariable(operand))
+                throw new InvalidOperationException("An attribute expression must precede a variable.");
+            cast = new CastExpressionAst(typeName, operand);
             return true;
         }
+
+        private static bool IsAttributedVariable(ExpressionAst expression) => expression switch
+        {
+            VariableExpressionAst => true,
+            CastExpressionAst cast => IsAttributedVariable(cast.Operand),
+            _ => false
+        };
 
         private ExpressionAst ParsePostfix(ExpressionAst? initialExpression = null)
         {
@@ -2493,19 +2607,26 @@ public sealed class PowerShellWasmParser
                     Current.Text.StartsWith(".", StringComparison.Ordinal) &&
                     Current.Text.Length > 1)
                 {
+                    if (_position == 0 || !HasMemberAccessAdjacency(tokens[_position - 1], Current))
+                        throw new InvalidOperationException("Member access requires '.' immediately after its target.");
                     if (Current.IsEscapedText) throw new InvalidOperationException("Escaped member names must be quoted.");
                     NormalizeSimpleMemberToken(preserveLeadingDot: true);
-                    if (Current.Text.EndsWith(".", StringComparison.Ordinal))
+                    // An adjacent comment may separate the dot from its simple or computed name. Let the
+                    // standalone-dot rule below consume that name instead of treating the dot as an empty path.
+                    if (Current.Text.Length > 1)
                     {
-                        foreach (var memberName in ReadMemberPath(".", trimLeadingDot: true))
-                            expression = new MemberAccessExpressionAst(expression, memberName);
+                        if (Current.Text.EndsWith(".", StringComparison.Ordinal))
+                        {
+                            foreach (var memberName in ReadMemberPath(".", trimLeadingDot: true))
+                                expression = new MemberAccessExpressionAst(expression, memberName);
+                        }
+                        else
+                        {
+                            expression = new MemberAccessExpressionAst(expression, Current.Text[1..]);
+                            _position++;
+                        }
+                        continue;
                     }
-                    else
-                    {
-                        expression = new MemberAccessExpressionAst(expression, Current.Text[1..]);
-                        _position++;
-                    }
-                    continue;
                 }
 
                 if (Current.Kind == PowerShellWasmTokenKind.Identifier &&
@@ -2570,6 +2691,8 @@ public sealed class PowerShellWasmParser
                     expression is MemberAccessExpressionAst or ComputedMemberAccessExpressionAst or
                         NullConditionalMemberAccessExpressionAst or StaticMemberAccessExpressionAst)
                 {
+                    if (_position == 0 || !Contiguous(tokens[_position - 1], Current))
+                        throw new InvalidOperationException("A method argument list must immediately follow its member name.");
                     expression = new MethodInvocationExpressionAst(expression, ParseArgumentList());
                     continue;
                 }
@@ -2584,6 +2707,8 @@ public sealed class PowerShellWasmParser
 
                 if (Current.Kind == PowerShellWasmTokenKind.LBracket)
                 {
+                    if (_position == 0 || !HasMemberAccessAdjacency(tokens[_position - 1], Current))
+                        throw new InvalidOperationException("An index must immediately follow its target.");
                     expression = ParseIndex(expression);
                     continue;
                 }
@@ -2614,7 +2739,7 @@ public sealed class PowerShellWasmParser
                 PowerShellWasmTokenKind.Number => ParseNumber(token.Text),
                 PowerShellWasmTokenKind.StringLiteral or PowerShellWasmTokenKind.ExpandableStringLiteral => ParseStringToken(token),
                 PowerShellWasmTokenKind.Variable => ParseVariable(token.Text),
-                PowerShellWasmTokenKind.Identifier => new BareWordExpressionAst(token.Text),
+                PowerShellWasmTokenKind.Identifier => ParseBareWordToken(token),
                 PowerShellWasmTokenKind.Parameter => new BareWordExpressionAst("-" + token.Text),
                 PowerShellWasmTokenKind.LParen => ParseParenthesized(),
                 PowerShellWasmTokenKind.LBrace => ParseScriptBlock(),
@@ -2649,10 +2774,14 @@ public sealed class PowerShellWasmParser
             return new ParenthesizedExpressionAst(expression);
         }
 
-        private TypeLiteralExpressionAst ParseTypeLiteral() =>
-            TryReadTypeName(_position - 1, out var typeName, out _position)
-                ? new TypeLiteralExpressionAst(typeName)
-                : throw new InvalidOperationException("Expected a type name inside '[]'.");
+        private TypeLiteralExpressionAst ParseTypeLiteral()
+        {
+            if (!TryReadTypeName(_position - 1, out var typeName, out _position))
+                throw new InvalidOperationException("Expected a type name inside '[]'.");
+            if (typeName.Contains('('))
+                throw new InvalidOperationException("An attribute expression must precede a variable.");
+            return new TypeLiteralExpressionAst(typeName);
+        }
 
         private IReadOnlyList<ExpressionAst> ParseArgumentList()
         {
@@ -2919,6 +3048,9 @@ public sealed class PowerShellWasmParser
         {
             if (Current.Kind == PowerShellWasmTokenKind.Comma)
                 throw new InvalidOperationException("Expected a key expression in hashtable literal.");
+            // Native hash keys use simple-name scanning before '=' just like unquoted member names.
+            var simpleCommentedKey = Current.HasDeferredMemberComment;
+            if (simpleCommentedKey) NormalizeSimpleMemberToken();
             var start = _position;
             var depth = 0;
 
@@ -2936,8 +3068,10 @@ public sealed class PowerShellWasmParser
             }
 
             var keyTokens = RemoveTopLevelNewLines(tokens.Skip(start).Take(_position - start).ToArray());
+            if (simpleCommentedKey && (keyTokens.Count != 1 || keyTokens[0].Kind != PowerShellWasmTokenKind.Identifier))
+                throw new InvalidOperationException("Expected '=' after the simple hashtable key.");
             return keyTokens.Count == 1 && keyTokens[0].Kind == PowerShellWasmTokenKind.Identifier
-                ? new BareWordExpressionAst(keyTokens[0].Text)
+                ? ParseBareWordToken(keyTokens[0])
                 : new ExpressionParser(keyTokens).Parse(requireComplete: true);
         }
 
@@ -2993,7 +3127,7 @@ public sealed class PowerShellWasmParser
             {
                 if (tokens[position].Kind == PowerShellWasmTokenKind.RBracket && depth == 0)
                 {
-                    typeName = string.Concat(tokens.Skip(start).Take(position - start).Select(static token => token.Text));
+                    typeName = ReadTypeAnnotationText(tokens, start, position - start);
                     afterTypePosition = position + 1;
                     return !string.IsNullOrWhiteSpace(typeName);
                 }
